@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+__pycache__/
+
+# not part of the published mod
+.superpowers/
+_decomp/
+backups/
+UnityBridge/
+CLAUDE.md
+QuickshotRing/Art/
+tools/.install/

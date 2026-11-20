@@ -1,0 +1,38 @@
+<Project>
+  <!-- Shared by every mod folder under attmod. A mod's .csproj only needs: <Project Sdk="Microsoft.NET.Sdk" /> -->
+  <PropertyGroup>
+    <!-- Override per machine: dotnet build -p:GameDir="D:\path\A Township Tale" (or set env var GameDir) -->
+    <GameDir Condition="'$(GameDir)' == ''">C:\Users\dmand\OneDrive\Desktop\A Township Tale (client</GameDir>
+    <ServerDir Condition="'$(ServerDir)' == ''">C:\Users\dmand\OneDrive\Desktop\A Township Tale(server</ServerDir>
+    <Managed>$(GameDir)\A Township Tale_Data\Managed</Managed>
+
+    <!-- net472 = same surface most installed mods compile against (Unity 2020.3 Mono). -->
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Game + loader assemblies: compile-time only, never copied to output. -->
+    <Reference Include="$(Managed)\Alta*.dll;$(Managed)\Root.Township.dll;$(Managed)\Township.*.dll;$(Managed)\UnityEngine*.dll;$(Managed)\Unity.*.dll;$(Managed)\Newtonsoft.Json.dll;$(Managed)\VContainer.dll" Private="false" />
+    <Reference Include="$(GameDir)\MelonLoader\net35\MelonLoader.dll;$(GameDir)\MelonLoader\net35\0Harmony.dll" Private="false" />
+    <!-- The SyncLib actually installed in the game (a custom 1.1.1 build, not upstream 1.0.4). -->
+    <Reference Include="$(GameDir)\Mods\SyncLib.dll" Private="false" />
+
+    <!-- Anything in a mod's Resources\ folder (AssetBundles) is embedded as "<AssemblyName>.Resources.<file name>". -->
+    <EmbeddedResource Include="Resources\**\*" Exclude="Resources\**\*.manifest;Resources\**\*.meta" />
+  </ItemGroup>
+
+  <!-- Opt-in install: -p:Deploy=true (client Mods), -p:DeployServer=true (server Mods). Client-only mods never go to the server. -->
+  <Target Name="DeployMod" AfterTargets="Build" Condition="'$(Deploy)' == 'true'">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)\Mods" />
+    <!-- The launcher's own pack copy; it must match Mods or the launcher may put the old build back. -->
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)\Modpacks\My mods" Condition="Exists('$(GameDir)\Modpacks\My mods\$(TargetFileName)')" />
+  </Target>
+  <Target Name="DeployModServer" AfterTargets="Build" Condition="'$(DeployServer)' == 'true'">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ServerDir)\Mods" />
+  </Target>
+</Project>
