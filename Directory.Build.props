@@ -19,8 +19,8 @@
     <!-- Game + loader assemblies: compile-time only, never copied to output. -->
     <Reference Include="$(Managed)\Alta*.dll;$(Managed)\Root.Township.dll;$(Managed)\Township.*.dll;$(Managed)\UnityEngine*.dll;$(Managed)\Unity.*.dll;$(Managed)\Newtonsoft.Json.dll;$(Managed)\VContainer.dll" Private="false" />
     <Reference Include="$(GameDir)\MelonLoader\net35\MelonLoader.dll;$(GameDir)\MelonLoader\net35\0Harmony.dll" Private="false" />
-    <!-- The SyncLib actually installed in the game (a custom 1.1.1 build, not upstream 1.0.4). -->
-    <Reference Include="$(GameDir)\Mods\SyncLib.dll" Private="false" />
+    <!-- The SyncLib actually installed in the game (a custom 1.1.1 build, not upstream 1.0.4), when it is installed: the archery mod does not use it, and the client may run without it (2026-11-20). A mod that registers prefabs (Template) needs it there to build. -->
+    <Reference Include="$(GameDir)\Mods\SyncLib.dll" Private="false" Condition="Exists('$(GameDir)\Mods\SyncLib.dll')" />
 
     <!-- Anything in a mod's Resources\ folder (AssetBundles) is embedded as "<AssemblyName>.Resources.<file name>". -->
     <EmbeddedResource Include="Resources\**\*" Exclude="Resources\**\*.manifest;Resources\**\*.meta" />
