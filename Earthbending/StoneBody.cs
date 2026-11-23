@@ -36,10 +36,11 @@ namespace Earthbending {
     /// even while it rises; the games play the mark look once), and a marked stone that breaks blasts round it (Hits.Explode)
     /// unless it is the server's quit or `earth clear`. A Straight claim within [EarthModifiers] DoubleStraightSeconds of the
     /// last one on it bursts it at once (rulings C8, C26; by anyone): marked, and broken. <see cref="Blast"/> is another stone's blast
-    /// reaching this one.</summary>
+    /// reaching this one. Task 13: Hold (StoneHold.cs, the rest of this class): the stone follows the holder's hand on the
+    /// server, a held slide (Sliding) or loose with no gravity (Held), until it is thrown or let go.</summary>
     /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
     /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
-    internal sealed class StoneBody : MonoBehaviour {
+    internal sealed partial class StoneBody : MonoBehaviour {
         internal StoneKind Kind;
         /// <summary>The owner's account (Server.AccountOf); 0 for a stone nobody owns.</summary>
         internal ulong Owner;
@@ -127,6 +128,7 @@ namespace Earthbending {
             else if (State == StoneState.Sliding) Slide();
             else if (State == StoneState.Floating) Hover();
             if (pushLater != null) PushLater();
+            if (grip != null) DriveHold();   // Task 13: the pull toward the holder's hand, or the let-go (never throws)
             LastVelocity = Velocity;
             bool moved = body != null && !body.isKinematic;
             Velocity = moved ? body!.velocity : Vector3.zero;
@@ -250,7 +252,9 @@ namespace Earthbending {
 
         // Called before each physics step (its collision callbacks come after it), so the first step after a push still reads
         // the velocity from before it: the stop test waits for the second (pushLanded). While touching ground the slide slows
-        // along its own way (on a slope too), as friction would; for a moment in the air, gravity alone.
+        // along its own way (on a slope too), as friction would; for a moment in the air, gravity alone. A held slide (Task 13,
+        // ruling C14) neither slows nor stands still: the hold's damping governs it; one that leaves the ground is Free, and
+        // its hold lets go (DriveHold, in the same step).
         void Slide() {
             if (body == null) return;
             slideSteps++;
@@ -259,9 +263,9 @@ namespace Earthbending {
             Vector3 v = body.velocity;
             float flat = Mathf.Sqrt(v.x * v.x + v.z * v.z);
             SlideStep step = StoneRules.Slide(touching, Time.fixedTimeAsDouble - groundAt, flat, slideSteps > 1);
-            if (step == SlideStep.Still) { Anchor(flat); return; }
             if (step == SlideStep.Free) { LetGo(); return; }
-            if (!touching) return;
+            if (grip != null || !touching) return;
+            if (step == SlideStep.Still) { Anchor(flat); return; }
             float speed = v.magnitude;
             float next = StoneRules.SlideSpeed(speed, Server.SlideDeceleration, Time.fixedDeltaTime);
             if (speed > 0f && next < speed) body.velocity = v * (next / speed);
@@ -400,7 +404,9 @@ namespace Earthbending {
         /// lands (<see cref="Land"/>); on a grounded one nothing happens. A Stomped stone takes only the up and down part of any
         /// push. Parry (Task 12): it floats (<see cref="Float"/>), its time starting over when it already does. A Floating stone
         /// takes Straight's StraightFree and floats on (its speed then ends the float), Kick's and Uppercut's loose numbers
-        /// (set loose first: gravity back) and Stomp's. One Debug line.</summary>
+        /// (set loose first: gravity back) and Stomp's. Hold (Task 13): StoneHold.TakeHold, no push. A held stone (Held, or a
+        /// held slide) that a modifier puts in another state is let go first (Kick, Uppercut, Stomp, Parry); Straight and
+        /// Explode keep it held. One Debug line.</summary>
         void Do(Modifier m, Player by, int hand, Vector3 flatForward) {
             if (broken || !StoneRules.CanApply(State, m)) return;
             if (body == null) {
@@ -408,6 +414,8 @@ namespace Earthbending {
                 return;
             }
             StoneState was = State, next = StoneRules.After(was, m);
+            if (m == Modifier.Hold) { TakeHold(by, hand, was, next); return; }
+            if (grip != null && next != was) EndHold($"{m} by {Server.NameOf(by)} made it {next}");
             if (m == Modifier.Parry) {
                 if (next == StoneState.Floating) Float(was);
                 else if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Parry on {Kind} #{Id} of {OwnerName}: {was}, nothing to do yet");
@@ -427,15 +435,7 @@ namespace Earthbending {
             }
             Vector3 before = body.isKinematic ? Vector3.zero : body.velocity;
             Vector3 beforeSpin = body.isKinematic ? Vector3.zero : body.angularVelocity;
-            if (next == StoneState.Sliding) {
-                body.isKinematic = false;
-                body.useGravity = true;
-                body.constraints = RigidbodyConstraints.FreezeRotation;
-                StartSlideMaterial();
-                slideSteps = 0;
-                touchedGround = false;
-                groundAt = Time.fixedTimeAsDouble;   // it stood on the ground at the push
-            }
+            if (next == StoneState.Sliding) StartSlide();
             else if (next == StoneState.Free && was != StoneState.Free) Loosen();   // Kick, Uppercut: set loose first
             else if (next == StoneState.Stomped) {   // ruling C7: only up and down from now on
                 body.isKinematic = false;
@@ -458,6 +458,20 @@ namespace Earthbending {
                 float uncapped = (before + impulse / Mathf.Max(body.mass, 1e-6f)).magnitude;
                 MelonLogger.Msg($"[Earth] Modifiers: {m} on {Kind} #{Id} of {OwnerName}: {was} -> {next}, {impulse} N s on {body.mass:0.#} kg; velocity {before} -> {after} m/s{(uncapped > after.magnitude + 1e-3f ? $" (held to [EarthModifiers] MaxStoneSpeed {Server.MaxStoneSpeed:0.##})" : "")}{(spin != Vector3.zero ? $", spin {spin} rad/s" : "")}");
             }
+        }
+
+        /// <summary>Ruling 22's slide set-up (a Straight on an anchored stone, Task 13's Hold on a grounded one): not kinematic,
+        /// gravity, only its turn frozen, the frictionless material on; its step count and ground time start now (it stood on
+        /// the ground).</summary>
+        void StartSlide() {
+            if (body == null) return;
+            body.isKinematic = false;
+            body.useGravity = true;
+            body.constraints = RigidbodyConstraints.FreezeRotation;
+            StartSlideMaterial();
+            slideSteps = 0;
+            touchedGround = false;
+            groundAt = Time.fixedTimeAsDouble;
         }
 
         // ---------------------------------------------------------------- Task 12: Parry, Explode, the double Straight
@@ -551,6 +565,7 @@ namespace Earthbending {
         internal void Break(string why, bool explode = true) {
             if (broken) return;
             broken = true;
+            EndHold("it broke");   // Task 13
             Server.Forget(this);
             // the entity goes at the end of the frame, and a slow server runs several physics steps in one frame: a broken
             // stone must not stop a clash's winner again in the next one (CarryOn), nor go on shoving what it hit
@@ -583,6 +598,7 @@ namespace Earthbending {
         // destroyed by anything (Break, `earth clear`, its chunk unloading): it no longer stands
         void OnDestroy() {
             broken = true;
+            EndGrip();   // Task 13: its hand no longer holds it
             Server.Forget(this);
         }
 

@@ -25,6 +25,149 @@ internal static class StoneTests {
         OtherStones();
         Modifiers();
         ParryAndExplode();
+        Holds();
+    }
+
+    // Task 13: Hold (spec 2.3, 2.4, 3.2, 3.5; rulings C13, C14, C16)
+    static void Holds() {
+        // the brief's checks
+        Check("hold gains: 150 kg is (1, 8, 8)", Pd.HoldGains(150f) == (1f, 8f, 8f));
+        Check("hold gains: 350 kg is (1, 11, 13)", Pd.HoldGains(350f) == (1f, 11f, 13f));
+        Check("hold gains: 450 kg is (1, 15, 18)", Pd.HoldGains(450f) == (1f, 15f, 18f));
+        Check("pd hold: no error, no velocity pulls nothing", NearV(Pd.Hold(V3.Zero, V3.Zero, 150f, false, 2500f, 1500f, 0.02f), V3.Zero));
+        Check("pd hold: error (1, 0, 0), still, free -> (2500, 0, 0)", NearV(Pd.Hold(new V3(1f, 0f, 0f), V3.Zero, 150f, false, 2500f, 1500f, 0.02f), new V3(2500f, 0f, 0f)));
+        Check("let go: past 8 m/s, or grounded changed, not at 7.9", StoneRules.HoldLetGo(8.1f, false, 8f) && StoneRules.HoldLetGo(1f, true, 8f) && !StoneRules.HoldLetGo(7.9f, false, 8f));
+        Check("hold again with the hand that holds it lets go", StoneRules.HoldAgain(0, 0) && StoneRules.HoldAgain(1, 1));
+
+        // the defaults (the settings')
+        Check("defaults: hold 1 m ahead, x 2500 free, x 1500 grounded, let go past 8 m/s, d per 0.02 s", Near(Pd.DefaultHoldDistance, 1f) && Near(Pd.DefaultHoldFreeScale, 2500f)
+            && Near(Pd.DefaultHoldGroundScale, 1500f) && Near(Pd.DefaultHoldLetGoSpeed, 8f) && Near(Pd.DefaultPdStepSeconds, 0.02f));
+
+        // HoldGains at every band edge (spec 2.4: up to 150, 150-300, 300-400, past 400 kg)
+        Check("hold gains: 0 and 100 kg are the lightest band", Pd.HoldGains(0f) == (1f, 8f, 8f) && Pd.HoldGains(100f) == (1f, 8f, 8f) && Pd.HoldGains(-5f) == (1f, 8f, 8f));
+        Check("hold gains: just past 150 to 300 is (1, 9, 9)", Pd.HoldGains(150.01f) == (1f, 9f, 9f) && Pd.HoldGains(300f) == (1f, 9f, 9f));
+        Check("hold gains: just past 300 to 400 is (1, 11, 13)", Pd.HoldGains(300.01f) == (1f, 11f, 13f) && Pd.HoldGains(400f) == (1f, 11f, 13f));
+        Check("hold gains: just past 400 is (1, 15, 18)", Pd.HoldGains(400.01f) == (1f, 15f, 18f) && Pd.HoldGains(1e6f) == (1f, 15f, 18f));
+        Check("hold gains: a mass that is not a number is the heaviest band", Pd.HoldGains(float.NaN) == (1f, 15f, 18f) && Pd.HoldGains(float.PositiveInfinity) == (1f, 15f, 18f));
+        Check("hold gains: the five stones", Pd.HoldGains(StoneTable.Default(Disc).Mass) == (1f, 8f, 8f) && Pd.HoldGains(StoneTable.Default(Ball).Mass) == (1f, 8f, 8f)
+            && Pd.HoldGains(StoneTable.Default(Pillar).Mass) == (1f, 9f, 9f) && Pd.HoldGains(StoneTable.Default(Cube).Mass) == (1f, 9f, 9f) && Pd.HoldGains(StoneTable.Default(Wall).Mass) == (1f, 11f, 13f));
+
+        // ruling C13: d x PdStepSeconds x velocity (the error's change per 50 Hz physics step), dxz on x and z, dy on y
+        Check("pd hold: a 150 kg stone at 1 m/s along x is damped by 2500 x 8 x 0.02", NearV(Pd.Hold(V3.Zero, new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), new V3(-400f, 0f, 0f)));
+        Check("pd hold: dy on y, dxz on x and z (450 kg)", NearV(Pd.Hold(V3.Zero, new V3(1f, 2f, -1f), 450f, false, 2500f, 1500f, 0.02f), new V3(-750f, -1800f, 750f)));
+        Check("pd hold: p and d together (350 kg)", NearV(Pd.Hold(new V3(0.5f, -0.2f, 1f), new V3(2f, 0f, 0f), 350f, false, 2500f, 1500f, 0.02f), new V3(150f, -500f, 2500f)));
+        Check("pd hold: PdStepSeconds 1 is the per-second reading", NearV(Pd.Hold(V3.Zero, new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 1f), new V3(-20000f, 0f, 0f)));
+        Check("pd hold: PdStepSeconds 0 does not damp", NearV(Pd.Hold(new V3(1f, 0f, 0f), new V3(5f, 5f, 5f), 150f, false, 2500f, 1500f, 0f), new V3(2500f, 0f, 0f)));
+        Check("pd hold: a ball trailing a 1 m/s hand by 0.16 m is pulled no more", NearV(Pd.Hold(new V3(0.16f, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), V3.Zero));
+        // ruling C14: a grounded hold pulls along x and z only, x HoldGroundScale
+        Check("pd hold: grounded is x 1500 and has no y", NearV(Pd.Hold(new V3(1f, 1f, -2f), V3.Zero, 275f, true, 2500f, 1500f, 0.02f), new V3(1500f, 0f, -3000f)));
+        Check("pd hold: grounded damps x and z only", NearV(Pd.Hold(V3.Zero, new V3(1f, -5f, 1f), 150f, true, 2500f, 1500f, 0.02f), new V3(-240f, 0f, -240f)));
+        Check("pd hold: the scales from the settings", NearV(Pd.Hold(new V3(1f, 1f, 0f), V3.Zero, 150f, false, 1000f, 500f, 0.02f), new V3(1000f, 1000f, 0f))
+            && NearV(Pd.Hold(new V3(1f, 1f, 0f), V3.Zero, 150f, true, 1000f, 500f, 0.02f), new V3(500f, 0f, 0f)));
+        // never a force that is not a number
+        Check("pd hold: an error that is not a number pulls nothing", NearV(Pd.Hold(new V3(float.NaN, 0f, 0f), V3.Zero, 150f, false, 2500f, 1500f, 0.02f), V3.Zero)
+            && NearV(Pd.Hold(new V3(0f, float.PositiveInfinity, 0f), new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), V3.Zero));
+        Check("pd hold: a velocity that is not a number counts as none", NearV(Pd.Hold(new V3(1f, 0f, 0f), new V3(float.NaN, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), new V3(2500f, 0f, 0f)));
+        Check("pd hold: a mass that is not a number damps as the heaviest", NearV(Pd.Hold(V3.Zero, new V3(1f, 0f, 0f), float.NaN, false, 2500f, 1500f, 0.02f), new V3(-750f, 0f, 0f)));
+        Check("pd hold: a scale not above 0 or not a number pulls nothing", NearV(Pd.Hold(new V3(1f, 1f, 1f), V3.Zero, 150f, false, float.NaN, 1500f, 0.02f), V3.Zero)
+            && NearV(Pd.Hold(new V3(1f, 1f, 1f), V3.Zero, 150f, true, 2500f, -1f, 0.02f), V3.Zero) && NearV(Pd.Hold(new V3(1f, 1f, 1f), V3.Zero, 150f, false, float.PositiveInfinity, 1500f, 0.02f), V3.Zero));
+        Check("pd hold: a step that is not a number does not damp", NearV(Pd.Hold(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, float.NaN), new V3(2500f, 0f, 0f)));
+        Check("pd hold: huge numbers stay finite", FiniteV(Pd.Hold(new V3(3e38f, -3e38f, 3e38f), new V3(-3e38f, 3e38f, 0f), 150f, false, 3e38f, 3e38f, 3e38f)));
+        // ruling C13: stable at the server's 15-45 Hz with every stone, and the trail behind a 1 m/s hand settles at 0.16 m
+        Check("pd hold: a ball follows a 1 m/s hand 0.16 m behind (45 Hz)", Near2(Follow(150f, false, 1f / 45f, 1f, 20f), 0.16f, 0.005f));
+        bool stable = true;
+        foreach (float hz in new[] { 15f, 30f, 45f, 50f })
+            foreach (StoneKind k in new[] { Disc, Ball, Pillar, Cube, Wall })
+                foreach (bool grounded in new[] { false, true })
+                    stable &= Settles(StoneTable.Default(k).Mass, grounded, 1f / hz);
+        Check("pd hold: every stone settles on a still target at 15, 30, 45 and 50 Hz, free and grounded", stable);
+
+        // the target: the hand plus its own flat forward x HoldDistance; the head's flat forward when the hand points within
+        // 45 degrees of straight up or down (the Hold pose's fingers point up)
+        var hand = new V3(0f, 1.5f, 0.4f);
+        var east = new V3(1f, 0f, 0f);
+        Check("hold target: a hand pointing ahead", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, 1f), new V3(0f, 1.5f, 1.4f)));
+        Check("hold target: pointing down and ahead goes flat ahead", NearV(Pd.HoldTarget(hand, new V3(0f, -0.6f, 0.8f), east, 1f), new V3(0f, 1.5f, 1.4f)));
+        Check("hold target: fingers straight up take the head's flat forward", NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), east, 1f), new V3(1f, 1.5f, 0.4f)));
+        Check("hold target: fingers tilted back 37 degrees still take the head's", NearV(Pd.HoldTarget(hand, new V3(0f, 0.8f, -0.6f), new V3(0f, 0f, 1f), 1f), new V3(0f, 1.5f, 1.4f))
+            && NearV(Pd.HoldTarget(hand, new V3(0.6f, -0.8f, 0f), new V3(0f, 0f, 1f), 1f), new V3(0f, 1.5f, 1.4f)));
+        Check("hold target: past 45 degrees from up the hand's own way", NearV(Pd.HoldTarget(hand, new V3(0.75f, 0.6614f, 0f), new V3(0f, 0f, 1f), 1f), new V3(1f, 1.5f, 0.4f)));
+        Check("hold target: the head's forward is made flat and length 1", NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), new V3(0f, -3f, 4f), 1f), new V3(0f, 1.5f, 1.4f)));
+        Check("hold target: a forward of any length", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 5f), east, 1f), new V3(0f, 1.5f, 1.4f)));
+        Check("hold target: HoldDistance", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, 2.5f), new V3(0f, 1.5f, 2.9f)) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, 0f), hand));
+        Check("hold target: a distance not above 0 or not a number is the hand", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, float.NaN), hand) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, -1f), hand));
+        Check("hold target: a forward that is not a number takes the head's", NearV(Pd.HoldTarget(hand, new V3(float.NaN, 0f, 1f), east, 1f), new V3(1f, 1.5f, 0.4f)));
+        Check("hold target: nothing to go by is the hand itself", NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), new V3(0f, -1f, 0f), 1f), hand)
+            && NearV(Pd.HoldTarget(hand, V3.Zero, new V3(float.NaN, 0f, 0f), 1f), hand));
+
+        // letting go (ruling: past HoldLetGoSpeed, or grounded changed)
+        Check("let go: at 8 m/s it holds on", !StoneRules.HoldLetGo(8f, false, 8f));
+        Check("let go: a speed that is not a number lets go", StoneRules.HoldLetGo(float.NaN, false, 8f));
+        Check("let go: from the settings", StoneRules.HoldLetGo(5.1f, false, 5f) && !StoneRules.HoldLetGo(9f, false, 12f));
+        Check("hold again: another hand, or not held, does not let go", !StoneRules.HoldAgain(0, 1) && !StoneRules.HoldAgain(1, 0) && !StoneRules.HoldAgain(-1, 0) && !StoneRules.HoldAgain(-1, 1) && !StoneRules.HoldAgain(-1, -1));
+
+        // ruling C14: Hold in every state (CanApply, After)
+        StoneState[] after = { StoneState.Sliding, StoneState.Sliding, StoneState.Sliding, StoneState.Held, StoneState.Stomped, StoneState.Held, StoneState.Held, StoneState.Flicked };
+        bool[] can = { true, true, true, true, false, true, true, false };
+        for (int i = 0; i < AllStates.Length; i++)
+            Check($"hold on {AllStates[i]}: {(can[i] ? after[i].ToString() : "refused")}", StoneRules.CanApply(AllStates[i], Modifier.Hold) == can[i] && StoneRules.After(AllStates[i], Modifier.Hold) == after[i]);
+        Check("modify: hold on a stomped stone is not allowed (it lands first)", ModifyCheck.Decide(Mod(Modifier.Hold, 9u, V3.Zero), true, StoneState.Stomped, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
+            V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NotAllowed);
+        Check("modify: hold on a free stone is allowed", ModifyCheck.Decide(Mod(Modifier.Hold, 9u, V3.Zero), true, StoneState.Free, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
+            V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("hold pushes nothing", StoneRules.Impulse(Modifier.Hold, false) == (0f, 0f, 0f) && StoneRules.Impulse(Modifier.Hold, true) == (0f, 0f, 0f));
+        // the Held row: Straight and Explode keep the hold; Kick, Uppercut, Stomp and Parry change its state (they let go)
+        Check("held: straight stays held", StoneRules.After(StoneState.Held, Modifier.Straight) == StoneState.Held);
+        Check("held: explode stays held", StoneRules.After(StoneState.Held, Modifier.Explode) == StoneState.Held);
+        Check("held: kick -> free", StoneRules.After(StoneState.Held, Modifier.Kick) == StoneState.Free);
+        Check("held: uppercut -> free", StoneRules.After(StoneState.Held, Modifier.Uppercut) == StoneState.Free);
+        Check("held: stomp -> stomped", StoneRules.After(StoneState.Held, Modifier.Stomp) == StoneState.Stomped);
+        Check("held: parry -> floating", StoneRules.After(StoneState.Held, Modifier.Parry) == StoneState.Floating);
+        bool heldTakes = true;
+        foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut, Modifier.Parry, Modifier.Hold, Modifier.Explode })
+            heldTakes &= StoneRules.CanApply(StoneState.Held, m);
+        Check("held: every modifier but Flick applies", heldTakes && !StoneRules.CanApply(StoneState.Held, Modifier.Flick));
+        // a held sliding stone: Straight keeps it sliding (held); Stomp does nothing to it (held); Kick, Uppercut, Parry change it
+        Check("held sliding: straight and stomp keep it sliding", StoneRules.After(StoneState.Sliding, Modifier.Straight) == StoneState.Sliding && StoneRules.After(StoneState.Sliding, Modifier.Stomp) == StoneState.Sliding);
+        Check("held sliding: kick, uppercut, parry change it", StoneRules.After(StoneState.Sliding, Modifier.Kick) == StoneState.Free
+            && StoneRules.After(StoneState.Sliding, Modifier.Uppercut) == StoneState.Free && StoneRules.After(StoneState.Sliding, Modifier.Parry) == StoneState.Floating);
+        Check("held is loose: not grounded, not kinematic, discrete", !StoneRules.IsGrounded(StoneState.Held) && !StoneRules.Kinematic(StoneState.Held) && !StoneRules.Continuous(StoneState.Held));
+        // Flick is Task 14's: still refused everywhere
+        bool flickNone = true;
+        foreach (StoneState s in AllStates) flickNone &= !StoneRules.CanApply(s, Modifier.Flick);
+        Check("flick not yet", flickNone);
+    }
+
+    static bool FiniteV(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+
+    static bool Near2(float a, float b, float tol) => System.Math.Abs(a - b) <= tol;
+
+    // A free stone of this mass held by Pd.Hold (defaults) behind a target moving along x at `speed`, stepped as PhysX steps a
+    // body (semi-implicit Euler: the velocity first, then the place) every `dt`: how far it trails after `seconds`. NaN when it
+    // runs away.
+    static float Follow(float mass, bool grounded, float dt, float speed, float seconds) {
+        double x = 0.0, v = 0.0, t = 0.0;
+        for (; t < seconds; t += dt) {
+            double target = speed * t;
+            V3 f = Pd.Hold(new V3((float)(target - x), 0f, 0f), new V3((float)v, 0f, 0f), mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds);
+            v += f.X / mass * dt;
+            x += v * dt;
+            if (double.IsNaN(x) || System.Math.Abs(x) > 1e6) return float.NaN;
+        }
+        return (float)(speed * t - x);
+    }
+
+    // A stone of this mass 1 m off a still target settles within 1 cm of it in 20 s (it neither runs away nor rings forever).
+    static bool Settles(float mass, bool grounded, float dt) {
+        double x = -1.0, v = 0.0, peak = 0.0;
+        for (double t = 0.0; t < 20.0; t += dt) {
+            V3 f = Pd.Hold(new V3((float)(-x), 0f, 0f), new V3((float)v, 0f, 0f), mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds);
+            v += f.X / mass * dt;
+            x += v * dt;
+            if (double.IsNaN(x) || System.Math.Abs(x) > 1e3) return false;
+            peak = System.Math.Max(peak, System.Math.Abs(x));
+        }
+        return System.Math.Abs(x) < 0.01 && peak <= 1.0 + 1e-6;
     }
 
     // Task 12: Parry, Explode and the double Straight (spec 2.3, 2.4, 2.6, 3.5, 3.7; rulings C8, C11, C12, C26)
@@ -42,12 +185,12 @@ internal static class StoneTests {
         Check("defaults: double straight 0.4 s (ruling C26)", Near(StoneRules.DefaultDoubleStraightSeconds, 0.4f));
 
         // Parry: Floating from Free, Still, Sliding, Stomped, and Rising once it has risen (C6); Floating again restarts it;
-        // Held and Flicked are Tasks 13-14's (unchanged here)
+        // Flicked is Task 14's (unchanged here); Held is Task 13's (Holds: it lets go and floats)
         Check("parry on sliding -> floating", StoneRules.After(StoneState.Sliding, Modifier.Parry) == StoneState.Floating);
         Check("parry on stomped -> floating", StoneRules.After(StoneState.Stomped, Modifier.Parry) == StoneState.Floating);
         Check("parry on rising -> floating once risen", StoneRules.After(StoneState.Rising, Modifier.Parry) == StoneState.Floating);
         Check("parry on floating -> floating", StoneRules.After(StoneState.Floating, Modifier.Parry) == StoneState.Floating);
-        Check("parry on held, flicked: unchanged", StoneRules.After(StoneState.Held, Modifier.Parry) == StoneState.Held && StoneRules.After(StoneState.Flicked, Modifier.Parry) == StoneState.Flicked);
+        Check("parry on flicked: unchanged", StoneRules.After(StoneState.Flicked, Modifier.Parry) == StoneState.Flicked);
         // the Floating row: Straight keeps it floating with the push (its speed then ends the float), Kick and Uppercut set it
         // loose, Stomp stomps it, Explode only marks it
         Check("floating: straight stays floating", StoneRules.After(StoneState.Floating, Modifier.Straight) == StoneState.Floating);
@@ -61,16 +204,14 @@ internal static class StoneTests {
         foreach (StoneState s in AllStates) marks &= StoneRules.After(s, Modifier.Explode) == s;
         Check("explode leaves every state", marks);
 
-        // Parry and Explode apply in every state; Hold and Flick are still Tasks 13-14's
-        bool parryAll = true, explodeAll = true, holdNone = true;
+        // Parry and Explode apply in every state (Hold is Task 13's: Holds; Flick is still Task 14's)
+        bool parryAll = true, explodeAll = true;
         foreach (StoneState s in AllStates) {
             parryAll &= StoneRules.CanApply(s, Modifier.Parry);
             explodeAll &= StoneRules.CanApply(s, Modifier.Explode);
-            holdNone &= !StoneRules.CanApply(s, Modifier.Hold) && !StoneRules.CanApply(s, Modifier.Flick);
         }
         Check("parry applies in every state", parryAll);
         Check("explode applies in every state", explodeAll);
-        Check("hold and flick not yet", holdNone);
         Check("modify: explode on a still stone is allowed", ModifyCheck.Decide(Mod(Modifier.Explode, 9u, V3.Zero), true, StoneState.Still, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
             V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
         Check("modify: parry on a rising stone is allowed (held until risen)", ModifyCheck.Decide(Mod(Modifier.Parry, 9u, V3.Zero), true, StoneState.Rising, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
@@ -165,20 +306,18 @@ internal static class StoneTests {
         Check("kick on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Kick) == StoneState.Free);
         Check("uppercut on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Uppercut) == StoneState.Free);
         Check("stomp on rising -> still once risen", StoneRules.After(StoneState.Rising, Modifier.Stomp) == StoneState.Still);
-        // Held and Flicked are Tasks 13-14's: unchanged here (Floating's row is Task 12's: ParryAndExplode)
+        // Flicked is Task 14's: unchanged here (Floating's row is Task 12's: ParryAndExplode; Held's Task 13's: Holds)
         bool later = true;
-        foreach (StoneState s in new[] { StoneState.Held, StoneState.Flicked })
-            foreach (Modifier m in new[] { Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
-                later &= StoneRules.After(s, m) == s;
-        Check("held, flicked unchanged by kick, stomp, uppercut", later);
+        foreach (Modifier m in new[] { Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
+            later &= StoneRules.After(StoneState.Flicked, m) == StoneState.Flicked;
+        Check("flicked unchanged by kick, stomp, uppercut", later);
 
-        // they apply in every state; Hold and Flick are later tasks'
+        // they apply in every state (Hold: Holds; Flick is Task 14's)
         bool every = true;
         foreach (StoneState s in AllStates)
             foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
                 every &= StoneRules.CanApply(s, m);
         Check("straight, kick, stomp, uppercut apply in every state", every);
-        Check("hold not yet", !StoneRules.CanApply(StoneState.Free, Modifier.Hold));
         Check("modify: kick on a still stone is allowed", ModifyCheck.Decide(Mod(Modifier.Kick, 9u, V3.Zero), true, StoneState.Still, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
             V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
 
