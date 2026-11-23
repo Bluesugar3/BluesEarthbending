@@ -19,7 +19,9 @@ namespace Earthbending {
     // Pd.Hold's force toward Pd.HoldTarget: the hand plus [EarthModifiers] HoldDistance along the hand's flat forward (the
     // look's, when the hand points within 45 degrees of up or down, as the Hold pose's fingers do). The stone is let go
     // (StoneRules.HoldLetGo) once it moves faster than HoldLetGoSpeed (the throw: it keeps its velocity, held to MaxStoneSpeed
-    // by ruling C10) or changes between grounded and free (a held slide left the ground); and when the holder is gone (left,
+    // by ruling C10), counted only once it has been at that speed or under since the hold began (ruling C27,
+    // StoneRules.HoldArmed: a stone caught flying is slowed by the pull first), or at once when it changes between grounded
+    // and free (a held slide left the ground); and when the holder is gone (left,
     // no body or hand, dead, downed), the same hand strikes Hold on it again (StoneRules.HoldAgain), that hand takes another
     // stone, another modifier changes its state (Kick, Uppercut, Stomp, Parry; Straight and Explode keep it held), or it
     // breaks. A Held stone let go is Free (gravity back); a held slide slides on as any slide (slows, stands still). A Hold by
@@ -39,6 +41,10 @@ namespace Earthbending {
             public double Since, LogAt, LoggedAt;
             public Vector3 LoggedHand;
             public bool Logged;
+            /// <summary>Ruling C27: it has been at HoldLetGoSpeed or under since the hold began, so its speed test counts.</summary>
+            public bool Armed;
+            /// <summary>Physics steps driven so far (a stone not armed at its first step was caught fast).</summary>
+            public int Steps;
         }
 
         Grip? grip;
@@ -110,7 +116,12 @@ namespace Earthbending {
                 if (body == null || body.isKinematic) { LetGoHold(Logs.Debug ? $"it is {State} and does not move" : ""); return; }
                 bool groundedChanged = StoneRules.IsGrounded(State) != g.Grounded;
                 float speed = body.velocity.magnitude;
-                if (StoneRules.HoldLetGo(speed, groundedChanged, Server.HoldLetGoSpeed)) {
+                bool wasArmed = g.Armed;
+                g.Armed = StoneRules.HoldArmed(wasArmed, speed, Server.HoldLetGoSpeed);   // ruling C27
+                if (Logs.Debug && g.Armed && !wasArmed && g.Steps > 0)
+                    MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} caught fast by {g.Name} has slowed to {speed:0.##} m/s after {Time.fixedTimeAsDouble - g.Since:0.##} s; a throw counts from now (past {Server.HoldLetGoSpeed:0.##} m/s)");
+                g.Steps++;
+                if (StoneRules.HoldLetGo(speed, groundedChanged, Server.HoldLetGoSpeed, g.Armed)) {
                     LetGoHold(!Logs.Debug ? "" : groundedChanged ? $"it {(g.Grounded ? "left the ground" : "became grounded")} ({State})"
                         : $"thrown at {speed:0.##} m/s (past [EarthModifiers] HoldLetGoSpeed {Server.HoldLetGoSpeed:0.##})");
                     return;
@@ -140,7 +151,7 @@ namespace Earthbending {
             double now = Time.fixedTimeAsDouble;
             float trail = g.Grounded ? new V3(error.X, 0f, error.Z).Length : error.Length;
             string moved = g.Logged && now > g.LoggedAt ? $", moving {(hand - g.LoggedHand).magnitude / (float)(now - g.LoggedAt):0.##} m/s" : "";
-            MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} in {g.Name}'s {HandName(g.Hand)} hand for {now - g.Since:0.#} s ({State}): the server's hand at {V(hand)}{moved}, the target {target}; the stone trails it by {trail:0.###} m{(g.Grounded ? " (flat)" : "")} at {speed:0.##} m/s");
+            MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} in {g.Name}'s {HandName(g.Hand)} hand for {now - g.Since:0.#} s ({State}): the server's hand at {V(hand)}{moved}, the target {target}; the stone trails it by {trail:0.###} m{(g.Grounded ? " (flat)" : "")} at {speed:0.##} m/s{(g.Armed ? "" : $" (caught fast: a throw counts once it is under {Server.HoldLetGoSpeed:0.##} m/s)")}");
             g.LogAt = now + 1.0;
             g.LoggedAt = now;
             g.LoggedHand = hand;

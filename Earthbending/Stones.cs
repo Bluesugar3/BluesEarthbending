@@ -486,8 +486,17 @@ namespace Earthbending {
         /// <summary>Spec 2.4: a held stone is let go (it keeps its velocity: that is the throw) once it moves faster than
         /// <paramref name="letGoSpeed"/> m/s ([EarthModifiers] HoldLetGoSpeed; at it, it holds on), or when it changed between
         /// grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground, a Held one became
-        /// grounded). A speed that is not a number lets go.</summary>
-        public static bool HoldLetGo(float speed, bool groundedChanged, float letGoSpeed) => groundedChanged || !(speed <= letGoSpeed);
+        /// grounded). Ruling C27: the speed test counts only when <paramref name="armed"/> (<see cref="HoldArmed"/>: the stone
+        /// has been at the let-go speed or under since the hold began), so a stone caught flying is slowed by the pull first
+        /// and a throw speeds past it again; grounded changed lets go armed or not. A speed that is not a finite number lets
+        /// go, armed or not.</summary>
+        public static bool HoldLetGo(float speed, bool groundedChanged, float letGoSpeed, bool armed = true) =>
+            groundedChanged || float.IsNaN(speed) || float.IsInfinity(speed) || (armed && !(speed <= letGoSpeed));
+
+        /// <summary>Ruling C27: whether a hold's speed test counts from this step: it already did (<paramref name="wasArmed"/>;
+        /// false when the hold begins), or the stone moves at <paramref name="letGoSpeed"/> m/s or slower now. A speed that is
+        /// not a number does not arm it.</summary>
+        public static bool HoldArmed(bool wasArmed, float speed, float letGoSpeed) => wasArmed || speed <= letGoSpeed;
 
         /// <summary>A Hold by a hand on the stone that hand already holds lets it go. <paramref name="heldBy"/> is the hand
         /// (0 right, 1 left) that holds the stone for the SAME player, -1 when that player does not hold it (not held, or held

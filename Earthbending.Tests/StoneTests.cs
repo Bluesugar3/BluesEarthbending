@@ -103,6 +103,22 @@ internal static class StoneTests {
         // letting go (ruling: past HoldLetGoSpeed, or grounded changed)
         Check("let go: at 8 m/s it holds on", !StoneRules.HoldLetGo(8f, false, 8f));
         Check("let go: a speed that is not a number lets go", StoneRules.HoldLetGo(float.NaN, false, 8f));
+        // ruling C27: the speed test counts only once the held stone has been at HoldLetGoSpeed or under since the hold began
+        // (a stone caught flying is slowed by the pull first; a throw speeds past it again)
+        bool armed = false, caught = true;
+        foreach (float sp in new[] { 12f, 11f, 9.5f, 8.5f, 8.01f }) {
+            armed = StoneRules.HoldArmed(armed, sp, 8f);
+            caught &= !armed && !StoneRules.HoldLetGo(sp, false, 8f, armed);
+        }
+        Check("let go (C27): a hold that begins at 12 m/s is not let go while it stays above 8", caught);
+        armed = StoneRules.HoldArmed(armed, 7f, 8f);
+        Check("let go (C27): once it has been at 7 m/s, 8.1 lets go", armed && StoneRules.HoldLetGo(8.1f, false, 8f, armed) && !StoneRules.HoldLetGo(7.9f, false, 8f, armed));
+        Check("let go (C27): armed stays armed however fast it goes", StoneRules.HoldArmed(true, 20f, 8f) && StoneRules.HoldArmed(true, float.NaN, 8f));
+        Check("let go (C27): at the let-go speed it arms, just past it does not", StoneRules.HoldArmed(false, 8f, 8f) && !StoneRules.HoldArmed(false, 8.01f, 8f));
+        Check("let go (C27): a speed that is not a number does not arm", !StoneRules.HoldArmed(false, float.NaN, 8f) && !StoneRules.HoldArmed(false, float.PositiveInfinity, 8f));
+        Check("let go (C27): grounded changed lets go unarmed", StoneRules.HoldLetGo(12f, true, 8f, false) && StoneRules.HoldLetGo(1f, true, 8f, false));
+        Check("let go (C27): a speed that is not a number lets go unarmed too", StoneRules.HoldLetGo(float.NaN, false, 8f, false) && StoneRules.HoldLetGo(float.PositiveInfinity, false, 8f, false));
+        Check("let go (C27): the brief's checks are the armed case", StoneRules.HoldLetGo(8.1f, false, 8f, true) && StoneRules.HoldLetGo(1f, true, 8f, true) && !StoneRules.HoldLetGo(7.9f, false, 8f, true));
         Check("let go: from the settings", StoneRules.HoldLetGo(5.1f, false, 5f) && !StoneRules.HoldLetGo(9f, false, 12f));
         Check("hold again: another hand, or not held, does not let go", !StoneRules.HoldAgain(0, 1) && !StoneRules.HoldAgain(1, 0) && !StoneRules.HoldAgain(-1, 0) && !StoneRules.HoldAgain(-1, 1) && !StoneRules.HoldAgain(-1, -1));
 
