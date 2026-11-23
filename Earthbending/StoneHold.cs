@@ -77,8 +77,8 @@ namespace Earthbending {
             int heldBy = grip != null && grip.Account == account ? grip.Hand : -1;
             if (StoneRules.HoldAgain(heldBy, hand)) { LetGoHold("its holder struck Hold on it again with the same hand"); return; }
             if (gripped.TryGetValue(HandKey(account, hand), out StoneBody other) && other != null && !ReferenceEquals(other, this))
-                other.LetGoHold($"that hand took {Kind} #{Id}");
-            string from = grip != null ? $" (taken from {grip.Name}'s {HandName(grip.Hand)} hand)" : "";
+                other.LetGoHold(Logs.Debug ? $"that hand took {Kind} #{Id}" : "");
+            string from = grip != null && Logs.Debug ? $" (taken from {grip.Name}'s {HandName(grip.Hand)} hand)" : "";
             EndGrip();
             if (next == StoneState.Sliding) {
                 if (was != StoneState.Sliding) StartSlide();   // ruling C14: a Still stone slides, held
@@ -107,15 +107,15 @@ namespace Earthbending {
             Grip? g = grip;
             if (g == null) return;
             try {
-                if (body == null || body.isKinematic) { LetGoHold($"it is {State} and does not move"); return; }
+                if (body == null || body.isKinematic) { LetGoHold(Logs.Debug ? $"it is {State} and does not move" : ""); return; }
                 bool groundedChanged = StoneRules.IsGrounded(State) != g.Grounded;
                 float speed = body.velocity.magnitude;
                 if (StoneRules.HoldLetGo(speed, groundedChanged, Server.HoldLetGoSpeed)) {
-                    LetGoHold(groundedChanged ? $"it {(g.Grounded ? "left the ground" : "became grounded")} ({State})"
+                    LetGoHold(!Logs.Debug ? "" : groundedChanged ? $"it {(g.Grounded ? "left the ground" : "became grounded")} ({State})"
                         : $"thrown at {speed:0.##} m/s (past [EarthModifiers] HoldLetGoSpeed {Server.HoldLetGoSpeed:0.##})");
                     return;
                 }
-                if (State != StoneState.Held && State != StoneState.Sliding) { LetGoHold($"it is {State}"); return; }
+                if (State != StoneState.Held && State != StoneState.Sliding) { LetGoHold(Logs.Debug ? $"it is {State}" : ""); return; }
                 if (!HandOf(g, out Transform hand, out Vector3 look, out string gone)) { LetGoHold(gone); return; }
                 Vector3 at = hand.position;
                 V3 target = Pd.HoldTarget(V(at), V(hand.forward), V(look), Server.HoldDistance);
@@ -161,7 +161,7 @@ namespace Earthbending {
             if (!pc.IsAlive) { why = "its holder died"; return false; }
             if (pc.IsDowned) { why = "its holder is downed"; return false; }
             Controller ctl = g.Hand == 0 ? pc.RightController : pc.LeftController;
-            if (ctl == null) { why = $"its holder has no {HandName(g.Hand)} hand on the server"; return false; }
+            if (ctl == null) { why = "its holder has no controller for that hand on the server"; return false; }
             hand = ctl.transform;
             Transform head = pc.Head;
             if (head != null) look = head.forward;
@@ -171,7 +171,8 @@ namespace Earthbending {
 
         /// <summary>Lets go (spec 2.4): it keeps its velocity (the throw), held to [EarthModifiers] MaxStoneSpeed (ruling C10);
         /// a Held stone is Free with gravity back (<see cref="Loosen"/>); a held slide slides on as any slide. One Debug line
-        /// with <paramref name="why"/>. Nothing when it is not held; never throws.</summary>
+        /// with <paramref name="why"/> (callers build it only with [EarthLog] Debug). Nothing when it is not held; never
+        /// throws.</summary>
         void LetGoHold(string why) {
             Grip? g = grip;
             if (g == null) return;

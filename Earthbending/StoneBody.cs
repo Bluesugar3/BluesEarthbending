@@ -415,7 +415,7 @@ namespace Earthbending {
             }
             StoneState was = State, next = StoneRules.After(was, m);
             if (m == Modifier.Hold) { TakeHold(by, hand, was, next); return; }
-            if (grip != null && next != was) EndHold($"{m} by {Server.NameOf(by)} made it {next}");
+            if (grip != null && next != was) EndHold(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");
             if (m == Modifier.Parry) {
                 if (next == StoneState.Floating) Float(was);
                 else if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Parry on {Kind} #{Id} of {OwnerName}: {was}, nothing to do yet");
