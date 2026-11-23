@@ -37,7 +37,8 @@ namespace Earthbending {
     // StoneRules (SetImpulses), and MaxStoneSpeed holds every modifier's push (ruling C10). Task 12: Parry (a stone floats for
     // ParrySeconds, or until it moves faster than ParryBreakSpeed) and Explode (it marks the stone; a marked stone that breaks
     // blasts everything within ExplodeRadius with ExplodeForce: Hits.Explode), and a second Straight claim on one stone within
-    // DoubleStraightSeconds of the last bursts it at once (rulings C8, C9). The server's quit breaks every stone with no blast.
+    // DoubleStraightSeconds of the last (by anyone: a two-player move) bursts it at once (rulings C8, C26). The server's quit
+    // breaks every stone with no blast.
     internal static class Server {
         const float DefaultLife = 60f, DefaultHeadSlack = 1f, DefaultCooldownSlack = 0.1f;
         const float DefaultStraightGrounded = 2300f, DefaultStraightFree = 1800f, DefaultRangeSlack = 0.5f, DefaultSlideDeceleration = 4f;
@@ -75,8 +76,8 @@ namespace Earthbending {
         internal static float StraightGrounded { get; private set; } = DefaultStraightGrounded;
         /// <summary>[EarthModifiers] StraightFree: Straight's impulse in N s on every other stone.</summary>
         internal static float StraightFree { get; private set; } = DefaultStraightFree;
-        /// <summary>[EarthModifiers] DoubleStraightSeconds (rulings C8, C9): a Straight claim on a stone within this many
-        /// seconds of its last one (StoneBody.LastStraightAt) bursts it at once (StoneRules.DoubleStraight).</summary>
+        /// <summary>[EarthModifiers] DoubleStraightSeconds (rulings C8, C26): a Straight claim on a stone within this many
+        /// seconds of its last one by anyone (StoneBody.LastStraightAt) bursts it at once (StoneRules.DoubleStraight).</summary>
         internal static float DoubleStraightSeconds { get; private set; } = StoneRules.DefaultDoubleStraightSeconds;
         /// <summary>[EarthModifiers] SlideDeceleration: how fast a sliding stone slows, in m/s every second.</summary>
         internal static float SlideDeceleration { get; private set; } = DefaultSlideDeceleration;
@@ -117,7 +118,7 @@ namespace Earthbending {
             straightGroundedEntry = mods.CreateEntry("StraightGrounded", DefaultStraightGrounded, description: "Server. Straight pushes a stone anchored to the ground (standing still, rising or sliding) along the look with this impulse, in N s (a 275 kg Pillar: 2300 is 8.4 m/s); it slides along the ground until it stops. 0 or more.");
             straightFreeEntry = mods.CreateEntry("StraightFree", DefaultStraightFree, description: "Server. Straight pushes any other stone (loose, in the air) along the look with this impulse, in N s. 0 or more.");
             rangeSlackEntry = mods.CreateEntry("RangeSlackMetres", DefaultRangeSlack, description: "Server. A modifier's stone is checked against Reach and MaxHeight from the server's copy of the head and feet, which lags the player: both get this many metres more on the server. 0 or more.");
-            doubleStraightEntry = mods.CreateEntry("DoubleStraightSeconds", StoneRules.DefaultDoubleStraightSeconds, description: "Server. A Straight on a stone within this many seconds of the last Straight on it (by anyone) bursts the stone at once instead of pushing it: it breaks and blasts as a stone marked by Explode does (ExplodeRadius, ExplodeForce), even while it rises. The game's own Straight cooldown is 0.5 s, so one player needs more than that. 0 or more (0: only two Straights in the same server frame).");
+            doubleStraightEntry = mods.CreateEntry("DoubleStraightSeconds", StoneRules.DefaultDoubleStraightSeconds, description: "Server. Two Straights on one stone within this many seconds (by anyone) burst it: the second one breaks it at once instead of pushing it, and it blasts as a stone marked by Explode does (ExplodeRadius, ExplodeForce), even while it rises. One player's own Straight cooldown (0.5 s) is longer than this, so it takes two players: a friend Straights a stone at you and you Straight it straight back. 0 or more (0: only two Straights in the same server frame).");
             slideDecelerationEntry = mods.CreateEntry("SlideDeceleration", DefaultSlideDeceleration, description: "Server. A stone sliding along the ground after a Straight slows by this many m/s every second while it touches ground (it slides on a frictionless material, so the ground itself does not slow it), and stands still again under 0.1 m/s (8.4 m/s with 4: about 9 m on level ground; uphill shorter, downhill longer). 0: only a rise or what it hits stops it.");
             kickUpEntry = mods.CreateEntry("KickUp", StoneRules.DefaultKickUp, description: "Server. Kick pushes a stone straight up with this impulse, in N s (a 300 kg Cube: 1500 is 5 m/s); a stone anchored to the ground (standing still, sliding or stomped) is set loose first. 0 or more.");
             stompDownEntry = mods.CreateEntry("StompDown", StoneRules.DefaultStompDown, description: "Server. Stomp on a loose stone: from then on it moves only up and down (no sideways, no turning) and is pushed down with this impulse, in N s (a 150 kg Ball: 1500 is 10 m/s); where it lands (on the ground, a floor or another stone's top) it stands still, with a slam. Stomp on a stone anchored to the ground does nothing. 0 or more.");

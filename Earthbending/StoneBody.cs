@@ -35,7 +35,7 @@ namespace Earthbending {
     /// than ParryBreakSpeed), then it is Free with gravity. Explode marks it (<see cref="Exploding"/>, ruling C11: at once,
     /// even while it rises; the games play the mark look once), and a marked stone that breaks blasts round it (Hits.Explode)
     /// unless it is the server's quit or `earth clear`. A Straight claim within [EarthModifiers] DoubleStraightSeconds of the
-    /// last one on it bursts it at once (rulings C8, C9): marked, and broken. <see cref="Blast"/> is another stone's blast
+    /// last one on it bursts it at once (rulings C8, C26; by anyone): marked, and broken. <see cref="Blast"/> is another stone's blast
     /// reaching this one.</summary>
     /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
     /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
@@ -369,7 +369,7 @@ namespace Earthbending {
         /// direction, length 1). A modifier this build does not apply (StoneRules.CanApply) does nothing. Explode only marks
         /// the stone (<see cref="Mark"/>, ruling C11), at once in any state: it holds nothing, replaces nothing and cancels no
         /// launch. A Straight stamps <see cref="LastStraightAt"/> now, held or not (ruling C8), and one within
-        /// [EarthModifiers] DoubleStraightSeconds of the last bursts the stone at once instead (<see cref="Burst"/>, ruling C9),
+        /// [EarthModifiers] DoubleStraightSeconds of the last bursts the stone at once instead (<see cref="Burst"/>, ruling C26),
         /// even while it rises. On a Rising stone every other modifier is held until the rise has ended (ruling C6), then
         /// applied as if it had just arrived; a later claim replaces a held one (also in the one physics step between the
         /// rise's end and the held one's turn).</summary>
@@ -515,7 +515,7 @@ namespace Earthbending {
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Explode on {Kind} #{Id} of {OwnerName} by {Server.NameOf(by)}: marked ({State}) at {at}; it blasts {Server.ExplodeRadius:0.##} m round it when it breaks; the mark goes to {games} game(s)");
         }
 
-        /// <summary>Rulings C8, C9: a second Straight claim <paramref name="since"/> seconds after the last one on this stone,
+        /// <summary>Rulings C8, C26: a second Straight claim (by anyone) <paramref name="since"/> seconds after the last one on this stone,
         /// within DoubleStraightSeconds: it is marked and breaks at once, so it blasts (no mark look first: the blast is its look).</summary>
         void Burst(Player by, double since) {
             Exploding = true;

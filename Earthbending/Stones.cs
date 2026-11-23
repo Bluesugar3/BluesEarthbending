@@ -415,9 +415,10 @@ namespace Earthbending {
         public const float DefaultParrySeconds = 3f, DefaultParryBreakSpeed = 0.1f;
         /// <summary>[EarthModifiers] ExplodeRadius' (m) and ExplodeForce's (N s) defaults (spec 3.5).</summary>
         public const float DefaultExplodeRadius = 3f, DefaultExplodeForce = 1000f;
-        /// <summary>Ruling C9: [EarthModifiers] DoubleStraightSeconds' default (spec 3.5's 0.4 is under the game's own 0.5 s
-        /// Straight cooldown, so one player could never land two within it).</summary>
-        public const float DefaultDoubleStraightSeconds = 0.8f;
+        /// <summary>Ruling C26 (spec 3.5): [EarthModifiers] DoubleStraightSeconds' default. One player can never land two
+        /// Straights on one stone in any window (the game's own 0.5 s Straight cooldown, and the slide carries the stone out of
+        /// reach), so a double Straight is a two-player move: a Straight answered by another player's within this time.</summary>
+        public const float DefaultDoubleStraightSeconds = 0.4f;
         /// <summary>Ruling C12 (spec 3.7): an explosion staggers each living creature in it with this much cripple and no damage.</summary>
         public const float ExplodeCripple = 1f;
 
@@ -439,8 +440,8 @@ namespace Earthbending {
             return 1f - 0.75f * (dist - half) / (radius - half);
         }
 
-        /// <summary>Rulings C8, C9: a Straight claim at <paramref name="now"/> on a stone whose last accepted Straight claim was
-        /// at <paramref name="last"/> (minus infinity: never) is a double Straight when it came at most
+        /// <summary>Rulings C8, C26: a Straight claim at <paramref name="now"/> on a stone whose last accepted Straight claim (by
+        /// anyone) was at <paramref name="last"/> (minus infinity: never) is a double Straight when it came at most
         /// <paramref name="window"/> seconds later ([EarthModifiers] DoubleStraightSeconds). Never for a last or a now that is
         /// not a finite number.</summary>
         public static bool DoubleStraight(double last, double now, float window) =>

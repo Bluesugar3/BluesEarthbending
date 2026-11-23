@@ -27,19 +27,19 @@ internal static class StoneTests {
         ParryAndExplode();
     }
 
-    // Task 12: Parry, Explode and the double Straight (spec 2.3, 2.4, 2.6, 3.5, 3.7; rulings C8, C9, C11, C12)
+    // Task 12: Parry, Explode and the double Straight (spec 2.3, 2.4, 2.6, 3.5, 3.7; rulings C8, C11, C12, C26)
     static void ParryAndExplode() {
         // the brief's checks
         Check("parry on still -> floating", StoneRules.After(StoneState.Still, Modifier.Parry) == StoneState.Floating);
         Check("parry on free -> floating", StoneRules.After(StoneState.Free, Modifier.Parry) == StoneState.Floating);
         Check("parry ends: 3.1 s, 0.2 m/s, not 0.05 m/s", StoneRules.ParryEnds(3.1f, 0f, 3f, 0.1f) && StoneRules.ParryEnds(1f, 0.2f, 3f, 0.1f) && !StoneRules.ParryEnds(1f, 0.05f, 3f, 0.1f));
         Check("explode share: 1 m of 3, 3 m of 3, 3.1 m of 3", StoneRules.ExplodeShare(1f, 3f) == 1f && StoneRules.ExplodeShare(3f, 3f) == 0.25f && StoneRules.ExplodeShare(3.1f, 3f) == 0f);
-        Check("double straight inside DoubleStraightSeconds", StoneRules.DoubleStraight(10.0, 10.6, StoneRules.DefaultDoubleStraightSeconds));
+        Check("double straight inside DoubleStraightSeconds", StoneRules.DoubleStraight(10.0, 10.3, StoneRules.DefaultDoubleStraightSeconds));
 
-        // the defaults (the settings' and ruling C9's)
+        // the defaults (the settings'; ruling C26: the spec's 0.4)
         Check("defaults: parry 3 s, 0.1 m/s", Near(StoneRules.DefaultParrySeconds, 3f) && Near(StoneRules.DefaultParryBreakSpeed, 0.1f));
         Check("defaults: explode 3 m, 1000 N s, cripple 1", Near(StoneRules.DefaultExplodeRadius, 3f) && Near(StoneRules.DefaultExplodeForce, 1000f) && Near(StoneRules.ExplodeCripple, 1f));
-        Check("defaults: double straight 0.8 s (ruling C9)", Near(StoneRules.DefaultDoubleStraightSeconds, 0.8f));
+        Check("defaults: double straight 0.4 s (ruling C26)", Near(StoneRules.DefaultDoubleStraightSeconds, 0.4f));
 
         // Parry: Floating from Free, Still, Sliding, Stomped, and Rising once it has risen (C6); Floating again restarts it;
         // Held and Flicked are Tasks 13-14's (unchanged here)
@@ -102,13 +102,16 @@ internal static class StoneTests {
             && StoneRules.ExplodeShare(1f, float.NaN) == 0f && StoneRules.ExplodeShare(1f, float.PositiveInfinity) == 0f);
         Check("explode share: a distance below 0 is at the centre", StoneRules.ExplodeShare(-1f, 3f) == 1f);
 
-        // the double Straight (rulings C8, C9): the last Straight's claim within the window
-        Check("double straight: never straighted", !StoneRules.DoubleStraight(double.NegativeInfinity, 10.0, 0.8f));
-        Check("double straight: a last that is not a number", !StoneRules.DoubleStraight(double.NaN, 10.0, 0.8f));
+        // the double Straight (rulings C8, C26): the last Straight claim within the window, by anyone
+        Check("double straight: never straighted", !StoneRules.DoubleStraight(double.NegativeInfinity, 10.0, 0.4f));
+        Check("double straight: a last that is not a number", !StoneRules.DoubleStraight(double.NaN, 10.0, 0.4f));
         Check("double straight: at the window", StoneRules.DoubleStraight(10.0, 10.5, 0.5f));
-        Check("double straight: past the window", !StoneRules.DoubleStraight(10.0, 10.5001, 0.5f) && !StoneRules.DoubleStraight(10.0, 11.0, 0.8f));
-        Check("double straight: a now that is not a number", !StoneRules.DoubleStraight(10.0, double.NaN, 0.8f));
-        Check("double straight: two from one player at the game's cooldown", StoneRules.DoubleStraight(20.0, 20.5, 0.8f) && StoneRules.DoubleStraight(20.0, 20.4, 0.8f));
+        Check("double straight: past the window", !StoneRules.DoubleStraight(10.0, 10.5001, 0.5f) && !StoneRules.DoubleStraight(10.0, 11.0, 0.4f));
+        Check("double straight: a now that is not a number", !StoneRules.DoubleStraight(10.0, double.NaN, 0.4f));
+        // ruling C26: one player's own two Straights are at least the game's 0.5 s cooldown apart, so never within the default;
+        // a second player's Straight answering the first at once is
+        Check("double straight: one player's two at the game's cooldown are not", !StoneRules.DoubleStraight(20.0, 20.5, StoneRules.DefaultDoubleStraightSeconds));
+        Check("double straight: another player's answer 0.3 s later is", StoneRules.DoubleStraight(20.0, 20.3, StoneRules.DefaultDoubleStraightSeconds));
 
         // the blast's way on a player (spec 2.6, ruling C12): away from the centre, flat or 45 degrees up
         float r = (float)System.Math.Sqrt(0.5);
