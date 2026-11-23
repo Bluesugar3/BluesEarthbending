@@ -41,6 +41,7 @@ namespace Earthbending {
         static float jumpSpeed = DefaultJumpSpeed, haptic = DefaultPoseHaptic, hapticSeconds = DefaultPoseHapticSeconds;
 
         static PoseMachine? machine;
+        static PoseSpec[] running = new PoseSpec[0];   // the poses the machine was built with
         static PoseValues wanted, built;          // the timings asked for by the settings, and those the machine was built with
         static string posesPath = "";
         static string[]? posesLines;              // poses.txt's lines the machine was built from (null: no file)
@@ -55,6 +56,24 @@ namespace Earthbending {
         /// <summary>A move fired: the move, and whether A (the pose's first hand, e.g. Hold's holding hand) is the right hand.
         /// Raised after the move's own effect (Jump's push and dust). Each handler runs in its own try.</summary>
         internal static event Action<Move, bool>? Fired;
+
+        /// <summary>The score of the last move fired (0 exact, 1 the edge of its zone): a <see cref="Fired"/> handler reads
+        /// its move's score here.</summary>
+        internal static float LastScore => machine?.LastScore ?? 0f;
+
+        /// <summary>Whether the base has armed the structures now (PoseMachine.Armed, on the machine's own clock).</summary>
+        internal static bool Armed => machine != null && machine.Armed(Time.unscaledTimeAsDouble);
+
+        /// <summary>Another number each time the machine was built again (poses.txt or a timing changed).</summary>
+        internal static int PosesVersion { get; private set; }
+
+        /// <summary>A move's pose as the machine runs it (poses.txt's over the built-in one). False for a move with no pose.</summary>
+        internal static bool Pose(Move move, out PoseSpec spec) {
+            foreach (PoseSpec s in running)
+                if (s.Move == move) { spec = s; return true; }
+            spec = default;
+            return false;
+        }
 
         /// <summary>From Main.OnInitializeMelon on games, after Moves.Init and Hands.Init.</summary>
         internal static void Init() {
@@ -117,6 +136,8 @@ namespace Earthbending {
             }
             PoseSpec[] poses = PoseLibrary.Merge(PoseLibrary.Defaults, fromFile, out int fromFileCount);
             machine = new PoseMachine(poses, wanted);
+            running = poses;
+            PosesVersion++;
             built = wanted;
             posesLines = lines;
             idle = true;   // the next frame with a player starts from a fresh machine, gates included

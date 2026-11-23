@@ -142,6 +142,9 @@ namespace Earthbending {
         /// CaptureGuide.cs shows it). 0 again at every switch on.</summary>
         internal static int CaptureTaken => taken;
 
+        /// <summary>[EarthPose] BodyScale as the hands are read with it (the practice guide's markers).</summary>
+        internal static float BodyScale => bodyScale;
+
         static void Apply() {
             bodyScale = Cfg.Positive(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
             var warnings = new List<string>();

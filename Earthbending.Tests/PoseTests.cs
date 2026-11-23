@@ -152,6 +152,7 @@ internal static class PoseTests {
         CaptureChecks();
         GameSideChecks();
         GuideChecks();
+        PracticeChecks();
 
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
@@ -448,6 +449,7 @@ internal static class PoseTests {
             && lines.Count(l => l.StartsWith("<color=#FF8A1E>") && l.EndsWith("</color>")) >= 2 && lines.Count(l => l.StartsWith("<color=#3FA9FF>") && l.EndsWith("</color>")) >= 2
             && lines.All(l => l.Contains("<color=") == l.EndsWith("</color>")));
         Check("guide: no card line longer than the wrap", Enumerable.Range(0, 16).All(n => PoseGuide.Card(n, "#FF8A1E", "#3FA9FF", true, 46).Split('\n').All(l => Untagged(l).Length <= 46)));
+        Check("guide: nor at the display's 34 letters", Enumerable.Range(0, 16).All(n => PoseGuide.Card(n, "#FF8A1E", "#3FA9FF", true, 34).Split('\n').All(l => Untagged(l).Length <= 34)));
         Check("guide: without markers the card names no colours and tags nothing", !PoseGuide.Card(1, "#FF8A1E", "#3FA9FF", false, 46).Contains("orange") && !PoseGuide.Card(1, "#FF8A1E", "#3FA9FF", false, 46).Contains("<color"));
         Check("guide: after the sixteenth, only the last words", PoseGuide.Card(16, "#FF8A1E", "#3FA9FF", true, 46) == "All 16 done. Tell Claude." && PoseGuide.Card(23, "", "", false, 46) == "All 16 done. Tell Claude.");
         List<string> wrapped = PoseGuide.Wrap("one two three four five six seven", 9);
@@ -476,6 +478,133 @@ internal static class PoseTests {
         float gone = 0f;
         for (int i = 0; i < 90; i++) gone += (1f - gone) * PoseGuide.Ease((float)Dt, 0.3f);
         Check("ease: frame by frame is the same as in one go", Math.Abs(gone - PoseGuide.Ease(1f, 0.3f)) < 1e-3f);
+    }
+
+    // the practice guide (Task 3c): the list, the step machine (worked, another move, the skip, the summary, the restart),
+    // the card's text and which pose the markers show
+    static void PracticeChecks() {
+        const string Orange = "#FF8A1E", Blue = "#3FA9FF";
+        List<Move> steps = PracticeRun.Parse("Jump, pillar ,Sprint, Base, Wall,,Jump", out List<string> errors);
+        Check("practice: the list's moves in order, any case, a name twice kept twice", steps.SequenceEqual(new[] { Move.Jump, Move.Pillar, Move.Wall, Move.Jump }));
+        Check("practice: an unknown name and Base are skipped and named", errors.Count == 2 && errors[0].Contains("'Sprint'") && errors[1].Contains("Base"));
+        Check("practice: None is no step, an empty list has none", PracticeRun.Parse("None", out errors).Count == 0 && errors.Count == 1 && PracticeRun.Parse("", out errors).Count == 0 && errors.Count == 0
+            && PracticeRun.Parse(null, out errors).Count == 0);
+        Check("practice: the default list is the fifteen moves but Base", PracticeRun.Parse(PracticeRun.DefaultList, out errors).Count == 15 && errors.Count == 0
+            && PracticeRun.Parse(PracticeRun.DefaultList, out _).Distinct().Count() == 15 && PracticeRun.Parse(PracticeRun.DefaultList, out _)[0] == Move.Jump);
+
+        // the target fires: the card says so for the show time, then the next step
+        var run = new PracticeRun(new[] { Move.Jump, Move.Pillar, Move.Kick }, 25f, 1.5f);
+        PracticeView v = run.Step(0.0, Move.None, 0f);
+        Check("practice: starts at step 1, trying", v.Phase == PracticePhase.Try && v.Index == 0 && v.Count == 3 && v.Move == Move.Jump && v.Other == Move.None && v.Log == null);
+        int version = v.Version;
+        v = run.Step(3.0, Move.None, 0f);
+        Check("practice: a quiet frame changes nothing", v.Phase == PracticePhase.Try && v.Version == version && v.Log == null);
+        v = run.Step(4.2, Move.Jump, 0.31f);
+        Check("practice: the step's move fired: worked, with its score", v.Phase == PracticePhase.Worked && v.Move == Move.Jump && Near(v.Score, 0.31f) && v.Version != version);
+        Check("practice: the worked line of the log", v.Log == "[Earth] Practice: Jump worked (score 0.31) after 4.2 s; first fired: none");
+        v = run.Step(5.6, Move.Kick, 0.2f);
+        Check("practice: still shown inside the show time, a move fired meanwhile is not counted", v.Phase == PracticePhase.Worked && v.Index == 0 && v.Log == null);
+        v = run.Step(5.7, Move.None, 0f);
+        Check("practice: after the show time the next step", v.Phase == PracticePhase.Try && v.Index == 1 && v.Move == Move.Pillar && v.Other == Move.None);
+
+        // another move fires first: said for the show time, counted, the step stays
+        version = v.Version;
+        v = run.Step(7.0, Move.Cube, 0.44f);
+        Check("practice: another move fired: named, the step stays", v.Phase == PracticePhase.Try && v.Index == 1 && v.Move == Move.Pillar && v.Other == Move.Cube && Near(v.OtherScore, 0.44f) && v.Version != version && v.Log == null);
+        v = run.Step(8.4, Move.None, 0f);
+        Check("practice: its line stays for the show time", v.Other == Move.Cube);
+        version = v.Version;
+        v = run.Step(8.5, Move.None, 0f);
+        Check("practice: then goes", v.Other == Move.None && v.Phase == PracticePhase.Try && v.Index == 1 && v.Version != version);
+        run.Step(9.0, Move.Cube, 0.4f);
+        run.Step(9.5, Move.Dash, 0.6f);
+        v = run.Step(12.7, Move.Pillar, 0.25f);
+        Check("practice: worked after other moves, each named with its count", v.Phase == PracticePhase.Worked && v.Log == "[Earth] Practice: Pillar worked (score 0.25) after 7.0 s; first fired: Cube x2, Dash");
+        v = run.Step(14.2, Move.None, 0f);
+        Check("practice: step 3", v.Phase == PracticePhase.Try && v.Index == 2 && v.Move == Move.Kick);
+
+        // the skip: the step's own time, from when it started
+        run.Step(20.0, Move.Stomp, 0.5f);
+        v = run.Step(39.1, Move.None, 0f);
+        Check("practice: not skipped before the skip time", v.Phase == PracticePhase.Try && v.Index == 2);
+        v = run.Step(39.2, Move.None, 0f);
+        Check("practice: skipped after 25 s", v.Phase == PracticePhase.Skipped && v.Move == Move.Kick && v.Log == "[Earth] Practice: Kick skipped after 25 s; fired instead: Stomp");
+        v = run.Step(40.6, Move.None, 0f);
+        Check("practice: the skip is shown for the show time", v.Phase == PracticePhase.Skipped && v.Log == null);
+        v = run.Step(40.7, Move.None, 0f);
+        Check("practice: after the last step, done with the counts", v.Phase == PracticePhase.Done && v.Count == 3 && v.First == 1 && v.Tries == 1 && v.Skipped == 1 && v.Move == Move.None);
+        Check("practice: the summary line of the log, once", v.Log == "[Earth] Practice: done: 1 of 3 worked first time, 1 needed tries, 1 skipped" && run.Step(41.0, Move.None, 0f).Log == null);
+        v = run.Step(500.0, Move.Jump, 0.1f);
+        Check("practice: done stays done", v.Phase == PracticePhase.Done && v.First == 1 && v.Log == null);
+
+        // off and on: from step 1, nothing counted
+        run.Restart();
+        v = run.Step(600.0, Move.None, 0f);
+        Check("practice: a restart is step 1 again with no counts", v.Phase == PracticePhase.Try && v.Index == 0 && v.Move == Move.Jump && v.First == 0 && v.Tries == 0 && v.Skipped == 0 && v.Other == Move.None);
+        v = run.Step(624.9, Move.None, 0f);
+        Check("practice: and its skip time starts over", v.Phase == PracticePhase.Try);
+        v = run.Step(625.0, Move.None, 0f);
+        Check("practice: a skip with nothing fired says none", v.Log == "[Earth] Practice: Jump skipped after 25 s; fired instead: none");
+
+        var none = new PracticeRun(new Move[0], 25f, 1.5f);
+        v = none.Step(0.0, Move.None, 0f);
+        Check("practice: no steps is done at once", v.Phase == PracticePhase.Done && v.Count == 0 && v.Log == "[Earth] Practice: done: 0 of 0 worked first time, 0 needed tries, 0 skipped");
+        var quick = new PracticeRun(new[] { Move.Jump }, float.NaN, -1f);
+        Check("practice: times that are no times are the defaults", quick.Step(0.0, Move.None, 0f).Phase == PracticePhase.Try && quick.Step(24.9, Move.None, 0f).Phase == PracticePhase.Try
+            && quick.Step(25.0, Move.None, 0f).Phase == PracticePhase.Skipped && quick.Step(26.4, Move.None, 0f).Phase == PracticePhase.Skipped && quick.Step(26.5, Move.None, 0f).Phase == PracticePhase.Done);
+
+        // the card
+        run = new PracticeRun(new[] { Move.Jump, Move.Pillar }, 25f, 1.5f);
+        v = run.Step(0.0, Move.None, 0f);
+        string[] lines = PracticeRun.Card(in v, Orange, Blue, true, 34).Split('\n');
+        string flat = string.Join(" ", lines.Select(Untagged));
+        Check("practice card: the title", lines[0] == "Try 1 of 2: Jump");
+        Check("practice card: the hand lines and the colours, no base line for a move that is no structure", flat.Contains("RIGHT: " + PoseGuide.Right(Move.Jump)) && flat.Contains("LEFT: " + PoseGuide.Left(Move.Jump))
+            && flat.EndsWith("orange = right, blue = left") && !flat.Contains("First Base") && !flat.Contains("That was"));
+        Check("practice card: each hand's lines in its colour", lines.Where(l => Untagged(l).StartsWith("RIGHT:")).All(l => l.StartsWith("<color=#FF8A1E>")) && lines.Where(l => Untagged(l).StartsWith("LEFT:")).All(l => l.StartsWith("<color=#3FA9FF>")));
+        v = run.Step(1.0, Move.Dash, 0.52f);
+        flat = string.Join(" ", PracticeRun.Card(in v, Orange, Blue, true, 34).Split('\n').Select(Untagged));
+        Check("practice card: another move fired", flat.Contains("That was Dash (score 0.52), not Jump") && flat.Contains("Try 1 of 2: Jump"));
+        v = run.Step(2.0, Move.Jump, 0.31f);
+        Check("practice card: worked", PracticeRun.Card(in v, Orange, Blue, true, 34) == "Jump worked (score 0.31)");
+        v = run.Step(3.5, Move.None, 0f);
+        flat = string.Join(" ", PracticeRun.Card(in v, "", "", false, 34).Split('\n').Select(Untagged));
+        Check("practice card: a structure says the base first; without markers no colours", flat.StartsWith("Try 2 of 2: Pillar") && flat.Contains("First Base (both palms up at your waist), then Pillar")
+            && !flat.Contains("orange") && !PracticeRun.Card(in v, "", "", false, 34).Contains("<color"));
+        v = run.Step(28.5, Move.None, 0f);
+        Check("practice card: skipped", PracticeRun.Card(in v, Orange, Blue, true, 34) == "Skipped Pillar");
+        v = run.Step(30.0, Move.None, 0f);
+        flat = string.Join(" ", PracticeRun.Card(in v, Orange, Blue, true, 34).Split('\n'));
+        Check("practice card: the summary", flat == "Practice done: 0 of 2 worked first time, 1 needed tries, 1 skipped");
+        bool fits = true;
+        foreach (Move m in PracticeRun.Parse(PracticeRun.DefaultList, out _)) {
+            var one = new PracticeRun(new[] { m }, 25f, 1.5f);
+            one.Step(0.0, Move.None, 0f);
+            PracticeView w = one.Step(1.0, m == Move.Explode ? Move.Straight : Move.Explode, 0.99f);
+            fits &= PracticeRun.Card(in w, Orange, Blue, true, 34).Split('\n').All(l => Untagged(l).Length <= 34);
+        }
+        Check("practice card: no line longer than the wrap", fits);
+
+        // the markers: Base's hands until the base has armed a structure
+        v = new PracticeRun(new[] { Move.Cube }, 25f, 1.5f).Step(0.0, Move.None, 0f);
+        Check("practice markers: a structure shows Base until armed, then itself", PracticeRun.Marker(in v, false) == Move.Base && PracticeRun.Marker(in v, true) == Move.Cube);
+        v = new PracticeRun(new[] { Move.Kick }, 25f, 1.5f).Step(0.0, Move.None, 0f);
+        Check("practice markers: another move shows itself", PracticeRun.Marker(in v, false) == Move.Kick && PracticeRun.Marker(in v, true) == Move.Kick);
+        var shown = new PracticeRun(new[] { Move.Kick }, 25f, 1.5f);
+        shown.Step(0.0, Move.None, 0f);
+        v = shown.Step(1.0, Move.Kick, 0.2f);
+        PracticeView after = shown.Step(3.0, Move.None, 0f);
+        Check("practice markers: none while a result is shown or once done", PracticeRun.Marker(in v, false) == Move.None && after.Phase == PracticePhase.Done && PracticeRun.Marker(in after, true) == Move.None);
+
+        // the machine says whether the base has armed the structures
+        var machine = new PoseMachine(PoseLibrary.Defaults, PoseValues.Default);
+        Check("armed: not before a base", !machine.Armed(0.0));
+        var (br, bl) = At(Move.Base);
+        machine.Step(1.0, br, bl, true, true, true, false, out _);
+        Check("armed: from the base for the structure window", machine.Armed(1.0) && machine.Armed(2.2) && !machine.Armed(2.3));
+        machine.Step(1.1, IdleR, IdleL, true, true, true, false, out _);
+        var (cr, cl) = At(Move.Cube);
+        Check("armed: not after the structure fired", machine.Step(1.2, cr, cl, true, true, true, false, out _) == Move.Cube && !machine.Armed(1.2));
     }
 
     static string Untagged(string line) => System.Text.RegularExpressions.Regex.Replace(line, "</?color[^>]*>", "");

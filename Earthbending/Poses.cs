@@ -13,7 +13,8 @@ using System.Globalization;
 // ruling 14). The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot
 // is taken) and PoseCapture (what its CSV row holds); Hands.cs runs them, Earthbending/tools/fit_poses.py reads the file.
 // The capture guide's words and rules (Task 3b) as well: PoseGuide (each pose's hand lines, the next pose for a count, the
-// card's text, the easing) and BodyFrame.ToWorld (the body frame run backwards); CaptureGuide.cs draws them.
+// card's text, the easing) and BodyFrame.ToWorld (the body frame run backwards); CaptureGuide.cs draws them. The practice
+// guide's step machine and card (Task 3c): PracticeRun; PracticeGuide.cs draws it.
 namespace Earthbending {
     /// <summary>What a pose does. <see cref="Base"/> is never fired: it arms the structures. The order is the spec 3.3 table's.</summary>
     internal enum Move : byte { None, Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash }
@@ -267,7 +268,8 @@ namespace Earthbending {
         static HandSpec Hand(float[] v, float[] t) =>
             new HandSpec(new V3(v[0], v[1], v[2]), new V3(v[3], v[4], v[5]), new V3(v[6], v[7], v[8]), t[0], t[1], t[2], t[3], t[4]);
 
-        static bool TryMove(string name, out Move move) {
+        /// <summary>A move by its name, any case; never <see cref="Move.None"/>.</summary>
+        public static bool TryMove(string name, out Move move) {
             foreach (Move m in (Move[])Enum.GetValues(typeof(Move)))
                 if (m != Move.None && string.Equals(m.ToString(), name, StringComparison.OrdinalIgnoreCase)) { move = m; return true; }
             move = Move.None;
@@ -405,6 +407,10 @@ namespace Earthbending {
             for (int i = 0; i < lastFired.Length; i++) lastFired[i] = double.NegativeInfinity;
             Reset();
         }
+
+        /// <summary>Whether the base has armed the structures at <paramref name="now"/>: it counted, clean, within
+        /// <see cref="PoseValues.StructureWindowSeconds"/> and no structure has fired since (the practice guide's markers).</summary>
+        public bool Armed(double now) => now - baseAt <= values.StructureWindowSeconds + Eps;
 
         public static bool IsStructure(Move m) => m >= Move.Disc && m <= Move.Wall;
         public static bool IsModifier(Move m) => m >= Move.Straight && m <= Move.Explode;
@@ -729,7 +735,8 @@ namespace Earthbending {
             return string.Join("\n", lines);
         }
 
-        static void Add(List<string> lines, string text, string hex, int wrap) {
+        /// <summary>Adds the text's wrapped lines, each in the colour <paramref name="hex"/> when one is given.</summary>
+        public static void Add(List<string> lines, string text, string hex, int wrap) {
             foreach (string l in Wrap(text, wrap)) lines.Add(string.IsNullOrEmpty(hex) ? l : "<color=" + hex + ">" + l + "</color>");
         }
 
@@ -755,6 +762,209 @@ namespace Earthbending {
             if (float.IsNaN(dt) || !(seconds > 0f) || float.IsInfinity(seconds)) return 1f;
             if (dt <= 0f) return 0f;
             return 1f - (float)Math.Exp(-dt / seconds);
+        }
+    }
+
+    /// <summary>Where a practice step stands: the move is being tried, it fired (shown for the show time), it was skipped
+    /// (shown for the show time), or every step is over.</summary>
+    internal enum PracticePhase : byte { Try, Worked, Skipped, Done }
+
+    /// <summary>What the practice guide's card shows after one frame (<see cref="PracticeRun.Step"/>).</summary>
+    internal struct PracticeView {
+        public PracticePhase Phase;
+        /// <summary>The step, from 0, of <see cref="Count"/>; <see cref="Move"/> is its move (None once done).</summary>
+        public int Index, Count;
+        public Move Move;
+        /// <summary>The score the step's move fired with (<see cref="PracticePhase.Worked"/>).</summary>
+        public float Score;
+        /// <summary>Another move that fired during the step, still being said (None: nothing to say), and its score.</summary>
+        public Move Other;
+        public float OtherScore;
+        /// <summary>The counts so far: steps that worked with no other move fired first, steps that worked after one, steps skipped.</summary>
+        public int First, Tries, Skipped;
+        /// <summary>Another number whenever anything above changed: the card's text is written again only then.</summary>
+        public int Version;
+        /// <summary>The log's line, only on the frame a step ends (worked or skipped) and on the frame the run is done.</summary>
+        public string? Log;
+    }
+
+    /// <summary>The practice guide's step machine (Task 3c, <c>[EarthPose] Practice</c>; PracticeGuide.cs draws it): a list
+    /// of moves tried one after the other. A step ends when its move fires (said for the show time, then the next step) or
+    /// when it has not fired for the skip time (said for the show time too). Another move fired during a step is said for
+    /// the show time and counted; the step stays. A move fired while a result is shown is not counted. After the last step
+    /// the run is done, with its counts, until <see cref="Restart"/>. It only watches: it is told the moves that fired.
+    /// A frame without an event allocates nothing.</summary>
+    internal sealed class PracticeRun {
+        public const string DefaultList = "Jump, Pillar, Straight, Wall, Cube, Ball, Disc, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Dash";
+        public const float DefaultSkipSeconds = 25f, DefaultShowSeconds = 1.5f;
+        public const string BaseFirst = "First Base (both palms up at your waist), then ";
+        const double Eps = 1e-6;   // seconds: a frame that lands on a time counts as reaching it
+
+        readonly Move[] steps;
+        readonly List<Move> others = new List<Move>();   // the other moves fired during this step, in order
+        PracticeView view;
+        bool started, told;
+        double stepAt, shownAt, otherAt;
+
+        /// <summary>A step not fired after this many seconds is skipped (not above 0, or not a number: the default).</summary>
+        public float SkipSeconds { get => skip; set => skip = value > 0f && !float.IsInfinity(value) ? value : DefaultSkipSeconds; }
+        /// <summary>A result, and another move's line, are shown this many seconds (negative or not a number: the default).</summary>
+        public float ShowSeconds { get => show; set => show = value >= 0f && !float.IsInfinity(value) ? value : DefaultShowSeconds; }
+        float skip = DefaultSkipSeconds, show = DefaultShowSeconds;
+
+        public PracticeRun(IList<Move> moves, float skipSeconds, float showSeconds) {
+            var kept = new List<Move>();
+            foreach (Move m in moves ?? new Move[0])
+                if (m > Move.Base && m <= Move.Dash) kept.Add(m);
+            steps = kept.ToArray();
+            SkipSeconds = skipSeconds;
+            ShowSeconds = showSeconds;
+            Restart();
+        }
+
+        /// <summary>The list's moves in its order (<c>[EarthPose] PracticeList</c>: names split by commas, any case, a name
+        /// twice is two steps). A name that is no move, and Base (never a step: it arms the structures), is skipped and
+        /// named in <paramref name="errors"/>.</summary>
+        public static List<Move> Parse(string? list, out List<string> errors) {
+            errors = new List<string>();
+            var moves = new List<Move>();
+            foreach (string part in (list ?? "").Split(',')) {
+                string name = part.Trim();
+                if (name.Length == 0) continue;
+                if (!PoseLibrary.TryMove(name, out Move m)) errors.Add("no move named '" + name + "'");
+                else if (m == Move.Base) errors.Add("Base is never a step (it arms the structures)");
+                else moves.Add(m);
+            }
+            return moves;
+        }
+
+        /// <summary>From step 1 again, nothing counted (Practice switched off and on).</summary>
+        public void Restart() {
+            int version = view.Version + 1;
+            view = new PracticeView { Count = steps.Length, Version = version };
+            others.Clear();
+            started = false;
+            told = false;
+            Enter(0);
+        }
+
+        void Enter(int index) {
+            view.Index = index;
+            view.Other = Move.None;
+            view.Score = 0f;
+            others.Clear();
+            started = false;   // the step's time starts at its first frame
+            bool done = index >= steps.Length;
+            view.Phase = done ? PracticePhase.Done : PracticePhase.Try;
+            view.Move = done ? Move.None : steps[index];
+            view.Version++;
+        }
+
+        /// <summary>One frame: the time (any clock that only goes forward), and the move that fired this frame with its score
+        /// (<see cref="Move.None"/>: none). Returns what the card shows now.</summary>
+        public PracticeView Step(double now, Move fired, float score) {
+            view.Log = null;
+            if (view.Phase == PracticePhase.Worked || view.Phase == PracticePhase.Skipped) {
+                if (now - shownAt < show - Eps) return view;
+                Enter(view.Index + 1);
+                fired = Move.None;
+            }
+            if (view.Phase == PracticePhase.Done) {
+                if (!told) {
+                    told = true;
+                    view.Log = "[Earth] Practice: done: " + Counts(in view);
+                }
+                return view;
+            }
+            if (!started) {
+                started = true;
+                stepAt = now;
+            }
+            if (view.Other != Move.None && now - otherAt >= show - Eps) {
+                view.Other = Move.None;
+                view.Version++;
+            }
+            if (fired == view.Move) {
+                view.Phase = PracticePhase.Worked;
+                view.Score = score;
+                view.Other = Move.None;
+                view.Version++;
+                shownAt = now;
+                if (others.Count == 0) view.First++;
+                else view.Tries++;
+                view.Log = "[Earth] Practice: " + view.Move + " worked (score " + N(score, "0.00") + ") after " + N(now - stepAt, "0.0") + " s; first fired: " + Others();
+            }
+            else if (fired != Move.None && fired != Move.Base) {
+                others.Add(fired);
+                view.Other = fired;
+                view.OtherScore = score;
+                view.Version++;
+                otherAt = now;
+            }
+            else if (now - stepAt >= skip - Eps) {
+                view.Phase = PracticePhase.Skipped;
+                view.Other = Move.None;
+                view.Skipped++;
+                view.Version++;
+                shownAt = now;
+                view.Log = "[Earth] Practice: " + view.Move + " skipped after " + N(skip, "0.#") + " s; fired instead: " + Others();
+            }
+            return view;
+        }
+
+        /// <summary>The other moves fired during the step, in the order each first fired, with its count when more than
+        /// once (<c>Cube x2, Dash</c>); <c>none</c> without any.</summary>
+        string Others() {
+            if (others.Count == 0) return "none";
+            var names = new List<string>();
+            for (int i = 0; i < others.Count; i++) {
+                Move m = others[i];
+                if (others.IndexOf(m) != i) continue;
+                int n = others.FindAll(o => o == m).Count;
+                names.Add(n > 1 ? m + " x" + n.ToString(CultureInfo.InvariantCulture) : m.ToString());
+            }
+            return string.Join(", ", names);
+        }
+
+        static string Counts(in PracticeView v) => v.First.ToString(CultureInfo.InvariantCulture) + " of " + v.Count.ToString(CultureInfo.InvariantCulture)
+            + " worked first time, " + v.Tries.ToString(CultureInfo.InvariantCulture) + " needed tries, " + v.Skipped.ToString(CultureInfo.InvariantCulture) + " skipped";
+
+        static string N(double d, string format) => d.ToString(format, CultureInfo.InvariantCulture);
+
+        /// <summary>The pose the hand markers show for a view: the step's move while it is tried, but Base's hands for a
+        /// structure the base has not armed (<paramref name="armed"/>: <see cref="PoseMachine.Armed"/>);
+        /// <see cref="Move.None"/> (no markers) while a result is shown and once done.</summary>
+        public static Move Marker(in PracticeView v, bool armed) =>
+            v.Phase != PracticePhase.Try ? Move.None : PoseMachine.IsStructure(v.Move) && !armed ? Move.Base : v.Move;
+
+        /// <summary>The card's whole text for a view, no line longer than <paramref name="wrap"/> letters. While a move is
+        /// tried: <c>Try N of M: Move</c>, the hand lines (<see cref="PoseGuide"/>; with <paramref name="markers"/> each in
+        /// its marker's colour), for a structure the base-first line, another move that just fired, and with markers the
+        /// colours. Otherwise one sentence: the move worked, it was skipped, or the summary.</summary>
+        public static string Card(in PracticeView v, string rightHex, string leftHex, bool markers, int wrap) {
+            var lines = new List<string>();
+            if (v.Phase == PracticePhase.Worked) PoseGuide.Add(lines, v.Move + " worked (score " + N(v.Score, "0.00") + ")", "", wrap);
+            else if (v.Phase == PracticePhase.Skipped) PoseGuide.Add(lines, "Skipped " + v.Move, "", wrap);
+            else if (v.Phase == PracticePhase.Done) PoseGuide.Add(lines, "Practice done: " + Counts(in v), "", wrap);
+            else {
+                lines.Add("Try " + (v.Index + 1).ToString(CultureInfo.InvariantCulture) + " of " + v.Count.ToString(CultureInfo.InvariantCulture) + ": " + v.Move);
+                lines.Add("");
+                PoseGuide.Add(lines, "RIGHT: " + PoseGuide.Right(v.Move), markers ? rightHex : "", wrap);
+                PoseGuide.Add(lines, "LEFT: " + PoseGuide.Left(v.Move), markers ? leftHex : "", wrap);
+                if (PoseMachine.IsStructure(v.Move)) {
+                    lines.Add("");
+                    PoseGuide.Add(lines, BaseFirst + v.Move, "", wrap);
+                }
+                if (v.Other != Move.None) {
+                    lines.Add("");
+                    PoseGuide.Add(lines, "That was " + v.Other + " (score " + N(v.OtherScore, "0.00") + "), not " + v.Move, "", wrap);
+                }
+                if (markers) {
+                    lines.Add("");
+                    PoseGuide.Add(lines, PoseGuide.Legend, "", wrap);
+                }
+            }
+            return string.Join("\n", lines);
         }
     }
 

@@ -34,7 +34,10 @@ namespace Earthbending {
     //                 PoseCapture)
     //   Hands.cs      games: the local player's head and hands (Hands.Raw, Hands.Read), empty hands, the ground under the
     //                 feet, the [EarthPose] axis settings and BodyScale (fixed: Ruling 35), the pose recorder
-    //   CaptureGuide.cs  games: the pose recorder's guide, a floating card naming the next pose and two hand markers
+    //   GuideDisplay.cs  games: the guides' shared display, a floating card and two hand markers; [EarthLooks] Guide*
+    //   CaptureGuide.cs  games: the pose recorder's guide, naming the next pose to strike
+    //   PracticeGuide.cs games: the practice guide for play-tests ([EarthPose] Practice): the next move to try, whether it
+    //                 fired, the counts (PracticeRun in Poses.cs)
     //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump, a structure's Summon claim, a
     //                 modifier's target and Modify claim), Bender.CanBend, poses.txt
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings as directions (run it with python -I)
@@ -59,8 +62,9 @@ namespace Earthbending {
             if (!IsServer) {
                 Moves.Init();
                 Hands.Init();     // [EarthPose]: the axis settings, BodyScale and the pose recorder
-                CaptureGuide.Init(); // [EarthLooks] Guide*: the card and hand markers shown while the recorder is on
+                GuideDisplay.Init(); // [EarthLooks] Guide*: the card and hand markers of the capture's and the practice guide
                 Bend.Init();      // [EarthPose] timings, JumpSpeed, the haptic tick, poses.txt: the pose machine
+                PracticeGuide.Init(); // [EarthPose] Practice*: the practice guide, which hears of Bend's fired moves
                 StoneLook.Init(); // [EarthLooks] the rise and break looks, and the server's Applied events
             }
             if (IsServer) {
@@ -89,7 +93,10 @@ namespace Earthbending {
         }
 
         public override void OnLateUpdate() {
-            if (!IsServer) CaptureGuide.Tick();   // after the game moved the head and hands; one bool test while [EarthPose] Capture is off
+            if (IsServer) return;
+            // after the game moved the head and hands; each one bool test while its setting is off
+            CaptureGuide.Tick();    // [EarthPose] Capture
+            PracticeGuide.Tick();   // [EarthPose] Practice (waits while the capture is on)
         }
 
         public override void OnApplicationQuit() {
