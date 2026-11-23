@@ -17,6 +17,8 @@ namespace Earthbending {
     /// (StoneRules.Slide) it stands Still again (kinematic, no velocity, its own material back) once its flat speed is under
     /// 0.1 m/s while touching ground, and is Free (its own material back, nothing frozen) after 0.2 s touching no ground (it
     /// slid off a drop). Ground is any contact whose normal points at most 60 degrees from up (OnCollisionEnter/Stay).
+    /// Task 8: each physics step it keeps its velocity from before the step (<see cref="Velocity"/>) and tests itself against
+    /// every player (Hits.TestPlayers); each new contact goes to Hits.OnContact (a creature hit, a clash with another stone).
     /// <see cref="Break"/> is the one way a stone is ended on purpose.</summary>
     internal sealed class StoneBody : MonoBehaviour {
         internal StoneKind Kind;
@@ -45,8 +47,21 @@ namespace Earthbending {
         static bool sendFailed, destroyFailed, noBodyWarned;
         static PhysicMaterial? slideMaterial;
 
-        /// <summary>It broke, or was destroyed: it takes no more modifiers.</summary>
+        /// <summary>It broke, or was destroyed: it takes no more modifiers, and hits and clashes no more.</summary>
         internal bool Broken => broken;
+
+        /// <summary>Task 8: the rigidbody's velocity before this physics step (zero while kinematic), set at the end of each
+        /// FixedUpdate: a collision callback comes after the step, which has already slowed the stone against what it struck.</summary>
+        internal Vector3 Velocity { get; private set; }
+        /// <summary>The same for the physics step before (Hits: a stone that bounced off a player in between still came toward them).</summary>
+        internal Vector3 LastVelocity { get; private set; }
+
+        /// <summary>Its collider (a box, a sphere for the Ball), for the players' capsule test (Hits.TestPlayers).</summary>
+        internal Collider? Shape => shape;
+
+        /// <summary>Spec 3.4: its power for hits and clashes now (StoneRules.Power, its kind's + grounded + moving faster than
+        /// [EarthDamage] MovingSpeed, from <see cref="Velocity"/>).</summary>
+        internal int Power => StoneRules.Power(Kind, State, Velocity.magnitude, Hits.MovingSpeed);
 
         /// <summary>Its world box (the collider's bounds), what a modifier's reach is judged on; a point at its place without a
         /// collider.</summary>
@@ -72,6 +87,9 @@ namespace Earthbending {
             if (broken) return;
             if (State == StoneState.Rising) Rise();
             else if (State == StoneState.Sliding) Slide();
+            LastVelocity = Velocity;
+            Velocity = body != null && !body.isKinematic ? body.velocity : Vector3.zero;
+            Hits.TestPlayers(this);   // Task 8 (ruling 24): a moving stone against every player's capsule; never throws
         }
 
         void Rise() {
@@ -111,7 +129,11 @@ namespace Earthbending {
             if (speed > 0f && next < speed) body.velocity = v * (next / speed);
         }
 
-        void OnCollisionEnter(Collision c) => Touched(c);
+        void OnCollisionEnter(Collision c) {
+            Touched(c);
+            Hits.OnContact(this, c);   // Task 8: a creature is hit, another stone clashes (ruling 24); never throws
+        }
+
         void OnCollisionStay(Collision c) => Touched(c);
 
         // Only a sliding stone looks; one up-facing contact point is enough.

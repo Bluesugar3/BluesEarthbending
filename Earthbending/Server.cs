@@ -92,6 +92,7 @@ namespace Earthbending {
             slideDecelerationEntry = mods.CreateEntry("SlideDeceleration", DefaultSlideDeceleration, description: "Server. A stone sliding along the ground after a Straight slows by this many m/s every second while it touches ground (it slides on a frictionless material, so the ground itself does not slow it), and stands still again under 0.1 m/s (8.4 m/s with 4: about 9 m on level ground; uphill shorter, downhill longer). 0: only a rise or what it hits stops it.");
             Apply();
             Cfg.Changed += Apply;
+            Hits.Init();   // [EarthDamage]: what a moving stone does to creatures, players and other stones (Task 8)
             // a Net whose static initialiser failed (Main says so) throws on every touch: no summons, the rest still starts
             try {
                 Net.SummonReceived += OnSummon;
@@ -314,7 +315,9 @@ namespace Earthbending {
 
         /// <summary>From StoneBody (its Break, or its destroy by anything else): it no longer stands.</summary>
         internal static void Forget(StoneBody b) {
-            if (b != null && Stones.TryGetValue(b.Id, out StoneBody known) && ReferenceEquals(known, b)) Stones.Remove(b.Id);
+            if (b == null) return;
+            Hits.Forget(b.Id);   // its hit record (Task 8)
+            if (Stones.TryGetValue(b.Id, out StoneBody known) && ReferenceEquals(known, b)) Stones.Remove(b.Id);
         }
 
         /// <summary>Every standing stone of this player, oldest first.</summary>
@@ -380,7 +383,8 @@ namespace Earthbending {
         /// <summary>A player's account (UserInfo.Identifier, an int) as the ledger's and the owners' key; 0 with no user record.</summary>
         internal static ulong AccountOf(Player p) => p != null && p.UserInfo != null ? unchecked((ulong)(uint)p.UserInfo.Identifier) : 0UL;
 
-        static string NameOf(Player p) {
+        /// <summary>A player's name made safe for one log line (at most 40 printable ASCII characters; "?" with none).</summary>
+        internal static string NameOf(Player p) {
             string t = p != null && p.UserInfo != null ? p.UserInfo.Username ?? "" : "";
             if (t.Length == 0) return "?";
             var chars = new char[Math.Min(t.Length, 40)];

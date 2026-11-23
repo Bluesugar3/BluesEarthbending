@@ -7,7 +7,9 @@ using System.Globalization;
 // and the two claims a game sends). Prefabs.cs turns the table into the five network prefabs; Net.cs writes and reads the
 // claims. Task 6 (summoning, at the end of this file): the stones' states (StoneState, StoneRules), the server's per-player
 // cooldowns (Ledger), its check of a Summon claim (SummonCheck), where a stone rises (SpawnPlan), when it breaks (StoneLife),
-// how many may stand (Caps) and which kinds are on (StoneKinds); Server.cs and StoneBody.cs run them.
+// how many may stand (Caps) and which kinds are on (StoneKinds); Server.cs and StoneBody.cs run them. Task 8: a stone's power,
+// clashes, damage, knockback and hitstun (StoneRules), the players' capsule against a stone (Contact) and who was hit by what
+// (HitLedger); Hits.cs runs them.
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -184,6 +186,96 @@ namespace Earthbending {
             if (touching) return pushLanded && SlideStops(flatSpeed) ? SlideStep.Still : SlideStep.Slides;
             return sinceGround < SlideAirSeconds - 1e-6 ? SlideStep.Slides : SlideStep.Free;   // a step landing on 0.2 s reaches it
         }
+
+        // ---------------------------------------------------------------- Task 8: hits, clashes and knockback
+
+        /// <summary>Ruling 24: a player's body for a stone's hit is a capsule of this radius from the head down to the feet, in metres.</summary>
+        public const float PlayerRadius = 0.3f;
+        /// <summary>A struck creature's stun per point of the stone's power, in seconds (the controller's ruling).</summary>
+        public const float StunPerPower = 0.3f;
+        /// <summary>Spec 2.6: a struck player's hitstun per point of power, in seconds.</summary>
+        public const float HitstunPerPower = 0.7f / 3f;
+
+        static readonly float Tan22 = (float)Math.Tan(22.5 * Math.PI / 180.0);   // half way between flat and 45 degrees up
+        static readonly float Diagonal = (float)Math.Sqrt(0.5);
+
+        /// <summary>Spec 3.4: a stone's power for hits and clashes, its kind's (StoneTable, from the settings) + 1 when grounded
+        /// (<see cref="IsGrounded"/>) + 1 when moving faster than <paramref name="movingSpeed"/> m/s (a speed that is not a
+        /// number is not moving). 0 for a byte that is not a kind (grounded and moving still add).</summary>
+        public static int Power(StoneKind k, StoneState s, float speed, float movingSpeed) {
+            int p = StoneTable.Of(k).Power;
+            if (IsGrounded(s)) p++;
+            if (speed > movingSpeed) p++;
+            return p;
+        }
+
+        /// <summary>Spec 2.2: two stones meet, <paramref name="a"/> and <paramref name="b"/> their powers.</summary>
+        public static ClashResult Clash(int a, int b) => a == b ? ClashResult.BothBreak : a > b ? ClashResult.BBreaks : ClashResult.ABreaks;
+
+        /// <summary>Spec 3.7: <paramref name="perPower"/> x power, once the stone and what it struck meet at
+        /// <paramref name="relSpeed"/> of at least <paramref name="minSpeed"/> m/s; 0 slower, at power 0 or below, or with a
+        /// damage per power that is not above 0 (anything that is not a number is 0).</summary>
+        public static float Damage(int power, float relSpeed, float perPower, float minSpeed) {
+            if (power <= 0 || !(relSpeed >= minSpeed) || !(perPower > 0f) || float.IsInfinity(perPower)) return 0f;
+            return perPower * power;
+        }
+
+        /// <summary>Spec 3.7: the hit's cripple (a creature's knock-down), <paramref name="perPower"/> x power; 0 at power 0 or
+        /// below, or with a cripple per power that is not above 0.</summary>
+        public static float Cripple(int power, float perPower) =>
+            power > 0 && perPower > 0f && !float.IsInfinity(perPower) ? perPower * power : 0f;
+
+        /// <summary>How long a struck creature is stunned: power x <see cref="StunPerPower"/> seconds (0 at power 0 or below).</summary>
+        public static float StunSeconds(int power) => power > 0 ? power * StunPerPower : 0f;
+
+        /// <summary>Spec 2.6: the way a struck player is knocked, from the stone's velocity <paramref name="v"/>: along its flat
+        /// heading, flat or 45 degrees up, whichever is nearer (22.5 degrees up and more is 45); length 1. A velocity that is not
+        /// a number, or nearly straight up or down (its flat part under a tenth of it), takes its heading from
+        /// <paramref name="away"/> (from the stone toward the player) instead: 45 degrees up when it rose, flat otherwise. Zero
+        /// when neither gives a heading.</summary>
+        public static V3 KnockDir(V3 v, V3 away) {
+            bool finite = Finite(v);
+            float flat = finite ? Flat(v) : 0f;
+            V3 heading;
+            bool up;
+            if (finite && flat > 1e-4f && flat >= 0.1f * v.Length) {
+                heading = new V3(v.X / flat, 0f, v.Z / flat);
+                up = v.Y >= flat * Tan22;
+            }
+            else {
+                float af = Finite(away) ? Flat(away) : 0f;
+                if (!(af > 1e-4f)) return V3.Zero;
+                heading = new V3(away.X / af, 0f, away.Z / af);
+                up = finite && v.Y > 0f;
+            }
+            return up ? new V3(heading.X * Diagonal, Diagonal, heading.Z * Diagonal) : heading;
+        }
+
+        /// <summary>As <see cref="KnockDir(V3, V3)"/> with no fallback heading.</summary>
+        public static V3 KnockDir(V3 v) => KnockDir(v, V3.Zero);
+
+        /// <summary>Spec 2.6: a struck player's hitstun, power x 0.7 / 3 seconds; never from a Disc (and 0 at power 0 or below).</summary>
+        public static float HitstunSeconds(StoneKind k, int power) => k == StoneKind.Disc || power <= 0 ? 0f : power * HitstunPerPower;
+
+        /// <summary>Whether a stone in state <paramref name="s"/> can hit at <paramref name="speed"/> m/s: never while Rising
+        /// (ruling 25), and only at <paramref name="minHitSpeed"/> or faster. A creature's hit is judged on the collision's
+        /// relative speed, a player's on the stone's own speed (ruling 24).</summary>
+        public static bool CanHit(StoneState s, float speed, float minHitSpeed) => s != StoneState.Rising && speed >= minHitSpeed;
+
+        /// <summary>Whether two touching stones clash: neither is Rising (ruling 25), and they meet at
+        /// <paramref name="minHitSpeed"/> or faster relative to each other.</summary>
+        public static bool Clashes(StoneState a, StoneState b, float relSpeed, float minHitSpeed) =>
+            a != StoneState.Rising && b != StoneState.Rising && relSpeed >= minHitSpeed;
+
+        /// <summary>Whether a stone moving at <paramref name="velocity"/> comes toward a player <paramref name="toward"/> of it
+        /// (from the stone's nearest point to the player's): a stone that slides away from a player touching it (its owner who
+        /// just pushed it) or past beside them does not hit them. More than 0.06 degrees short of square to it; false when either
+        /// has no length.</summary>
+        public static bool Approaching(V3 velocity, V3 toward) => V3.Dot(velocity.Normalized, toward.Normalized) > 1e-3f;
+
+        static float Flat(V3 v) => (float)Math.Sqrt(v.X * v.X + v.Z * v.Z);
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }
 
     /// <summary>What one physics step of a slide ends in (<see cref="StoneRules.Slide"/>): it slides on, it stands Still, or
@@ -434,6 +526,125 @@ namespace Earthbending {
         }
 
         static bool Finite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+    }
+
+    // ==================================================================== Task 8: hits, damage, knockback, clashes
+
+    /// <summary>Who breaks when two stones meet (spec 2.2): equal power both, otherwise the weaker one.</summary>
+    internal enum ClashResult : byte { BothBreak, ABreaks, BBreaks }
+
+    /// <summary>Ruling 24: the distances behind a hit on a player, whose body is a capsule from the head down to the feet
+    /// (<see cref="StoneRules.PlayerRadius"/>). Everything is in the stone's own frame: a box is centred at the origin with half
+    /// sides <c>half</c> (its collider turned with the stone), a sphere (the Ball) is its centre. Anything that is not a number is
+    /// infinitely far.</summary>
+    internal static class Contact {
+        const int Steps = 64;   // ternary search on the segment: (2/3)^64 of its length, far under a millimetre
+
+        /// <summary>The shortest distance between the segment <paramref name="a"/>-<paramref name="b"/> and the box centred at
+        /// the origin with half sides <paramref name="half"/> (0 where they meet), and the nearest pair of points: one on the
+        /// segment, one on (or in) the box. The squared distance from a point moving along a segment to a box is convex, so a
+        /// ternary search finds its least value.</summary>
+        public static float SegmentBox(V3 a, V3 b, V3 half, out V3 onSegment, out V3 onBox) {
+            onSegment = a;
+            onBox = a;
+            if (!Finite(a) || !Finite(b) || !Finite(half) || half.X < 0f || half.Y < 0f || half.Z < 0f) return float.PositiveInfinity;
+            double lo = 0.0, hi = 1.0;
+            for (int i = 0; i < Steps; i++) {
+                double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+                if (BoxSq(a, b, half, m1) < BoxSq(a, b, half, m2)) hi = m2;
+                else lo = m1;
+            }
+            double t = (lo + hi) * 0.5;
+            // the ends: a minimum at an end is reached only in the limit
+            if (BoxSq(a, b, half, 0.0) <= BoxSq(a, b, half, t)) t = 0.0;
+            if (BoxSq(a, b, half, 1.0) < BoxSq(a, b, half, t)) t = 1.0;
+            onSegment = At(a, b, t);
+            onBox = ClampToBox(onSegment, half);
+            return (float)Math.Sqrt(BoxSq(a, b, half, t));
+        }
+
+        /// <summary>Whether a capsule (the segment <paramref name="a"/>-<paramref name="b"/>, <paramref name="radius"/> round it)
+        /// touches the box centred at the origin with half sides <paramref name="half"/>.</summary>
+        public static bool CapsuleTouchesBox(V3 a, V3 b, float radius, V3 half) =>
+            radius >= 0f && SegmentBox(a, b, half, out _, out _) <= radius;
+
+        /// <summary>The shortest distance between the segment <paramref name="a"/>-<paramref name="b"/> and the point
+        /// <paramref name="p"/>, and the segment's nearest point.</summary>
+        public static float SegmentPoint(V3 a, V3 b, V3 p, out V3 onSegment) {
+            onSegment = a;
+            if (!Finite(a) || !Finite(b) || !Finite(p)) return float.PositiveInfinity;
+            V3 ab = b - a;
+            float len2 = V3.Dot(ab, ab);
+            float t = len2 > 1e-12f ? V3.Dot(p - a, ab) / len2 : 0f;
+            t = t < 0f ? 0f : t > 1f ? 1f : t;
+            onSegment = a + ab * t;
+            return (p - onSegment).Length;
+        }
+
+        /// <summary>The point of the box centred at the origin with half sides <paramref name="half"/> nearest to <paramref name="p"/>.</summary>
+        public static V3 ClampToBox(V3 p, V3 half) => new V3(Clamp(p.X, half.X), Clamp(p.Y, half.Y), Clamp(p.Z, half.Z));
+
+        static float Clamp(float v, float h) => v < -h ? -h : v > h ? h : v;
+
+        static V3 At(V3 a, V3 b, double t) =>
+            new V3((float)(a.X + (b.X - a.X) * t), (float)(a.Y + (b.Y - a.Y) * t), (float)(a.Z + (b.Z - a.Z) * t));
+
+        // the squared distance from the segment's point at t to the box, in doubles
+        static double BoxSq(V3 a, V3 b, V3 h, double t) {
+            double x = a.X + (b.X - a.X) * t, y = a.Y + (b.Y - a.Y) * t, z = a.Z + (b.Z - a.Z) * t;
+            double dx = Math.Max(Math.Abs(x) - h.X, 0.0), dy = Math.Max(Math.Abs(y) - h.Y, 0.0), dz = Math.Max(Math.Abs(z) - h.Z, 0.0);
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+    }
+
+    /// <summary>The server's record of who was hit by what (spec 3.7): one stone hits one target at most once per
+    /// <c>HitCooldownSeconds</c>. A target is the health object's instance id. A stone that breaks is forgotten; once the record
+    /// holds <see cref="MaxEntries"/>, the entries past their cooldown go.</summary>
+    internal sealed class HitLedger {
+        public const int MaxEntries = 1024;
+        const double Eps = 1e-6;   // a hit that lands on the cooldown's end counts as past it
+
+        readonly Dictionary<ulong, double> last = new Dictionary<ulong, double>();
+        readonly List<ulong> drop = new List<ulong>();
+
+        public int Count => last.Count;
+
+        /// <summary>True, and the pair's cooldown starts at <paramref name="now"/>, when this stone has not hit this target in the
+        /// last <paramref name="cooldown"/> seconds; false, and nothing changes, when it has. A time that is not a number is refused.</summary>
+        public bool TryHit(uint stone, int target, double now, float cooldown) {
+            if (double.IsNaN(now) || double.IsInfinity(now)) return false;
+            ulong key = Key(stone, target);
+            if (last.TryGetValue(key, out double at) && now - at < cooldown - Eps) return false;
+            if (last.Count >= MaxEntries && !last.ContainsKey(key)) Prune(now, cooldown);
+            last[key] = now;
+            return true;
+        }
+
+        /// <summary>Drops every record of a stone (it broke).</summary>
+        public void Forget(uint stone) {
+            drop.Clear();
+            foreach (ulong k in last.Keys) if ((uint)(k >> 32) == stone) drop.Add(k);
+            foreach (ulong k in drop) last.Remove(k);
+            drop.Clear();
+        }
+
+        // the entries past their cooldown; when none is, the oldest half (a record never grows past MaxEntries)
+        void Prune(double now, float cooldown) {
+            drop.Clear();
+            foreach (KeyValuePair<ulong, double> kv in last) if (!(now - kv.Value < cooldown - Eps)) drop.Add(kv.Key);
+            if (drop.Count == 0) {
+                var times = new List<double>(last.Values);
+                times.Sort();
+                double cut = times[times.Count / 2];
+                foreach (KeyValuePair<ulong, double> kv in last) if (kv.Value <= cut) drop.Add(kv.Key);
+            }
+            foreach (ulong k in drop) last.Remove(k);
+            drop.Clear();
+        }
+
+        static ulong Key(uint stone, int target) => ((ulong)stone << 32) | unchecked((uint)target);
     }
 
     internal static class MoveRules {

@@ -14,13 +14,17 @@ namespace Earthbending {
     //                 [EarthModifiers] Reach and MaxHeight, read on both sides (ReachSettings)
     //   Stones.cs     Unity-free: StoneKind, V3, StoneTable (spec 3.4); Modifier, Wire, the two claims (spec 3.8); the
     //                 summoning rules (StoneState, Ledger, SummonCheck, SpawnPlan, StoneLife, Caps, StoneKinds); the
-    //                 modifiers' rules (StoneRules.After, CanApply and the slide, Reach, ModifyCheck, MoveRules.Pushback)
+    //                 modifiers' rules (StoneRules.After, CanApply and the slide, Reach, ModifyCheck, MoveRules.Pushback);
+    //                 the hits' rules (StoneRules.Power, Clash, Damage, KnockDir, HitstunSeconds; Contact, the players'
+    //                 capsule against a stone's box; HitLedger)
     //   StoneBox.cs   Unity-free: the chamfered stone block (a copy of the archery mod's Lectern.cs types)
     //   Ground.cs     the natural-ground test under a point
     //   Prefabs.cs    the five stones as code-built SyncLib network prefabs, [EarthStones] power and mass
     //   Server.cs     the server: Summon and Modify claims checked, stones spawned, the registry and every stone's life,
     //                 the quit; [EarthModifiers] Straight's numbers
     //   StoneBody.cs  the server's side of one stone: kind, owner, state, the rise, the modifiers (Straight), the slide, Break
+    //   Hits.cs       the server: a moving stone hits creatures (its collisions) and players (their capsules), knocks
+    //                 players back, stuns creatures, and two stones clash; [EarthDamage]
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone, StoneView.Live), the rise and break looks
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
     //   Moves.cs      games: pushing the local player (Straight's pushback too), the hitstun after a knockback, the
@@ -34,7 +38,7 @@ namespace Earthbending {
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings (run it with python -I)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
-        public const string Version = "0.3.0";
+        public const string Version = "0.4.0";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;

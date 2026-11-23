@@ -21,6 +21,140 @@ internal static class StoneTests {
 
         Summons();
         Straights();
+        HitRules();
+    }
+
+    static bool NearV(V3 a, V3 b) => Near(a.X, b.X) && Near(a.Y, b.Y) && Near(a.Z, b.Z);
+
+    // Task 8: hits, damage, knockback, clashes (spec 2.2, 2.6, 3.4, 3.7; rulings 24 and 25)
+    static void HitRules() {
+        const float moving = 3f;
+        // spec 3.4: base + 1 grounded + 1 moving faster than MovingSpeed
+        Check("power: a still cube is 3", StoneRules.Power(Cube, StoneState.Still, 0f, moving) == 3);
+        Check("power: a fast free disc is 1", StoneRules.Power(Disc, StoneState.Free, 5f, moving) == 1);
+        Check("power: a slow free disc is 0", StoneRules.Power(Disc, StoneState.Free, 1f, moving) == 0);
+        Check("power: a fast sliding pillar is 3", StoneRules.Power(Pillar, StoneState.Sliding, 8.4f, moving) == 3);
+        Check("power: a fast free wall is 4", StoneRules.Power(Wall, StoneState.Free, 4f, moving) == 4);
+        Check("power: faster than, not at", StoneRules.Power(Ball, StoneState.Free, 3f, moving) == 1 && StoneRules.Power(Ball, StoneState.Free, 3.01f, moving) == 2);
+        Check("power: a speed that is not a number is not moving", StoneRules.Power(Ball, StoneState.Free, float.NaN, moving) == 1);
+        Check("power: a byte that is not a kind", StoneRules.Power((StoneKind)9, StoneState.Free, 0f, moving) == 0);
+
+        // spec 2.2: equal power both break, else the weaker
+        Check("clash: equal, both break", StoneRules.Clash(2, 2) == ClashResult.BothBreak);
+        Check("clash: the weaker B breaks", StoneRules.Clash(3, 1) == ClashResult.BBreaks);
+        Check("clash: the weaker A breaks", StoneRules.Clash(1, 3) == ClashResult.ABreaks);
+        Check("clash: zero against zero", StoneRules.Clash(0, 0) == ClashResult.BothBreak);
+
+        // spec 3.7: DamagePerPower x power once the relative speed is at least MinHitSpeed
+        Check("damage: too slow", StoneRules.Damage(2, 1.5f, 8f, 2f) == 0f);
+        Check("damage: 2 x 8", StoneRules.Damage(2, 5f, 8f, 2f) == 16f);
+        Check("damage: at MinHitSpeed counts", StoneRules.Damage(2, 2f, 8f, 2f) == 16f);
+        Check("damage: power 0 deals nothing", StoneRules.Damage(0, 9f, 8f, 2f) == 0f);
+        Check("damage: a speed that is not a number", StoneRules.Damage(3, float.NaN, 8f, 2f) == 0f);
+        Check("damage: no damage per power", StoneRules.Damage(3, 5f, 0f, 2f) == 0f && StoneRules.Damage(3, 5f, float.NaN, 2f) == 0f && StoneRules.Damage(3, 5f, -1f, 2f) == 0f);
+        Check("cripple: 0.5 x power", Near(StoneRules.Cripple(3, 0.5f), 1.5f) && StoneRules.Cripple(0, 0.5f) == 0f && StoneRules.Cripple(2, float.NaN) == 0f);
+        Check("stun: power x 0.3 s", Near(StoneRules.StunSeconds(3), 0.9f) && StoneRules.StunSeconds(0) == 0f && StoneRules.StunSeconds(-1) == 0f);
+
+        // spec 2.6: flat or 45 degrees up, whichever is nearer
+        float r = (float)System.Math.Sqrt(0.5);
+        Check("knock: a little up is flat", NearV(StoneRules.KnockDir(new V3(1f, 0.1f, 0f)), new V3(1f, 0f, 0f)));
+        Check("knock: well up is 45 degrees", NearV(StoneRules.KnockDir(new V3(1f, 0.8f, 0f)), new V3(r, r, 0f)));
+        Check("knock: down is flat", NearV(StoneRules.KnockDir(new V3(0f, -3f, 4f)), new V3(0f, 0f, 1f)));
+        Check("knock: just over 22.5 degrees is 45", NearV(StoneRules.KnockDir(new V3(0f, 0.42f, -1f)), new V3(0f, r, -r))
+            && NearV(StoneRules.KnockDir(new V3(0f, 0.41f, -1f)), new V3(0f, 0f, -1f)));
+        Check("knock: unit length", Near(StoneRules.KnockDir(new V3(3f, 2f, -4f)).Length, 1f));
+        Check("knock: straight down takes the way away from the stone", NearV(StoneRules.KnockDir(new V3(0f, -5f, 0f), new V3(2f, 1f, 0f)), new V3(1f, 0f, 0f)));
+        Check("knock: straight up is 45 degrees away", NearV(StoneRules.KnockDir(new V3(0f, 5f, 0f), new V3(0f, -0.3f, 3f)), new V3(0f, r, r)));
+        Check("knock: nothing to go by", NearV(StoneRules.KnockDir(V3.Zero), V3.Zero) && NearV(StoneRules.KnockDir(new V3(float.NaN, 0f, 1f)), V3.Zero)
+            && NearV(StoneRules.KnockDir(new V3(0f, -5f, 0f), V3.Zero), V3.Zero));
+
+        // spec 2.6: hitstun power x 0.7 / 3 s, never from a disc
+        Check("hitstun: a disc never stuns", StoneRules.HitstunSeconds(Disc, 1) == 0f && StoneRules.HitstunSeconds(Disc, 3) == 0f);
+        Check("hitstun: a power-3 wall 0.7 s", Near(StoneRules.HitstunSeconds(Wall, 3), 0.7f));
+        Check("hitstun: a power-2 pillar", Near(StoneRules.HitstunSeconds(Pillar, 2), 1.4f / 3f) && StoneRules.HitstunSeconds(Pillar, 0) == 0f);
+
+        // ruling 25: a rising stone never hits or clashes; ruling 24: a hit needs MinHitSpeed
+        Check("can hit: moving", StoneRules.CanHit(StoneState.Sliding, 2f, 2f) && StoneRules.CanHit(StoneState.Free, 9f, 2f) && StoneRules.CanHit(StoneState.Still, 3f, 2f));
+        Check("can hit: too slow", !StoneRules.CanHit(StoneState.Sliding, 1.9f, 2f) && !StoneRules.CanHit(StoneState.Free, float.NaN, 2f));
+        Check("can hit: never rising", !StoneRules.CanHit(StoneState.Rising, 9f, 2f));
+        Check("clashes: one fast enough", StoneRules.Clashes(StoneState.Sliding, StoneState.Still, 8f, 2f) && StoneRules.Clashes(StoneState.Free, StoneState.Free, 2f, 2f));
+        Check("clashes: too slow", !StoneRules.Clashes(StoneState.Sliding, StoneState.Still, 1f, 2f) && !StoneRules.Clashes(StoneState.Sliding, StoneState.Still, float.NaN, 2f));
+        Check("clashes: never with a rising stone", !StoneRules.Clashes(StoneState.Rising, StoneState.Sliding, 8f, 2f) && !StoneRules.Clashes(StoneState.Sliding, StoneState.Rising, 8f, 2f));
+        Check("approaching: toward the player", StoneRules.Approaching(new V3(0f, 0f, 5f), new V3(0.2f, 0f, 1f)));
+        Check("approaching: away from the player (its owner pushing it)", !StoneRules.Approaching(new V3(0f, 0f, 5f), new V3(0f, 0f, -0.2f)));
+        Check("approaching: sliding past beside", !StoneRules.Approaching(new V3(0f, 0f, 5f), new V3(0.25f, 0f, 0f)));
+        Check("approaching: nothing to go by", !StoneRules.Approaching(V3.Zero, new V3(0f, 0f, 1f)) && !StoneRules.Approaching(new V3(0f, 0f, 5f), V3.Zero)
+            && !StoneRules.Approaching(new V3(float.NaN, 0f, 5f), new V3(0f, 0f, 1f)));
+        Check("player radius 0.3 m", Near(StoneRules.PlayerRadius, 0.3f));
+
+        // ruling 24: a player is a capsule from the head down to the feet, radius 0.3, against the stone's box (in its own frame)
+        var half = new V3(0.5f, 0.5f, 0.5f);   // a 1 m cube centred at the origin
+        Check("segment: through the box", Near(Contact.SegmentBox(new V3(0f, 2f, 0f), new V3(0f, -2f, 0f), half, out _, out _), 0f));
+        Check("segment: beside a face", Near(Contact.SegmentBox(new V3(0.8f, 1f, 0f), new V3(0.8f, -1f, 0f), half, out V3 onSeg, out V3 onBox), 0.3f)
+            && Near(onSeg.X, 0.8f) && Near(onBox.X, 0.5f) && onSeg.Y <= 0.5f + 1e-4f && onSeg.Y >= -0.5f - 1e-4f);
+        Check("segment: beside an edge", Near(Contact.SegmentBox(new V3(0.8f, 1f, 0.8f), new V3(0.8f, -1f, 0.8f), half, out _, out _), (float)System.Math.Sqrt(0.18)));
+        Check("segment: above, its end nearest", Near(Contact.SegmentBox(new V3(0f, 3f, 0f), new V3(0f, 1.2f, 0f), half, out V3 end, out _), 0.7f) && Near(end.Y, 1.2f));
+        Check("segment: slanted past a corner", Near(Contact.SegmentBox(new V3(1.5f, 0.5f, -2f), new V3(1.5f, 0.5f, 2f), half, out _, out _), 1f)
+            && Near(Contact.SegmentBox(new V3(-2f, 2f, 0f), new V3(2f, -2f, 2.2f), new V3(0.5f, 0.5f, 0.5f), out _, out _), Brute(new V3(-2f, 2f, 0f), new V3(2f, -2f, 2.2f), half)));
+        Check("segment: a point", Near(Contact.SegmentBox(new V3(0f, 0f, 1.5f), new V3(0f, 0f, 1.5f), half, out _, out _), 1f));
+        Check("segment: not a number", float.IsPositiveInfinity(Contact.SegmentBox(new V3(float.NaN, 0f, 0f), new V3(0f, 0f, 0f), half, out _, out _))
+            && float.IsPositiveInfinity(Contact.SegmentBox(V3.Zero, new V3(0f, 1f, 0f), new V3(float.NaN, 1f, 1f), out _, out _)));
+        Check("capsule: within the radius touches", Contact.CapsuleTouchesBox(new V3(0.79f, 1.7f, 0f), new V3(0.79f, 0f, 0f), StoneRules.PlayerRadius, half)
+            && !Contact.CapsuleTouchesBox(new V3(0.81f, 1.7f, 0f), new V3(0.81f, 0f, 0f), StoneRules.PlayerRadius, half));
+        Check("capsule: a pillar sliding along the ground reaches the feet", Contact.CapsuleTouchesBox(new V3(0f, 1.7f, -0.5f), new V3(0f, -0.9f, -0.5f), 0.3f, new V3(0.275f, 0.9f, 0.275f)));
+        Check("capsule: the feet's end over the top", Contact.CapsuleTouchesBox(new V3(0f, 2.5f, 0f), new V3(0f, 0.79f, 0f), 0.3f, half) && !Contact.CapsuleTouchesBox(new V3(0f, 2.5f, 0f), new V3(0f, 0.81f, 0f), 0.3f, half));
+        Check("capsule: not a number never touches", !Contact.CapsuleTouchesBox(new V3(float.NaN, 1f, 0f), V3.Zero, 0.3f, half) && !Contact.CapsuleTouchesBox(V3.Zero, V3.Zero, float.NaN, half));
+        Check("segment and point (the Ball)", Near(Contact.SegmentPoint(new V3(1f, 2f, 0f), new V3(1f, -2f, 0f), V3.Zero, out V3 sp), 1f) && Near(sp.Y, 0f)
+            && Near(Contact.SegmentPoint(new V3(0f, 2f, 0f), new V3(0f, 1f, 0f), V3.Zero, out _), 1f) && Near(Contact.SegmentPoint(V3.Zero, V3.Zero, new V3(0f, 3f, 4f), out _), 5f)
+            && float.IsPositiveInfinity(Contact.SegmentPoint(new V3(float.NaN, 0f, 0f), V3.Zero, V3.Zero, out _)));
+        // a random sweep against the brute force: every case within 1 mm
+        var rng = new System.Random(8);
+        bool sweep = true;
+        for (int i = 0; i < 300 && sweep; i++) {
+            V3 a = new V3(R(rng), R(rng), R(rng)), b = new V3(R(rng), R(rng), R(rng)), h = new V3(0.1f + (float)rng.NextDouble(), 0.1f + (float)rng.NextDouble(), 0.1f + (float)rng.NextDouble());
+            float got = Contact.SegmentBox(a, b, h, out V3 s, out V3 q), want = Brute(a, b, h);
+            sweep = System.Math.Abs(got - want) < 1e-3f && System.Math.Abs((s - q).Length - got) < 1e-3f;
+            if (!sweep) System.Console.WriteLine($"  segment {a} {b} half {h}: {got} (brute {want})");
+        }
+        Check("segment: 300 random cases match the brute force", sweep);
+
+        // one hit per target per stone, at most once per HitCooldownSeconds
+        var hits = new HitLedger();
+        Check("ledger: the first hit", hits.TryHit(5u, 100, 10.0, 0.5f));
+        Check("ledger: the same pair within the cooldown", !hits.TryHit(5u, 100, 10.3, 0.5f));
+        Check("ledger: another target, another stone", hits.TryHit(5u, 101, 10.3, 0.5f) && hits.TryHit(6u, 100, 10.3, 0.5f));
+        Check("ledger: after the cooldown", hits.TryHit(5u, 100, 10.5, 0.5f));
+        hits.Forget(5u);
+        Check("ledger: a broken stone is forgotten", hits.Count == 1 && hits.TryHit(5u, 100, 10.6, 0.5f));
+        Check("ledger: no time", !hits.TryHit(7u, 100, double.NaN, 0.5f));
+        var many = new HitLedger();
+        for (int i = 0; i < HitLedger.MaxEntries + 10; i++) many.TryHit((uint)i + 1u, 1, i * 0.001, 0.5f);
+        many.TryHit(999999u, 1, 100.0, 0.5f);
+        Check("ledger: old entries go once it is full", many.Count <= HitLedger.MaxEntries && many.Count >= 1);
+    }
+
+    static float R(System.Random rng) => (float)(rng.NextDouble() * 6.0 - 3.0);
+
+    // the segment-to-box distance by sampling 20001 points and refining round the best (the test's own, slow way)
+    static float Brute(V3 a, V3 b, V3 h) {
+        double best = double.MaxValue, bestT = 0;
+        for (int i = 0; i <= 20000; i++) {
+            double t = i / 20000.0, d = BoxDist(a, b, h, t);
+            if (d < best) { best = d; bestT = t; }
+        }
+        for (int i = -1000; i <= 1000; i++) {
+            double t = bestT + i / 2e7;
+            if (t < 0 || t > 1) continue;
+            double d = BoxDist(a, b, h, t);
+            if (d < best) best = d;
+        }
+        return (float)best;
+    }
+
+    static double BoxDist(V3 a, V3 b, V3 h, double t) {
+        double x = a.X + (b.X - a.X) * t, y = a.Y + (b.Y - a.Y) * t, z = a.Z + (b.Z - a.Z) * t;
+        double dx = System.Math.Max(System.Math.Abs(x) - h.X, 0), dy = System.Math.Max(System.Math.Abs(y) - h.Y, 0), dz = System.Math.Max(System.Math.Abs(z) - h.Z, 0);
+        return System.Math.Sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     // A cube of side `size` centred at (x, y, z), as (min, max).
