@@ -38,8 +38,10 @@ namespace Earthbending {
     //   - One stone hits one target at most once per HitCooldownSeconds (HitLedger); with BreakOnHit the stone then breaks,
     //     so it hits once. A stone that has broken hits nothing more, in the same physics step too.
     //   - Two stones that touch clash when neither is Rising and they meet at MinHitSpeed or faster relative to each other:
-    //     StoneRules.Clash on both powers, and the loser (both on a tie) breaks. Both stones get the collision; the one with
-    //     the lower Identifier decides it. No hitstop freeze yet (Task 15).
+    //     StoneRules.Clash on both powers, and the loser (both on a tie) breaks; a winner that is not kinematic carries on at
+    //     its velocity (and spin) from before the step (StoneBody.CarryOn, spec 3.7), and the loser stops colliding at once
+    //     (StoneBody.Break). Both stones get the collision; the one with the lower Identifier decides it. No hitstop freeze
+    //     yet (Task 15).
     //   - Per hit and per clash one Debug line ([EarthLog] Debug), with the target's health before and after, for tuning
     //     DamagePerPower. A failure is warned once per kind, then Debug lines; nothing here ever throws into the physics step.
     internal static class Hits {
@@ -145,10 +147,14 @@ namespace Earthbending {
             if (!StoneRules.Clashes(a.State, b.State, rel, MinHitSpeed)) return;
             int pa = a.Power, pb = b.Power;
             ClashResult r = StoneRules.Clash(pa, pb);
-            if (Logs.Debug)
-                MelonLogger.Msg($"[Earth] Hits: {a.Kind} #{a.Id} of {a.OwnerName} ({a.State}, power {pa}, {a.Velocity.magnitude:0.##} m/s) met {b.Kind} #{b.Id} of {b.OwnerName} ({b.State}, power {pb}, {b.Velocity.magnitude:0.##} m/s) at {rel:0.##} m/s: {(r == ClashResult.BothBreak ? "both break" : r == ClashResult.ABreaks ? $"#{a.Id} breaks" : $"#{b.Id} breaks")}");
             if (r != ClashResult.BBreaks) a.Break(Logs.Debug ? $"clash with {b.Kind} #{b.Id} (power {pa} against {pb})" : "clash");
             if (r != ClashResult.ABreaks) b.Break(Logs.Debug ? $"clash with {a.Kind} #{a.Id} (power {pb} against {pa})" : "clash");
+            // spec 3.7: the winner carries on at its old speed (the step's solver stopped or bounced it against the loser, which
+            // has stopped colliding); a kinematic winner (Still) has none to get back. No hitstop freeze yet (Task 15).
+            StoneBody? winner = r == ClashResult.ABreaks ? b : r == ClashResult.BBreaks ? a : null;
+            bool carried = winner != null && winner.CarryOn();
+            if (Logs.Debug)
+                MelonLogger.Msg($"[Earth] Hits: {a.Kind} #{a.Id} of {a.OwnerName} ({a.State}, power {pa}, {a.Velocity.magnitude:0.##} m/s) met {b.Kind} #{b.Id} of {b.OwnerName} ({b.State}, power {pb}, {b.Velocity.magnitude:0.##} m/s) at {rel:0.##} m/s: {(winner == null ? "both break" : $"#{(winner == a ? b.Id : a.Id)} breaks, #{winner.Id} {(carried ? $"carries on at {winner.Velocity.magnitude:0.##} m/s" : "stands (kinematic)")}")}");
         }
 
         static void HitCreature(StoneBody stone, HealthObject h, Vector3 point, Vector3 normal, float rel) {

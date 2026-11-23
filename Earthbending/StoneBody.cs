@@ -55,6 +55,8 @@ namespace Earthbending {
         internal Vector3 Velocity { get; private set; }
         /// <summary>The same for the physics step before (Hits: a stone that bounced off a player in between still came toward them).</summary>
         internal Vector3 LastVelocity { get; private set; }
+        /// <summary>The rigidbody's angular velocity before this physics step (zero while kinematic), kept with <see cref="Velocity"/>.</summary>
+        internal Vector3 AngularVelocity { get; private set; }
 
         /// <summary>Its collider (a box, a sphere for the Ball), for the players' capsule test (Hits.TestPlayers).</summary>
         internal Collider? Shape => shape;
@@ -88,8 +90,22 @@ namespace Earthbending {
             if (State == StoneState.Rising) Rise();
             else if (State == StoneState.Sliding) Slide();
             LastVelocity = Velocity;
-            Velocity = body != null && !body.isKinematic ? body.velocity : Vector3.zero;
+            bool moved = body != null && !body.isKinematic;
+            Velocity = moved ? body!.velocity : Vector3.zero;
+            AngularVelocity = moved ? body!.angularVelocity : Vector3.zero;
             Hits.TestPlayers(this);   // Task 8 (ruling 24): a moving stone against every player's capsule; never throws
+        }
+
+        /// <summary>Task 8 (spec 3.7): this stone won a clash and carries on at its speed from before the physics step: the
+        /// step's solver stopped or bounced it against the loser (a kinematic Still loser stops it dead). Its rigidbody gets
+        /// <see cref="Velocity"/> and <see cref="AngularVelocity"/> back. Set from the collision callback, after the step and
+        /// before the next FixedUpdate, so the next Slide reads the restored speed and does not anchor a winner the loser had
+        /// stopped (the loser no longer collides: <see cref="Break"/>). Nothing for a broken or kinematic stone; false then.</summary>
+        internal bool CarryOn() {
+            if (broken || body == null || body.isKinematic) return false;
+            body.velocity = Velocity;
+            body.angularVelocity = AngularVelocity;
+            return true;
         }
 
         void Rise() {
@@ -225,12 +241,17 @@ namespace Earthbending {
             body.AddForce(flatForward * impulse, ForceMode.Impulse);
         }
 
-        /// <summary>Server: the stone breaks. The games within 80 m get Applied(Broke) at its place (they play the break), then
-        /// the entity is destroyed. One Debug line with <paramref name="why"/>. Twice is once.</summary>
+        /// <summary>Server: the stone breaks. It stops colliding at once and holds still where it is; the games within 80 m get
+        /// Applied(Broke) at its place (they play the break), then the entity is destroyed. One Debug line with
+        /// <paramref name="why"/>. Twice is once.</summary>
         internal void Break(string why) {
             if (broken) return;
             broken = true;
             Server.Forget(this);
+            // the entity goes at the end of the frame, and a slow server runs several physics steps in one frame: a broken
+            // stone must not stop a clash's winner again in the next one (CarryOn), nor go on shoving what it hit
+            if (shape != null) shape.enabled = false;
+            if (body != null) body.isKinematic = true;
             Vector3 at = transform.position;
             try { Net.SendApplied(Id, Wire.Broke, at); }
             catch (Exception e) {
