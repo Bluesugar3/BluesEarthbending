@@ -11,7 +11,8 @@ using Object = UnityEngine.Object;
 
 namespace Earthbending {
     // The `earth` console module on the dedicated server (the TavernLauncher Server window's Console, or the game's remote
-    // console): `earth spawn <kind> <player>`, `earth push <player> <up m/s>`, `earth list`, `earth clear`. Registered from
+    // console): `earth spawn <kind> <player>`, `earth push <player> <up m/s>`, `earth list`, `earth clear`, and fight health's
+    // test ring: `earth ring <player> [radius]`, `earth ring off`, `earth ring` (FightServer.cs). Registered from
     // Main.OnInitializeMelon on the dedicated server only. Every command answers with a string and never throws: a failure is
     // warned with its stack.
     [PlayOnly, ServerOnly, Module("earth", "Blue's Earthbending: spawn, push, list and clear stones")]
@@ -19,11 +20,13 @@ namespace Earthbending {
         const float AheadMetres = 1.5f, GroundBelowMetres = 6f, Lift = 0.02f;
         const string Usage = "Usage: earth spawn <disc|ball|pillar|cube|wall> <player>";
         const string PushUsage = "Usage: earth push <player> <up m/s>";
+        const string RingUsage = "Usage: earth ring <player> [radius] (a test ring round where that player stands), earth ring off, earth ring (where it is)";
+        const float DefaultRingRadius = 10f, ArenaMargin = 6f, MaxRingRadius = 200f;
 
         internal static void Register() {
             try {
                 CommandService.CommandCollection.ProcessModule(typeof(Commands), typeof(Commands).Assembly);
-                MelonLogger.Msg("[Earth] Console commands added (earth spawn, earth push, earth list, earth clear)");
+                MelonLogger.Msg("[Earth] Console commands added (earth spawn, earth push, earth list, earth clear, earth ring)");
             }
             catch (Exception e) { MelonLogger.Warning($"[Earth] The earth console commands could not be added: {e.Message}"); }
         }
@@ -110,6 +113,48 @@ namespace Earthbending {
                 return $"Destroyed {n} stone(s)";
             }
             catch (Exception e) { return Failed(e); }
+        }
+
+        [Command("ring", "Fight health's test ring: earth ring <player> [radius] puts one round where that player stands (default 10 m, the arena 6 m wider), earth ring off removes it, earth ring says where it is and who fights on it. Never saved")]
+        static string Ring(string player = "", string radius = "") {
+            try {
+                string who = (player ?? "").Trim(), r = (radius ?? "").Trim();
+                if (who.Length == 0) return RingStatus();
+                if (string.Equals(who, "off", StringComparison.OrdinalIgnoreCase) && r.Length == 0) {
+                    FightServer.SetConsole(null);
+                    MelonLogger.Msg("[Earth] Console: the test ring was removed");
+                    return "The console's test ring is removed. " + RingStatus();
+                }
+                float size = DefaultRingRadius;
+                if (r.Length > 0 && (!float.TryParse(r, NumberStyles.Float, CultureInfo.InvariantCulture, out size) || !(size > 0f) || size > MaxRingRadius))
+                    return $"'{r}' is not a radius in metres (above 0, at most {MaxRingRadius:0}). {RingUsage}";
+                Player? p = Find(who, out string refusal);
+                if (p == null) return refusal;
+                string name = p.UserInfo.Username;
+                PlayerController pc = p.PlayerController;
+                if (pc == null) return $"{name} has no body right now: no ring";
+                Vector3 feet = pc.RealFeetPosition;
+                if (float.IsNaN(feet.x) || float.IsNaN(feet.y) || float.IsNaN(feet.z) || float.IsInfinity(feet.x) || float.IsInfinity(feet.y) || float.IsInfinity(feet.z))
+                    return $"{name}'s feet are not anywhere right now: no ring";
+                var ring = new FightRing(new V3(feet.x, feet.y, feet.z), size, size + ArenaMargin, true);
+                FightServer.SetConsole(ring);
+                MelonLogger.Msg($"[Earth] Console: a test ring round {name}: {ring}");
+                return $"A test ring round {name}: {ring}. " + RingStatus();
+            }
+            catch (Exception e) { return Failed(e); }
+        }
+
+        static string RingStatus() {
+            if (!FightServer.HasRing) return $"No ring: stone hits take a share of real health everywhere ({FightServer.Describe()}).";
+            var list = new List<FightLedger.Change>();
+            FightServer.Fighters(list);
+            var text = new StringBuilder($"The ring: {FightServer.Describe()}. ");
+            if (list.Count == 0) text.Append("Nobody is fighting on it.");
+            else {
+                text.Append($"{list.Count} on it:");
+                foreach (FightLedger.Change c in list) text.Append($" {FightServer.NameOf(c.Player)} {c.Points}/{FightServer.Points};");
+            }
+            return text.ToString();
         }
 
         // A kind by name, any case ("cube"); a number is not a name.

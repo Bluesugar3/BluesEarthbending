@@ -33,11 +33,14 @@ namespace Earthbending {
         public const byte Version = 1;
 
         /// <summary>The kinds; the numbers are the bytes on the wire.</summary>
-        internal enum Kind : byte { Summon = 1, Modify = 2, Knockback = 10, Applied = 11 }
+        internal enum Kind : byte { Summon = 1, Modify = 2, Knockback = 10, Applied = 11, Fight = 12, Ring = 13 }
 
         /// <summary>An Applied event's byte when it is not a <see cref="Modifier"/>: the stone broke, froze for a hitstop, or
-        /// exploded.</summary>
-        public const byte Broke = 20, Hitstop = 21, Exploded = 22;
+        /// exploded; or a player's fight health reached 0 (<see cref="KnockedOut"/>: entity 0, at that player's head).</summary>
+        public const byte Broke = 20, Hitstop = 21, Exploded = 22, KnockedOut = 23;
+
+        /// <summary>A Fight message's points byte for "no fight health" (points are 0 to 250).</summary>
+        public const byte NoPoints = 255;
     }
 
     /// <summary>A game asks the server for a stone (kind 1). <see cref="Head"/> is the asker's head (camera) in world space,

@@ -30,11 +30,17 @@ namespace Earthbending {
     //   StoneFreeze.cs the server: the hitstop of two stones that clash
     //   Hits.cs       the server: a moving stone hits creatures (its collisions) and players (their capsules), knocks
     //                 players back, stuns creatures, two stones clash, and Explode's blast; [EarthDamage]
+    //   Fight.cs      Unity-free: fight health's rules (FightRing: the ring's zones; FightRules: RUMBLE's damage share,
+    //                 the finishing hit's fling; FightLedger: each player's points)
+    //   FightServer.cs the server: the one ring (the arena mod's, the console's, [EarthFight] Ring), who is on it, fight
+    //                 health on every stone hit, the Fight and Ring messages; [EarthFight]
+    //   Arena.cs      public: Arena.SetRing / ClearRing, for the arena mod to say where its ring is
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone, StoneView.Live), the rise, break and
     //                 stomp looks
-    //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
+    //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback, Applied events, fight health and
+    //                 the ring to games
     //   Moves.cs      games: pushing the local player (Straight's pushback too), the hitstun after a knockback, the
-    //                 movement moves' dust, the game's grounded flag
+    //                 movement moves' dust, the game's grounded flag, a fight's fling flying without air friction
     //   Poses.cs      Unity-free: the pose engine (spec 3.3: zones, pass-through), the rules of feeding it (the axis
     //                 settings as directions, empty hands, ground grace, push), and the pose recorder's rules (CaptureGate,
     //                 PoseCapture)
@@ -47,7 +53,7 @@ namespace Earthbending {
     //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump, a structure's Summon claim, a
     //                 modifier's target and Modify claim), Bender.CanBend, poses.txt
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings as directions (run it with python -I)
-    //   Commands.cs   the server's `earth` console module
+    //   Commands.cs   the server's `earth` console module (`earth ring`: fight health's test ring)
     public class Main : MelonMod {
         public const string Version = "1.0.0";
 
@@ -75,6 +81,7 @@ namespace Earthbending {
             }
             if (IsServer) {
                 Server.Init();    // [EarthStones] summons, caps and life; [EarthModifiers]; Summon and Modify claims; the quit
+                FightServer.Init(); // [EarthFight]: the ring and fight health
                 Commands.Register();
             }
             LoggerInstance.Msg($"[Earth] Blue's Earthbending v{Version} started ({(IsServer ? "server" : "client")})");
@@ -84,6 +91,7 @@ namespace Earthbending {
             Cfg.Poll();
             if (IsServer) {
                 Server.Tick();      // every stone that lived its time, fell out of the world or lost its owner breaks
+                FightServer.Tick(); // who is on the ring; fight health in and out; the ring and the points to every game
                 return;             // the headless server: nothing below draws or reads the local player
             }
             Hands.Tick();           // the pose recorder; one bool test while [EarthPose] Capture is off

@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Reflection.Emit;
+using Alta.Networking;
+using Alta.Utilities;
 using HarmonyLib;
 using MelonLoader;
 using UnityEngine;
@@ -35,6 +38,16 @@ namespace Earthbending {
     //     (it keeps a slide on the ground, downhill too).
     //   - Nothing moves a player who is downed or dead (ShouldApplyGravityAndMovement), so no push is given then, and a held
     //     push ends.
+    //   - The friction above also runs in the AIR (every frame of ApplyGravityAndMovement that is not zeroed): a push's flat
+    //     speed falls as e^-t while it flies. A fight's finishing hit (FightServer.Fling: up to 16 m/s at 45 degrees, aimed to
+    //     land 3 m past the ring's edge without friction) would land at about 40% of the distance it is aimed at (10.2 m
+    //     instead of 26 m at 16 m/s). So the fling flies without it (Fling): from its knockback until the player stands again
+    //     (or 5 s; or it never left the ground within 0.25 s), the local player's SmoothLocomotion gets friction 0 through its
+    //     own private GetFrictionMultiplier event (one more handler on its backing field, Root.Township.dll IL checked
+    //     2026-11-23: `.field private GeneralDelegates/ValueUpdater GetFrictionMultiplier`; Climber, the only other handler,
+    //     multiplies, so 0 stays 0). The game's knockback message has no flag for a fling: a knockback is the fling when this
+    //     game's own player was told they have no fight health (Net.FightReceived, -1 for their own account) within
+    //     FlingPairSeconds of it, in either order (the server sends the points just before the knockback).
     public static class Moves {
         /// <summary>The game zeroes a grounded player's velocity while its y is at most 0.1 m/s.</summary>
         const float GameZeroBelow = 0.1f;
@@ -46,6 +59,10 @@ namespace Earthbending {
         const string DefaultDustEffect = "GroundPuffSmall";
         /// <summary>A dust effect that is not loaded is looked for again after this long (each search walks every loaded asset).</summary>
         const float DustRetrySeconds = 10f;
+        /// <summary>A knockback and this game's own "no fight health" at most this far apart are a fight's finishing hit.</summary>
+        const float FlingPairSeconds = 0.5f;
+        /// <summary>A fling flies without friction at most this long, and stops doing so if it has not left the ground this soon.</summary>
+        const float FlingMaxSeconds = 5f, FlingTakeOffSeconds = 0.25f;
 
         static MelonPreferences_Entry<float>? pushEndSpeed, pushMaxSeconds, maxPushSpeed, pushbackGroundedEntry, pushbackFreeEntry, pushbackLiftEntry;
         static MelonPreferences_Entry<float>? dashSpeedEntry, dashLiftEntry;
@@ -66,6 +83,15 @@ namespace Earthbending {
         static float stunUntil = float.NegativeInfinity;
         static bool warnedNoLocomotion;
 
+        static float knockedOutAt = float.NegativeInfinity, knockbackAt = float.NegativeInfinity;   // unscaled times
+        static SmoothLocomotion? knockbackLoco;   // the locomotion the last knockback pushed
+        static SmoothLocomotion? flying;          // the local player's locomotion while a fling flies (no friction)
+        static float flyingSince, flyingUntil;
+        static bool flyingAirborne;
+        static SmoothLocomotion? frictionHooked;  // the locomotion our friction handler is on
+        static FieldInfo? frictionField;
+        static bool frictionFieldLooked, frictionWarned;
+
         /// <summary>From Main.OnInitializeMelon on games: the [EarthMovement] settings, and the server's knockback pushes the
         /// local player and stuns them.</summary>
         internal static void Init() {
@@ -82,7 +108,7 @@ namespace Earthbending {
             Apply();
             Cfg.Changed += Apply;
             // a Net whose static initialiser failed (Main says so) throws on every touch: no knockback, the rest still starts
-            try { Net.KnockbackReceived += OnKnockback; }
+            try { Net.KnockbackReceived += OnKnockback; Net.FightReceived += OnFight; }
             catch (Exception e) { MelonLogger.Warning($"[Earth] Moves: no knockback from the server (message 19 is not set up: {e.GetType().Name})"); }
         }
 
@@ -99,8 +125,102 @@ namespace Earthbending {
         }
 
         static void OnKnockback(Vector3 velocity, float hitstun) {
-            Push(velocity);
+            bool pushed = Push(velocity);
             Stun(hitstun);
+            float now = Time.unscaledTime;
+            knockbackAt = pushed ? now : float.NegativeInfinity;
+            knockbackLoco = pushed ? CurrentLoco() : null;
+            if (pushed && now - knockedOutAt <= FlingPairSeconds) {
+                knockedOutAt = float.NegativeInfinity;
+                Fling(knockbackLoco);
+            }
+        }
+
+        // Fight health: this game's own player has none any more (Net.FightReceived). Paired with a knockback within
+        // FlingPairSeconds, either side of it, that knockback is the finishing hit's fling.
+        static void OnFight(int account, int points) {
+            if (points >= 0 || !IsOwnAccount(account)) return;
+            float now = Time.unscaledTime;
+            if (now - knockbackAt <= FlingPairSeconds && knockbackLoco != null) {
+                knockbackAt = float.NegativeInfinity;
+                Fling(knockbackLoco);
+                return;
+            }
+            knockedOutAt = now;
+        }
+
+        static bool IsOwnAccount(int account) {
+            try {
+                PlayerController pc = PlayerController.Current;
+                Player? p = pc != null ? pc.NetworkPlayer : null;
+                if (p == null) p = Player.Current as Player;
+                return p != null && p.UserInfo != null && p.UserInfo.Identifier == account;
+            }
+            catch { return false; }
+        }
+
+        static SmoothLocomotion? CurrentLoco() {
+            var smooth = PlayerController.Current as SmoothLocomotionPlayerController;
+            return smooth != null ? smooth.SmoothLocomotion : null;
+        }
+
+        /// <summary>A fight's finishing hit: the push just given flies without the game's friction until the player stands
+        /// again (see the header).</summary>
+        static void Fling(SmoothLocomotion? loco) {
+            if (loco == null || !HookFriction(loco)) return;
+            flying = loco;
+            flyingSince = Time.time;
+            flyingUntil = flyingSince + FlingMaxSeconds;
+            flyingAirborne = false;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: knocked out: the fling flies without friction ({loco.velocity} m/s)");
+        }
+
+        // Puts NoFrictionInFlight on the locomotion's private GetFrictionMultiplier event once (a new locomotion, after a
+        // respawn, gets it again). False, with one warning, when the game's field is not there: the fling then falls short.
+        static bool HookFriction(SmoothLocomotion loco) {
+            if (ReferenceEquals(loco, frictionHooked)) return true;
+            try {
+                if (!frictionFieldLooked) {
+                    frictionFieldLooked = true;
+                    frictionField = AccessTools.Field(typeof(SmoothLocomotion), "GetFrictionMultiplier");
+                    if (frictionField != null && frictionField.FieldType != typeof(GeneralDelegates.ValueUpdater)) frictionField = null;
+                }
+                if (frictionField == null) throw new MissingFieldException("SmoothLocomotion.GetFrictionMultiplier (a GeneralDelegates.ValueUpdater) is not there");
+                SmoothLocomotion target = loco;
+                GeneralDelegates.ValueUpdater handler = (ref float friction) => NoFrictionInFlight(target, ref friction);
+                frictionField.SetValue(loco, Delegate.Combine((Delegate?)frictionField.GetValue(loco), handler));
+                frictionHooked = loco;
+                return true;
+            }
+            catch (Exception e) {
+                if (!frictionWarned) { frictionWarned = true; MelonLogger.Warning($"[Earth] Moves: the game's air friction could not be switched off for a fight's fling, so a knocked-out player may land short of the ring's edge: {e.Message}"); }
+                return false;
+            }
+        }
+
+        // Called by the game every frame it applies friction to this locomotion (in the air too): 0 while a fling flies.
+        static void NoFrictionInFlight(SmoothLocomotion s, ref float friction) {
+            try {
+                if (!ReferenceEquals(s, flying)) return;
+                PlayerController pc = PlayerController.Current;
+                float now = Time.time;
+                bool grounded = Grounded(pc);
+                if (!grounded) flyingAirborne = true;
+                string? ended = pc == null || !pc.IsAlive || pc.IsDowned ? "downed or dead"
+                    : now > flyingUntil ? $"{FlingMaxSeconds:0} s"
+                    : grounded && flyingAirborne ? "landed"
+                    : grounded && now - flyingSince > FlingTakeOffSeconds ? "it never left the ground" : null;
+                if (ended != null) {
+                    flying = null;
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: the fling's flight ended after {now - flyingSince:0.00} s ({ended})");
+                    return;
+                }
+                friction = 0f;
+            }
+            catch (Exception e) {
+                flying = null;
+                if (!frictionWarned) { frictionWarned = true; MelonLogger.Warning($"[Earth] Moves: a fling's flight failed: {e.Message}"); }
+            }
         }
 
         /// <summary>In hitstun after a knockback: no structure, modifier or movement fires (spec 2.6, 3.3).</summary>
