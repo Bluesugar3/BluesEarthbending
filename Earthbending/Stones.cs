@@ -602,8 +602,9 @@ namespace Earthbending {
 
         // ---------------------------------------------------------------- Task 14: Flick
 
-        /// <summary>[EarthModifiers] FlickScale (N per metre off), FlickTurnGain (rad/s² per radian off) and FlickTurnDamp
-        /// (rad/s² per rad/s of spin) defaults (spec 2.4: the PID's output x 1000; the brief's turn numbers).</summary>
+        /// <summary>[EarthModifiers] FlickScale (N per metre off), FlickTurnGain (rad/s every second per radian off) and
+        /// FlickTurnDamp (rad/s every second per rad/s of spin) defaults (spec 2.4: the PID's output x 1000; the brief's turn
+        /// numbers).</summary>
         public const float DefaultFlickScale = 1000f, DefaultFlickTurnGain = 8f, DefaultFlickTurnDamp = 1f;
 
         /// <summary><see cref="FlickTurn"/>'s fallback: the look made square to up shorter than this (up within about 6
@@ -691,9 +692,10 @@ namespace Earthbending {
 
         /// <summary>The flick's turn (ruling C15): <paramref name="gain"/> ([EarthModifiers] FlickTurnGain) x
         /// <paramref name="turn"/> (<see cref="TurnVector"/>: the turn still to go) - <paramref name="damp"/> (FlickTurnDamp) x
-        /// <paramref name="angularVelocity"/> (rad/s), an angular acceleration in rad/s² (Unity's ForceMode.Acceleration: the
-        /// same on every stone, whatever its inertia). A turn that is not a number turns nothing, a spin that is not one counts
-        /// as none, a gain or damp below 0 (or not finite) is 0. Worked in doubles, held to the range of a float.</summary>
+        /// <paramref name="angularVelocity"/> (rad/s), an angular acceleration in rad/s every second (Unity's
+        /// ForceMode.Acceleration: the same on every stone, whatever its inertia). A turn that is not a number turns nothing, a
+        /// spin that is not one counts as none, a gain or damp below 0 (or not finite) is 0. Worked in doubles, held to the
+        /// range of a float.</summary>
         public static V3 FlickTorque(V3 turn, V3 angularVelocity, float gain, float damp) {
             if (!Finite(turn)) turn = V3.Zero;
             if (!Finite(angularVelocity)) angularVelocity = V3.Zero;

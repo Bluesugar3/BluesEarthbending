@@ -113,10 +113,11 @@ namespace Earthbending {
         internal static float PdStepSeconds { get; private set; } = Pd.DefaultPdStepSeconds;
         /// <summary>[EarthModifiers] FlickScale (ruling C15): the flick's PID output times this, in N per metre off (Pd.Flick).</summary>
         internal static float FlickScale { get; private set; } = Pd.DefaultFlickScale;
-        /// <summary>[EarthModifiers] FlickTurnGain: a flicked stone is turned this many rad/s² per radian off the hands' turn
-        /// (Pd.FlickTorque).</summary>
+        /// <summary>[EarthModifiers] FlickTurnGain: a flicked stone is turned this many rad/s every second per radian off the
+        /// hands' turn (Pd.FlickTorque).</summary>
         internal static float FlickTurnGain { get; private set; } = Pd.DefaultFlickTurnGain;
-        /// <summary>[EarthModifiers] FlickTurnDamp: the turn slowed this many rad/s² per rad/s of the stone's spin.</summary>
+        /// <summary>[EarthModifiers] FlickTurnDamp: the turn is slowed this many rad/s every second per rad/s of the stone's
+        /// spin.</summary>
         internal static float FlickTurnDamp { get; private set; } = Pd.DefaultFlickTurnDamp;
 
         /// <summary>From Main.OnInitializeMelon on the dedicated server only, after Prefabs.Init (which made [EarthStones]).</summary>
@@ -163,8 +164,8 @@ namespace Earthbending {
             holdArmEntry = mods.CreateEntry("HoldArmMetres", Pd.DefaultHoldArmMetres, description: "Server. A held stone can be thrown (HoldLetGoSpeed) only once it has settled near the hand: within this many metres of its place ahead of the hand (measured flat for a stone sliding on the ground) while no faster than HoldLetGoSpeed, at the same moment. Until then it is only pulled in. Above 0.");
             pdStepEntry = mods.CreateEntry("PdStepSeconds", Pd.DefaultPdStepSeconds, description: "Server. How Hold and Flick read spec 2.4's damping d: as the stone's change over one physics step of this many seconds (0.02, RUMBLE's 50 steps a second). A held Ball trails a hand moving 1 m/s by about 8 x this (0.16 m). Higher damps more and trails further; 1 (d per second) makes the server's physics run away. 0: no damping (it swings until it is thrown). 0 or more.");
             flickScaleEntry = mods.CreateEntry("FlickScale", Pd.DefaultFlickScale, description: "Server. How hard Flick pulls a loose stone to its place between the hands (HoldDistance ahead of the point between the two hands, along the look): this many N for each metre it is off, plus a pull that grows the longer it stays off (spec 2.4's i, 0.1 a second), less a damping by its weight (spec 2.4's d: 6 for a Disc or Ball, 7 for a Pillar or Cube, 8.5 for a Wall, read per PdStepSeconds); its gravity is off while flicked. At 1000 a Ball swings to its place about every 2.4 s and a Wall every 4 s, and a quick sweep of the hands leaves it behind; higher follows tighter and quicker. Only Stomp or a break drops a flicked stone. 0: no pull (it floats where it is). 0 or more.");
-            flickTurnGainEntry = mods.CreateEntry("FlickTurnGain", Pd.DefaultFlickTurnGain, description: "Server. How hard Flick turns its stone to match the hands: the stone's up runs from the lower hand of the pose to the upper one and it faces along the look, so tilting the hands tilts it. It is turned this many rad/s² for each radian it is off, the same on every stone whatever its weight. Higher turns quicker and swings past more. 0: no turn. 0 or more.");
-            flickTurnDampEntry = mods.CreateEntry("FlickTurnDamp", Pd.DefaultFlickTurnDamp, description: "Server. How much Flick's turn is slowed by the stone's own spin, in rad/s² for each rad/s. Higher settles the turn with less swinging past: with FlickTurnGain 8, 1 swings past by about half before it settles, and about 5.7 or more never swings past. 0: it swings on. 0 or more.");
+            flickTurnGainEntry = mods.CreateEntry("FlickTurnGain", Pd.DefaultFlickTurnGain, description: "Server. How hard Flick turns its stone to match the hands: the stone's up runs from the lower hand of the pose to the upper one and it faces along the look, so tilting the hands tilts it. It is turned this many rad/s every second for each radian it is off, the same on every stone whatever its weight. Higher turns quicker and swings past more. 0: no turn. 0 or more.");
+            flickTurnDampEntry = mods.CreateEntry("FlickTurnDamp", Pd.DefaultFlickTurnDamp, description: "Server. How much Flick's turn is slowed by the stone's own spin, in rad/s every second for each rad/s. Higher settles the turn with less swinging past: with FlickTurnGain 8, 1 swings past by about half before it settles, and about 5.7 or more never swings past. 0: it swings on. 0 or more.");
             Apply();
             Cfg.Changed += Apply;
             Hits.Init();   // [EarthDamage]: what a moving stone does to creatures, players and other stones (Task 8)
