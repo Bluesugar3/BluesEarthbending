@@ -15,6 +15,8 @@ internal static class Program {
     static int Main(string[] args) {
         string? file = args.Length >= 2 ? args[1] : null;
         if (args.Length >= 1 && args[0] == "--overlaps") return PoseTests.PrintOverlaps(file);          // the poses (default, or a poses.txt) that one pair of hands can strike together
+        if (args.Length >= 1 && args[0] == "--paths") return PoseTests.PrintPaths();                     // task 17a's hand paths that fire what they should not (KNOWN or NEW)
+        if (args.Length >= 1 && args[0] == "--replay") return PoseTests.ReplayTrace(file, args.Length >= 3 ? args[2] : null); // a pose-trace CSV (and a poses.txt) through the machine
         if (args.Length >= 1 && args[0] == "--check-poses") return PoseTests.CheckPoses(file);          // a poses.txt as PoseLibrary.Parse reads it: POSES OK (16)
         if (args.Length >= 1 && args[0] == "--capture-sample") return PoseTests.WriteCaptureSample(file); // a made-up capture CSV through PoseCapture, for fit_poses.py
         StoneTests.Run();
