@@ -9,7 +9,8 @@ using System.Globalization;
 // cooldowns (Ledger), its check of a Summon claim (SummonCheck), where a stone rises (SpawnPlan), when it breaks (StoneLife),
 // how many may stand (Caps) and which kinds are on (StoneKinds); Server.cs and StoneBody.cs run them. Task 8: a stone's power,
 // clashes, damage, knockback and hitstun (StoneRules), the players' capsule against a stone (Contact) and who was hit by what
-// (HitLedger); Hits.cs runs them.
+// (HitLedger); Hits.cs runs them. Task 9: the Disc's and the Ball's launch (SpawnPlan.Launch) and what a stone standing where
+// another is summoned does (StoneRules.SummonUnder).
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -135,6 +136,12 @@ namespace Earthbending {
         /// <summary>Whether the stone's rigidbody is kinematic in this state (spec 3.4: Rising is moved by the server each tick,
         /// Still is anchored); every other state is moved by physics.</summary>
         public static bool Kinematic(StoneState s) => s == StoneState.Rising || s == StoneState.Still;
+
+        /// <summary>Ruling C4: what a stone standing where another is summoned does. Still, Sliding and Stomped are lifted off:
+        /// Free, thrown up at <see cref="SpawnPlan.SummonUnderLift"/> m/s (a velocity change; 0 leaves it as it is). Every other
+        /// state stays, lift 0: a loose stone is pushed aside by physics, and a Rising one is half in the ground.</summary>
+        public static (StoneState state, float lift) SummonUnder(StoneState s) =>
+            s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped ? (StoneState.Free, SpawnPlan.SummonUnderLift) : (s, 0f);
 
         // ---------------------------------------------------------------- Task 7: the modifiers' states
 
@@ -354,14 +361,58 @@ namespace Earthbending {
     /// <summary>Where a summoned stone rises (spec 3.4): <c>Ahead</c> metres in front of the head along the yaw, its bottom on
     /// the ground there at the end; it starts lowered by its own height (its top at ground level, ruling 5) and rises straight
     /// up over <c>RiseSeconds</c>, turned to the yaw. The [EarthStones] settings (Server.cs) replace both numbers per kind
-    /// through <see cref="Set"/>.</summary>
+    /// through <see cref="Set"/>. Task 9 (rulings C1, C2): the Disc does not rise (<see cref="Rises"/>): it appears loose,
+    /// <see cref="DiscHeight"/> above the ground; the Disc and the Ball are launched (<see cref="Launch"/>). Those numbers,
+    /// and <see cref="SummonUnderLift"/>, are [EarthStones] settings too (<see cref="SetLaunch"/>).</summary>
     internal static class SpawnPlan {
-        static readonly float[] Aheads = { 1.2f, 1.2f, 1.3f, 1.5f, 1.8f };     // Disc, Ball, Pillar, Cube, Wall
-        static readonly float[] Rises = { 0f, 0f, 0.35f, 0.35f, 0.45f };       // the Disc and Ball start free (Task 9)
-        static readonly float[] ahead = (float[])Aheads.Clone(), rise = (float[])Rises.Clone();
+        static readonly float[] AheadDefaults = { 1.2f, 1.2f, 1.3f, 1.5f, 1.8f };     // Disc, Ball, Pillar, Cube, Wall
+        static readonly float[] RiseDefaults = { 0f, 0.12f, 0.35f, 0.35f, 0.45f };    // the Disc never rises; the Ball's 0.6 m at 5 m/s
+        static readonly float[] ahead = (float[])AheadDefaults.Clone(), rise = (float[])RiseDefaults.Clone();
 
-        public static float DefaultAhead(StoneKind k) => StoneTable.Valid(k) ? Aheads[(int)k] : 0f;
-        public static float DefaultRise(StoneKind k) => StoneTable.Valid(k) ? Rises[(int)k] : 0f;
+        public const float DefaultDiscLift = 300f, DefaultDiscPush = 1400f, DefaultDiscPushDelay = 0.12f, DefaultDiscHeight = 0.5f;
+        public const float DefaultBallLaunchSpeed = 5f, DefaultSummonUnderLift = 4f;
+
+        /// <summary>[EarthStones] DiscLift: the Disc's first push, straight up as it appears, in N s.</summary>
+        public static float DiscLift { get; private set; } = DefaultDiscLift;
+        /// <summary>[EarthStones] DiscPush: the Disc's second push, ahead along the yaw, in N s.</summary>
+        public static float DiscPush { get; private set; } = DefaultDiscPush;
+        /// <summary>[EarthStones] DiscPushDelaySeconds: the time from the Disc's first push to its second.</summary>
+        public static float DiscPushDelay { get; private set; } = DefaultDiscPushDelay;
+        /// <summary>[EarthStones] DiscHeightMetres: the Disc's centre above the ground where it appears.</summary>
+        public static float DiscHeight { get; private set; } = DefaultDiscHeight;
+        /// <summary>[EarthStones] BallLaunchSpeed: the Ball's speed straight up once it has risen, in m/s.</summary>
+        public static float BallLaunchSpeed { get; private set; } = DefaultBallLaunchSpeed;
+        /// <summary>[EarthStones] SummonUnderLift: the speed a standing stone is thrown up at when another is summoned where it
+        /// stands (<see cref="StoneRules.SummonUnder"/>), in m/s.</summary>
+        public static float SummonUnderLift { get; private set; } = DefaultSummonUnderLift;
+
+        public static float DefaultAhead(StoneKind k) => StoneTable.Valid(k) ? AheadDefaults[(int)k] : 0f;
+        public static float DefaultRise(StoneKind k) => StoneTable.Valid(k) ? RiseDefaults[(int)k] : 0f;
+
+        /// <summary>Ruling C1: every kind rises out of the ground (Rising, kinematic) but the Disc, which appears loose (Free) in
+        /// the air where its plan ends.</summary>
+        public static bool Rises(StoneKind k) => k != StoneKind.Disc;
+
+        /// <summary>The launch numbers and <see cref="SummonUnderLift"/> from the settings.</summary>
+        public static void SetLaunch(float discLift, float discPush, float discPushDelaySeconds, float discHeightMetres, float ballLaunchSpeed, float summonUnderLift) {
+            DiscLift = discLift;
+            DiscPush = discPush;
+            DiscPushDelay = discPushDelaySeconds;
+            DiscHeight = discHeightMetres;
+            BallLaunchSpeed = ballLaunchSpeed;
+            SummonUnderLift = summonUnderLift;
+        }
+
+        /// <summary>Ruling C2: the kind's launch, impulses in N s in the stone's yaw frame (x right, y up, z ahead; the caller
+        /// turns them by the yaw). The first lands as the Disc appears, or as the Ball's rise ends (it is loose then); the second
+        /// <c>delay</c> seconds after the first. The Disc: <see cref="DiscLift"/> up, then <see cref="DiscPush"/> ahead after
+        /// <see cref="DiscPushDelay"/>; the Ball: <see cref="BallLaunchSpeed"/> up on its mass now (StoneTable); every other kind
+        /// none (all zero).</summary>
+        public static (V3 first, float delay, V3 second) Launch(StoneKind k) {
+            if (k == StoneKind.Disc) return (new V3(0f, DiscLift, 0f), DiscPushDelay, new V3(0f, 0f, DiscPush));
+            if (k == StoneKind.Ball) return (new V3(0f, BallLaunchSpeed * StoneTable.Of(k).Mass, 0f), 0f, V3.Zero);
+            return (V3.Zero, 0f, V3.Zero);
+        }
 
         /// <summary>The kind's distance ahead (metres) and rise time (seconds) from the settings.</summary>
         public static void Set(StoneKind k, float aheadMetres, float riseSeconds) {
@@ -371,12 +422,18 @@ namespace Earthbending {
         }
 
         /// <summary>The stone's centre at the start and at the end, the rise time and the yaw it is turned to. Yaw is Unity's
-        /// (0 faces +Z, 90 faces +X); <paramref name="groundY"/> is the ground's height under the end.</summary>
+        /// (0 faces +Z, 90 faces +X); <paramref name="groundY"/> is the ground's height under the end. The Disc
+        /// (<see cref="Rises"/>) starts where it ends, <see cref="DiscHeight"/> above the ground, and takes no time.</summary>
         public static (V3 start, V3 end, float riseSeconds, float yawDeg) For(StoneKind k, V3 head, float yawDeg, float groundY) {
             int i = StoneTable.Valid(k) ? (int)k : (int)StoneKind.Pillar;
             float h = StoneTable.Of((StoneKind)i).Size.Y;
             V3 f = Forward(yawDeg);
-            var end = new V3(head.X + f.X * ahead[i], groundY + h * 0.5f, head.Z + f.Z * ahead[i]);
+            float x = head.X + f.X * ahead[i], z = head.Z + f.Z * ahead[i];
+            if (!Rises((StoneKind)i)) {
+                var at = new V3(x, groundY + DiscHeight, z);
+                return (at, at, 0f, yawDeg);
+            }
+            var end = new V3(x, groundY + h * 0.5f, z);
             var start = new V3(end.X, end.Y - h, end.Z);
             return (start, end, rise[i], yawDeg);
         }
@@ -421,6 +478,9 @@ namespace Earthbending {
     }
 
     internal static class StoneKinds {
+        /// <summary><c>[EarthStones] Enabled</c>'s default: every stone.</summary>
+        public const string DefaultEnabled = "Disc, Ball, Pillar, Cube, Wall";
+
         /// <summary>The kinds a list names (<c>[EarthStones] Enabled</c>: "Pillar", "pillar, Cube", "Disc;Ball"): split by commas,
         /// semicolons and spaces, any case. <paramref name="unknown"/> lists the words that name no kind ("" when none).</summary>
         public static bool[] Parse(string? text, out string unknown) {

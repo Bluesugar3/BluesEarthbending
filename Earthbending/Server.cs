@@ -15,12 +15,16 @@ namespace Earthbending {
     //      [EarthStones] CooldownSlackSeconds, because two claims fired 0.3 s apart on the game can be read here closer together
     //      (the network's jitter, and the server reads messages once a frame at 15-45 Hz);
     //   3. the claimed head within [EarthStones] HeadSlackMetres of the server's copy of the head (PlayerController.Head);
-    //   4. natural ground under the spot SpawnPlan picks (Ground.Under, cast down from the claimed head's height), cast only
-    //      for a claim that passed 1-3.
+    //   4. natural ground under the spot SpawnPlan picks (Ground.UnderPastStones, cast down from the claimed head's height,
+    //      looking past our own stones: ruling C3), cast only for a claim that passed 1-3.
     // The head and yaw the stone is placed from are the claim's (what the player saw), once within the slack. Net raises the
     // claim on the game's thread (the archery mod's message handlers run there too), so the spawn happens in the handler. A
     // refusal is one Debug line naming the reason. Then the caps (Caps.Decide: the player's oldest breaks, or a full server
-    // refuses), and the stone is spawned at the plan's start, its top at ground level, kinematic and Rising; StoneBody raises it.
+    // refuses); every standing stone the new one's end box overlaps that StoneRules.SummonUnder lifts (Still, Sliding,
+    // Stomped) is set loose and thrown up (ruling C4); and the stone is spawned at the plan's start, its top at ground level,
+    // kinematic and Rising (StoneBody raises it), or for the Disc loose in the air where it ends (ruling C1). Then its launch
+    // (SpawnPlan.Launch turned to the yaw, ruling C2): the Disc's lift at once and its push after the delay, the Ball's throw
+    // up once it has risen; the others have none.
     // Every stone is SaveMode.Ignore. Each frame Tick breaks a stone that lived [EarthStones] LifeSeconds, fell below the world,
     // or whose owner is no longer connected (StoneLife); the server's quit breaks them all (Shutdown).
     //
@@ -34,7 +38,7 @@ namespace Earthbending {
         const float DefaultLife = 60f, DefaultHeadSlack = 1f, DefaultCooldownSlack = 0.1f;
         const float DefaultStraightGrounded = 2300f, DefaultStraightFree = 1800f, DefaultRangeSlack = 0.5f, DefaultDoubleStraight = 0.4f, DefaultSlideDeceleration = 4f;
         const int DefaultMaxPerPlayer = 8, DefaultMaxTotal = 64;
-        const string DefaultEnabled = "Pillar";
+        const int StoneLayers = 1 << 0;   // our stones sit on layer 0 (Default: Prefabs never sets one)
 
         /// <summary>Every standing stone the server spawned, by its entity's Identifier.</summary>
         internal static readonly Dictionary<uint, StoneBody> Stones = new Dictionary<uint, StoneBody>();
@@ -49,8 +53,9 @@ namespace Earthbending {
         static MelonPreferences_Entry<string>? enabledEntry;
         static MelonPreferences_Entry<int>? maxPerPlayerEntry, maxTotalEntry;
         static MelonPreferences_Entry<float>? lifeEntry, headSlackEntry, cooldownSlackEntry;
+        static MelonPreferences_Entry<float>? discLiftEntry, discPushEntry, discPushDelayEntry, discHeightEntry, ballLaunchEntry, summonUnderEntry;
         static readonly MelonPreferences_Entry<float>[] aheadEntries = new MelonPreferences_Entry<float>[StoneTable.Count];
-        static readonly MelonPreferences_Entry<float>[] riseEntries = new MelonPreferences_Entry<float>[StoneTable.Count];
+        static readonly MelonPreferences_Entry<float>?[] riseEntries = new MelonPreferences_Entry<float>?[StoneTable.Count];   // none for the Disc: it never rises
 
         static MelonPreferences_Entry<float>? straightGroundedEntry, straightFreeEntry, rangeSlackEntry, doubleStraightEntry, slideDecelerationEntry;
 
@@ -73,7 +78,7 @@ namespace Earthbending {
         /// <summary>From Main.OnInitializeMelon on the dedicated server only, after Prefabs.Init (which made [EarthStones]).</summary>
         internal static void Init() {
             MelonPreferences_Category cat = Cfg.Category("EarthStones");
-            enabledEntry = cat.CreateEntry("Enabled", DefaultEnabled, description: "Server. The stones a pose may summon, by name, split by commas: Disc, Ball, Pillar, Cube, Wall. A claim for any other is refused (KindOff).");
+            enabledEntry = cat.CreateEntry("Enabled", StoneKinds.DefaultEnabled, description: "Server. The stones a pose may summon, by name, split by commas: Disc, Ball, Pillar, Cube, Wall. A claim for any other is refused (KindOff).");
             maxPerPlayerEntry = cat.CreateEntry("MaxPerPlayer", DefaultMaxPerPlayer, description: "Server. The most stones one player has standing; summoning one more breaks their oldest. 1 or more.");
             maxTotalEntry = cat.CreateEntry("MaxTotal", DefaultMaxTotal, description: "Server. The most stones standing on the server; a summon past it is refused (unless that player is at MaxPerPlayer: then their oldest breaks). 1 or more.");
             lifeEntry = cat.CreateEntry("LifeSeconds", DefaultLife, description: "Server. A stone breaks this many seconds after it was summoned. Above 0.");
@@ -81,9 +86,16 @@ namespace Earthbending {
             cooldownSlackEntry = cat.CreateEntry("CooldownSlackSeconds", DefaultCooldownSlack, description: "Server. A player's summons of one stone, or uses of one modifier, may come this much closer together than the game's own cooldown (0.3 s for a stone, 0.3 to 0.8 s for a modifier) before the server refuses one (Cooldown): two claims sent a cooldown apart can arrive closer. 0 or more.");
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
-                aheadEntries[i] = cat.CreateEntry(k + "AheadMetres", SpawnPlan.DefaultAhead(k), description: $"Server. A summoned {k} rises this many metres in front of the head (spec 3.4). 0 or more.");
-                riseEntries[i] = cat.CreateEntry(k + "RiseSeconds", SpawnPlan.DefaultRise(k), description: $"Server. A summoned {k} rises out of the ground over this many seconds (0: it stands at once). 0 or more.");
+                aheadEntries[i] = cat.CreateEntry(k + "AheadMetres", SpawnPlan.DefaultAhead(k), description: $"Server. A summoned {k} {(SpawnPlan.Rises(k) ? "rises" : "appears")} this many metres in front of the head (spec 3.4). 0 or more.");
+                if (SpawnPlan.Rises(k))
+                    riseEntries[i] = cat.CreateEntry(k + "RiseSeconds", SpawnPlan.DefaultRise(k), description: $"Server. A summoned {k} rises out of the ground over this many seconds (0: it is up at once). 0 or more.");
             }
+            discHeightEntry = cat.CreateEntry("DiscHeightMetres", SpawnPlan.DefaultDiscHeight, description: "Server. A summoned Disc does not rise: it appears loose with its centre this many metres above the ground, and is launched at once (DiscLift, then DiscPush). 0 or more; under 0.07 (half its thickness) it starts partly in the ground.");
+            discLiftEntry = cat.CreateEntry("DiscLift", SpawnPlan.DefaultDiscLift, description: "Server. A summoned Disc is pushed straight up with this impulse as it appears, in N s (a 100 kg Disc: 300 is 3 m/s). 0 or more.");
+            discPushEntry = cat.CreateEntry("DiscPush", SpawnPlan.DefaultDiscPush, description: "Server. DiscPushDelaySeconds after its lift, a summoned Disc is pushed along the look with this impulse, in N s (a 100 kg Disc: 1400 is 14 m/s). A modifier on the Disc, or its break, before then cancels this push. 0 or more.");
+            discPushDelayEntry = cat.CreateEntry("DiscPushDelaySeconds", SpawnPlan.DefaultDiscPushDelay, description: "Server. The time from a summoned Disc's lift to its push, in seconds (counted in the server's physics steps: the push lands in the first step at least this long after the lift). 0 or more.");
+            ballLaunchEntry = cat.CreateEntry("BallLaunchSpeed", SpawnPlan.DefaultBallLaunchSpeed, description: "Server. A summoned Ball rises out of the ground over BallRiseSeconds, then is loose and thrown straight up at this speed, in m/s (5: about 1.6 m higher with the game's gravity). 0: it stands still where it rose.");
+            summonUnderEntry = cat.CreateEntry("SummonUnderLift", SpawnPlan.DefaultSummonUnderLift, description: "Server. A stone summoned where another stands (still, sliding or stomped) sets that one loose and throws it up at this speed, in m/s. 0: the standing one is left as it is.");
             MelonPreferences_Category mods = Cfg.Category("EarthModifiers");   // Reach and MaxHeight are ReachSettings' (both sides)
             straightGroundedEntry = mods.CreateEntry("StraightGrounded", DefaultStraightGrounded, description: "Server. Straight pushes a stone anchored to the ground (standing still, rising or sliding) along the look with this impulse, in N s (a 275 kg Pillar: 2300 is 8.4 m/s); it slides along the ground until it stops. 0 or more.");
             straightFreeEntry = mods.CreateEntry("StraightFree", DefaultStraightFree, description: "Server. Straight pushes any other stone (loose, in the air) along the look with this impulse, in N s. 0 or more.");
@@ -123,6 +135,13 @@ namespace Earthbending {
                 SpawnPlan.Set(k, Cfg.NotNegative(aheadEntries[i], "EarthStones", k + "AheadMetres", SpawnPlan.DefaultAhead(k)),
                     Cfg.NotNegative(riseEntries[i], "EarthStones", k + "RiseSeconds", SpawnPlan.DefaultRise(k)));
             }
+            SpawnPlan.SetLaunch(
+                discLift: Cfg.NotNegative(discLiftEntry, "EarthStones", "DiscLift", SpawnPlan.DefaultDiscLift),
+                discPush: Cfg.NotNegative(discPushEntry, "EarthStones", "DiscPush", SpawnPlan.DefaultDiscPush),
+                discPushDelaySeconds: Cfg.NotNegative(discPushDelayEntry, "EarthStones", "DiscPushDelaySeconds", SpawnPlan.DefaultDiscPushDelay),
+                discHeightMetres: Cfg.NotNegative(discHeightEntry, "EarthStones", "DiscHeightMetres", SpawnPlan.DefaultDiscHeight),
+                ballLaunchSpeed: Cfg.NotNegative(ballLaunchEntry, "EarthStones", "BallLaunchSpeed", SpawnPlan.DefaultBallLaunchSpeed),
+                summonUnderLift: Cfg.NotNegative(summonUnderEntry, "EarthStones", "SummonUnderLift", SpawnPlan.DefaultSummonUnderLift));
             var on = new List<string>();
             for (int i = 0; i < StoneTable.Count; i++) if (enabled[i]) on.Add(((StoneKind)i).ToString());
             MelonLogger.Msg($"[Earth] Stones: summons of {(on.Count == 0 ? "no stone" : string.Join(", ", on.ToArray()))}; at most {maxPerPlayer} a player and {maxTotal} in all, each for {life:0.#} s");
@@ -164,7 +183,7 @@ namespace Earthbending {
             (V3 start, V3 end, float riseSeconds, float yawDeg) plan = default;
             if (why == SummonRefusal.None) {
                 V3 spot = SpawnPlan.For(c.Kind, c.Head, c.Yaw, 0f).end;   // where it would stand; its height comes from the cast
-                bool natural = Ground.Under(new Vector3(spot.X, c.Head.Y, spot.Z), out RaycastHit hit);
+                bool natural = Ground.UnderPastStones(new Vector3(spot.X, c.Head.Y, spot.Z), out RaycastHit hit);   // ruling C3
                 if (hit.collider != null) {
                     plan = SpawnPlan.For(c.Kind, c.Head, c.Yaw, hit.point.y);
                     if (Logs.Debug) ground = $", ground {hit.collider.name} (layer {hit.collider.gameObject.layer}) at {hit.point.y:0.##}";
@@ -198,9 +217,30 @@ namespace Earthbending {
                 oldest.Break("its owner summoned one more at [EarthStones] MaxPerPlayer");
             }
 
-            StoneBody? b = Spawn(c.Kind, U(plan.start), Quaternion.Euler(0f, plan.yawDeg, 0f), p, StoneState.Rising, U(plan.end), plan.riseSeconds);
-            if (b != null && Logs.Debug)
-                MelonLogger.Msg($"[Earth] Summon: {c.Kind} #{b.Id} for {b.OwnerName}, rising from {plan.start} to {plan.end} over {plan.riseSeconds:0.##} s (heads {(c.Head - serverHead).Length:0.##} m apart{ground}); {owned.Count + 1} of theirs, {Stones.Count} in all");
+            Quaternion yaw = Quaternion.Euler(0f, plan.yawDeg, 0f);
+            int lifted = LiftOff(c.Kind, U(plan.end), yaw);   // ruling C4: after the caps, so a refused summon lifts nothing
+            bool rises = SpawnPlan.Rises(c.Kind);
+            StoneBody? b = Spawn(c.Kind, U(plan.start), yaw, p, rises ? StoneState.Rising : StoneState.Free, U(plan.end), plan.riseSeconds);
+            if (b == null) return;
+            (V3 first, float delay, V3 second) launch = SpawnPlan.Launch(c.Kind);   // ruling C2: in the yaw frame
+            b.Launch(yaw * U(launch.first), launch.delay, yaw * U(launch.second));
+            if (Logs.Debug)
+                MelonLogger.Msg($"[Earth] Summon: {c.Kind} #{b.Id} for {b.OwnerName}, {(rises ? $"rising from {plan.start} to {plan.end} over {plan.riseSeconds:0.##} s" : $"loose at {plan.end}")} (heads {(c.Head - serverHead).Length:0.##} m apart{ground}{(lifted > 0 ? $"; lifted {lifted} standing stone(s) off the spot" : "")}); {owned.Count + 1} of theirs, {Stones.Count} in all");
+        }
+
+        /// <summary>Ruling C4: every standing stone the new <paramref name="kind"/>'s collider at <paramref name="end"/>, turned
+        /// by <paramref name="rot"/>, overlaps is lifted off when StoneRules.SummonUnder says so (StoneBody.LiftOff). How many were.</summary>
+        static int LiftOff(StoneKind kind, Vector3 end, Quaternion rot) {
+            Vector3 size = U(StoneTable.Of(kind).Size);
+            Collider[] under = kind == StoneKind.Ball
+                ? Physics.OverlapSphere(end, size.x * 0.5f, StoneLayers, QueryTriggerInteraction.Ignore)
+                : Physics.OverlapBox(end, size * 0.5f, rot, StoneLayers, QueryTriggerInteraction.Ignore);
+            int lifted = 0;
+            foreach (Collider col in under) {
+                StoneBody? s = col != null ? col.GetComponentInParent<StoneBody>() : null;
+                if (s != null && s.LiftOff()) lifted++;
+            }
+            return lifted;
         }
 
         // One Debug line; nothing is built without [EarthLog] Debug.

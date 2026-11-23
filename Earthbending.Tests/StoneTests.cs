@@ -22,9 +22,66 @@ internal static class StoneTests {
         Summons();
         Straights();
         HitRules();
+        OtherStones();
     }
 
     static bool NearV(V3 a, V3 b) => Near(a.X, b.X) && Near(a.Y, b.Y) && Near(a.Z, b.Z);
+
+    static bool IsZero((V3 first, float delay, V3 second) l) => NearV(l.first, V3.Zero) && l.delay == 0f && NearV(l.second, V3.Zero);
+
+    // Task 9: the Disc, Ball, Cube and Wall (spec 3.4; rulings C1-C4)
+    static void OtherStones() {
+        // the Wall: 1.8 m ahead, turned to the yaw, rises like the Pillar
+        var wall = SpawnPlan.For(Wall, new V3(1f, 1.7f, 2f), 30f, 0.2f);
+        Check("plan: wall turned to the yaw", wall.yawDeg == 30f);
+        Check("plan: wall 1.8 m ahead along yaw 30", Near(wall.end.X, 1f + 0.9f) && Near(wall.end.Z, 2f + 1.8f * (float)System.Math.Cos(System.Math.PI / 6.0))
+            && Near(wall.end.Y, 0.2f + 1f) && Near(wall.start.Y, 0.2f - 1f) && Near(wall.riseSeconds, 0.45f));
+        var cube = SpawnPlan.For(Cube, V3.Zero, 0f, -1.6f);
+        Check("plan: cube rises like the pillar", SpawnPlan.Rises(Cube) && SpawnPlan.Rises(Pillar) && SpawnPlan.Rises(Wall)
+            && Near(cube.riseSeconds, 0.35f) && Near(cube.start.Y, -2.1f) && Near(cube.end.Y, -1.1f) && Near(cube.end.Z, 1.5f));
+
+        // ruling C1: the Disc appears loose in the air, 1.2 m ahead at ground + DiscHeightMetres 0.5, and does not rise
+        var disc = SpawnPlan.For(Disc, new V3(2f, 1.7f, 3f), 0f, 0.25f);
+        Check("plan: disc 1.2 m ahead at ground + 0.5", Near(disc.end.X, 2f) && Near(disc.end.Z, 3f + 1.2f) && Near(disc.end.Y, 0.25f + 0.5f));
+        Check("plan: disc does not rise", !SpawnPlan.Rises(Disc) && NearV(disc.start, disc.end) && disc.riseSeconds == 0f);
+        // ruling C1: the Ball rises from its top at ground level (ruling 5) over BallRiseSeconds 0.12 (0.6 m at 5 m/s)
+        var ball = SpawnPlan.For(Ball, V3.Zero, 90f, -1.6f);
+        float ballR = StoneTable.Of(Ball).Size.Y * 0.5f;
+        Check("plan: ball starts with its top under the ground", ball.start.Y + ballR <= -1.6f + 1e-4f && Near(ball.start.Y + ballR, -1.6f));
+        Check("plan: ball rises 1.2 m ahead in 0.12 s", SpawnPlan.Rises(Ball) && Near(ball.end.X, 1.2f) && Near(ball.end.Y, -1.6f + ballR) && Near(ball.riseSeconds, 0.12f));
+
+        // ruling C2: impulses in N s in the stone's yaw frame (x right, y up, z ahead)
+        var dl = SpawnPlan.Launch(Disc);
+        Check("launch: disc delay 0.12 s", dl.delay == 0.12f);
+        Check("launch: disc lift 300 up, then push 1400 ahead", NearV(dl.first, new V3(0f, 300f, 0f)) && NearV(dl.second, new V3(0f, 0f, 1400f)));
+        var bl = SpawnPlan.Launch(Ball);
+        Check("launch: ball 5 m/s up on its 150 kg", Near(bl.first.Y, 750f) && Near(bl.first.X, 0f) && Near(bl.first.Z, 0f) && bl.delay == 0f && NearV(bl.second, V3.Zero));
+        Check("launch: cube none", IsZero(SpawnPlan.Launch(Cube)));
+        Check("launch: pillar, wall, not a kind none", IsZero(SpawnPlan.Launch(Pillar)) && IsZero(SpawnPlan.Launch(Wall)) && IsZero(SpawnPlan.Launch((StoneKind)9)));
+        SpawnPlan.SetLaunch(200f, 1000f, 0.2f, 0.8f, 4f, 3f);
+        Check("launch: from the settings", NearV(SpawnPlan.Launch(Disc).first, new V3(0f, 200f, 0f)) && SpawnPlan.Launch(Disc).delay == 0.2f
+            && NearV(SpawnPlan.Launch(Disc).second, new V3(0f, 0f, 1000f)) && Near(SpawnPlan.Launch(Ball).first.Y, 600f)
+            && Near(SpawnPlan.For(Disc, V3.Zero, 0f, 1f).end.Y, 1.8f) && Near(StoneRules.SummonUnder(StoneState.Still).lift, 3f));
+        SpawnPlan.SetLaunch(SpawnPlan.DefaultDiscLift, SpawnPlan.DefaultDiscPush, SpawnPlan.DefaultDiscPushDelay, SpawnPlan.DefaultDiscHeight,
+            SpawnPlan.DefaultBallLaunchSpeed, SpawnPlan.DefaultSummonUnderLift);
+        Check("launch: defaults back", SpawnPlan.Launch(Disc).delay == 0.12f && Near(SpawnPlan.For(Disc, V3.Zero, 0f, 0f).end.Y, 0.5f));
+
+        // ruling C4: a stone summoned where one stands lifts it off when it is Still, Sliding or Stomped (SummonUnderLift 4 m/s)
+        foreach (StoneState s in new[] { StoneState.Still, StoneState.Sliding, StoneState.Stomped }) {
+            var u = StoneRules.SummonUnder(s);
+            Check("summon under: " + s + " is lifted off, 4 m/s", u.state == StoneState.Free && Near(u.lift, 4f));
+        }
+        var free = StoneRules.SummonUnder(StoneState.Free);
+        Check("summon under: free stays, no lift", free.state == StoneState.Free && free.lift == 0f);
+        var rising = StoneRules.SummonUnder(StoneState.Rising);
+        Check("summon under: rising stays, no lift", rising.state == StoneState.Rising && rising.lift == 0f);
+        Check("summon under: floating, held, flicked stay", StoneRules.SummonUnder(StoneState.Floating) == (StoneState.Floating, 0f)
+            && StoneRules.SummonUnder(StoneState.Held) == (StoneState.Held, 0f) && StoneRules.SummonUnder(StoneState.Flicked) == (StoneState.Flicked, 0f));
+
+        // [EarthStones] Enabled defaults to all five
+        bool[] on = StoneKinds.Parse(StoneKinds.DefaultEnabled, out string unknown);
+        Check("enabled: all five by default", on[(int)Disc] && on[(int)Ball] && on[(int)Pillar] && on[(int)Cube] && on[(int)Wall] && unknown.Length == 0);
+    }
 
     // Task 8: hits, damage, knockback, clashes (spec 2.2, 2.6, 3.4, 3.7; rulings 24 and 25)
     static void HitRules() {
