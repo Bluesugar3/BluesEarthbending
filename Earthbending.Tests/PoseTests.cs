@@ -267,17 +267,22 @@ internal static class PoseTests {
 
     // the pose recorder (Task 3): when a snapshot is taken, and what its row holds
     static void CaptureChecks() {
-        // steps a gate at 90 Hz: each hand at a place given by the time; returns the times snapshots were taken
-        static List<double> Snaps(CaptureGate g, double seconds, Func<double, V3> right, Func<double, V3> left, double from = 0.0) {
+        // the head stands still at H; the hands r0 / l0 are 0.7 m under it (low, but no rest: that is 0.85 m under the head)
+        V3 H = new V3(1f, 1.5f, -3f);
+        // steps a gate at 90 Hz: each hand at a place given by the time; returns the times snapshots were taken (and, into
+        // rests, the times a rest was seen)
+        List<double> Snaps(CaptureGate g, double seconds, Func<double, V3> right, Func<double, V3> left, double from = 0.0, List<double>? rests = null) {
             var at = new List<double>();
             int frames = (int)Math.Round(seconds / Dt);
             for (int i = 0; i <= frames; i++) {
                 double t = from + i * Dt;
-                if (g.Step(t, right(t), left(t))) at.Add(t);
+                CaptureEvent e = g.Step(t, H, right(t), left(t));
+                if (e == CaptureEvent.Snapshot) at.Add(t);
+                if (e == CaptureEvent.Rest) rests?.Add(t);
             }
             return at;
         }
-        static CaptureGate G() => new CaptureGate(0.01f, 0.6f, 0.2f);
+        static CaptureGate G() => new CaptureGate(0.01f, 0.6f, 0.2f, 0.85f);
         V3 r0 = new V3(1.25f, 0.8f, -3.05f), l0 = new V3(0.75f, 0.8f, -3.05f), r1 = r0 + new V3(0f, 0.45f, 0.3f);
         Func<double, V3> restR = _ => r0, restL = _ => l0;
         Func<double, V3> raiseR = t => t < 0.3 ? r0 + (r1 - r0) * (float)(t / 0.3) : r1;   // the right hand raised 0.54 m in 0.3 s, then still
@@ -298,13 +303,35 @@ internal static class PoseTests {
         Check("capture: the other hand moving holds it off", Snaps(G(), 3.0, raiseR, t => l0 + new V3(0f, 0f, 0.1f * (float)Math.Sin(t * 6.0))).Count == 0);
         CaptureGate lost = G();
         var lostAt = Snaps(lost, 0.6, raiseR, restL);
-        bool nanSnap = lost.Step(0.6 + Dt, new V3(float.NaN, 0f, 0f), l0);
+        bool nanSnap = lost.Step(0.6 + Dt, H, new V3(float.NaN, 0f, 0f), l0) != CaptureEvent.None;
         List<double> after = Snaps(lost, 2.0, raiseR, restL, 0.6 + 2 * Dt);
         Check("capture: a lost hand (NaN) takes no snapshot and restarts the stillness, not the arming", lostAt.Count == 0 && !nanSnap && after.Count == 1 && after[0] >= 1.2 + 2 * Dt - 1e-6);
         CaptureGate reset = G();
         Snaps(reset, 0.6, raiseR, restL);
         reset.Reset();
         Check("capture: Reset forgets the move: the hands must move again", Snaps(reset, 3.0, _ => r1, restL, 0.6 + Dt).Count == 0);
+
+        // rests (fix round 1): hands hanging at the sides are never a pose, and they arm the next one
+        V3 hangR = H + new V3(0.25f, -1.0f, 0.05f), hangL = H + new V3(-0.25f, -1.0f, 0.05f), poseR = H + new V3(0.2f, -0.3f, 0.4f), poseL = H + new V3(-0.2f, -0.3f, 0.4f);
+        Func<double, V3> Glide(V3 from, V3 to, double start) => t => t < start ? from : t < start + 0.3 ? from + (to - from) * (float)((t - start) / 0.3) : to;
+        var rested = new List<double>();
+        Check("capture rest: hands lowered from a pose and hanging 1.0 m under the head for 2 s: no snapshot, one rest",
+            Snaps(G(), 2.3, Glide(poseR, hangR, 0.0), Glide(poseL, hangL, 0.0), 0.0, rested).Count == 0 && rested.Count == 1);
+        Check("capture rest: hanging from the start: no snapshot", Snaps(G(), 3.0, _ => hangR, _ => hangL).Count == 0);
+        var cycle = new List<double>();
+        CaptureGate back = G();
+        List<double> twice = Snaps(back, 6.0, t => t < 2.0 ? Glide(hangR, poseR, 0.0)(t) : t < 4.0 ? Glide(poseR, hangR, 2.0)(t) : Glide(hangR, poseR + new V3(0.05f, 0f, 0f), 4.0)(t),
+            t => t < 2.0 ? Glide(hangL, poseL, 0.0)(t) : t < 4.0 ? Glide(poseL, hangL, 2.0)(t) : Glide(hangL, poseL + new V3(0f, -0.05f, 0f), 4.0)(t), 0.0, cycle);
+        Check("capture rest: a pose, a rest, then the next pose 5 cm from the first: two snapshots and the rest between",
+            twice.Count == 2 && twice[0] < 2.0 && twice[1] > 4.0 && cycle.Count == 1 && cycle[0] > 2.0 && cycle[0] < 4.0);
+        PoseSpec jump = Spec(Move.Jump);
+        Check("capture rest: Jump's default hands (the low one 0.75 m under the head) snapshot",
+            Snaps(G(), 2.0, Glide(hangR, H + jump.A.Pos, 0.0), Glide(hangL, H + jump.B.Pos, 0.0)).Count == 1);
+        Check("capture rest: one hand hanging and the other raised is no rest",
+            Snaps(G(), 2.0, _ => hangR, Glide(hangL, H + new V3(-0.2f, 0.1f, 0.1f), 0.0)).Count == 1);
+        Check("capture rest: every default pose keeps a hand above the rest line, written or mirrored",
+            PoseLibrary.Defaults.All(s => Math.Max(s.A.Pos.Y, s.B.Pos.Y) > -0.85f + 0.25f));
+        Check("capture: a head that is not a number takes nothing", G().Step(0.0, new V3(0f, float.NaN, 0f), r0, l0) == CaptureEvent.None);
 
         // a hand's record: the controller's place and axes through the body frame. Facing +X (yaw 90), a controller turned
         // the same way as the head, 0.5 m ahead and 0.3 m down, is the body frame's own axes

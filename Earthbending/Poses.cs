@@ -390,32 +390,42 @@ namespace Earthbending {
         }
     }
 
+    /// <summary>What one frame of the pose recorder brings: nothing, a snapshot, or a rest (once per still rest).</summary>
+    internal enum CaptureEvent : byte { None, Snapshot, Rest }
+
     /// <summary>The pose recorder's rule (Task 3, <c>[EarthPose] Capture</c>): a snapshot is due once both hands have stayed
     /// within <c>stillMetres</c> of where they were for <c>stillSeconds</c>, and only after either hand has moved
     /// <c>moveMetres</c> from where it was at the last snapshot. Before the first snapshot that is where it was first seen, so
-    /// hands resting when the capture starts are not taken for a pose. The places are the controllers' (any one frame: the
-    /// recorder gives their world places).</summary>
+    /// hands resting when the capture starts are not taken for a pose. A still moment with BOTH hands more than
+    /// <c>restBelowMetres</c> under the head is a rest (arms hanging at the sides): never a snapshot, but it arms the next one
+    /// (it counts as the move away). Every pose of the table keeps a hand well above that line (the lowest pair, Base and
+    /// Stomp, has its higher hand 0.55 m under the head). The places are in the world; a hand's height under the head is the
+    /// body frame's y (the body frame turns only about the vertical, and the capture's body scale is 1).</summary>
     internal sealed class CaptureGate {
         const double Eps = 1e-6;   // seconds: a frame that lands on the hold time counts as reaching it
 
-        readonly float still, move;
+        readonly float still, move, restBelow;
         readonly double seconds;
-        bool started, anchored, armed;
+        bool started, anchored, armed, restTold;
         V3 lastR, lastL, anchorR, anchorL;
         double sinceR, sinceL;
 
-        public CaptureGate(float stillMetres, float stillSeconds, float moveMetres) {
+        public CaptureGate(float stillMetres, float stillSeconds, float moveMetres, float restBelowMetres) {
             still = stillMetres;
             seconds = stillSeconds;
             move = moveMetres;
+            restBelow = restBelowMetres;
         }
 
-        /// <summary>One frame. True when a snapshot is due now; the hands' places are then the last snapshot's. A place that
-        /// is not a number (a hand lost) takes none and starts the stillness over; a move already made still counts.</summary>
-        public bool Step(double now, V3 right, V3 left) {
-            if (!Finite(right) || !Finite(left) || double.IsNaN(now) || double.IsInfinity(now)) {
+        /// <summary>One frame: the head and both hands in the world. <see cref="CaptureEvent.Snapshot"/> when a snapshot is
+        /// due now (the hands' places are then the last snapshot's); <see cref="CaptureEvent.Rest"/> on the first frame of a
+        /// still rest. A place that is not a number (a hand lost) brings nothing and starts the stillness over; a move already
+        /// made still counts.</summary>
+        public CaptureEvent Step(double now, V3 head, V3 right, V3 left) {
+            if (!Finite(head) || !Finite(right) || !Finite(left) || double.IsNaN(now) || double.IsInfinity(now)) {
                 anchored = false;
-                return false;
+                restTold = false;
+                return CaptureEvent.None;
             }
             if (!started) {
                 started = true;
@@ -426,11 +436,19 @@ namespace Earthbending {
             if (!anchored || (left - anchorL).Length > still) { anchorL = left; sinceL = now; }
             anchored = true;
             if (!armed && ((right - lastR).Length >= move || (left - lastL).Length >= move)) armed = true;
-            if (!armed || now - sinceR < seconds - Eps || now - sinceL < seconds - Eps) return false;
+            bool stillNow = now - sinceR >= seconds - Eps && now - sinceL >= seconds - Eps;
+            if (stillNow && right.Y - head.Y < -restBelow && left.Y - head.Y < -restBelow) {
+                armed = true;
+                if (restTold) return CaptureEvent.None;
+                restTold = true;
+                return CaptureEvent.Rest;
+            }
+            restTold = false;
+            if (!armed || !stillNow) return CaptureEvent.None;
             armed = false;
             lastR = right;
             lastL = left;
-            return true;
+            return CaptureEvent.Snapshot;
         }
 
         /// <summary>Starts over: the next place seen is where the hands first were.</summary>
@@ -438,6 +456,7 @@ namespace Earthbending {
             started = false;
             anchored = false;
             armed = false;
+            restTold = false;
         }
 
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);

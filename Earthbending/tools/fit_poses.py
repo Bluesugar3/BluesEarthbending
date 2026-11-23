@@ -9,7 +9,9 @@ See --help for the details.
 """
 
 import argparse
+import contextlib
 import csv
+import io
 import math
 import os
 import random
@@ -99,6 +101,11 @@ def rotated(v, axis, deg):
 def checked(v):
     """A direction of a pose is checked unless it is zero (PoseMatch.Checked)."""
     return length(v) > 1e-6
+
+
+def mirror_hand(h):
+    """A hand of a pose (place, palm, fingers) on the other side: x flipped in all three (HandSpec.Mirrored)."""
+    return tuple((-v[0], v[1], v[2]) for v in h)
 
 
 # ----- the fit ---------------------------------------------------------------------------------------------------------
@@ -245,6 +252,90 @@ def report(result):
     if worst > 25.0:
         print("WARNING: an axis agrees with the design only to %.1f degrees on average: check that the 16 snapshots are the"
               " poses in order, with A on the right hand." % worst)
+    return worst
+
+
+# ----- the guess: what each row looks like, when the rows are not the 16 poses in order ----------------------------
+
+# every way a controller can carry a palm and fingers on two different local axes
+PAIRS = [(p, f) for p in AXES for f in AXES if p[1] != f[1]]
+
+
+def hand_score(spec_hand, pos, palm, fingers):
+    """One hand against one hand of a pose, as the game scores it (PoseMatch.Score): the largest of the place's error over
+    0.18 m and each checked direction's angle over its cone; 1 is the edge of the pose, lower is closer."""
+    ref_pos, ref_palm, ref_fingers = spec_hand
+    r = length(sub(pos, ref_pos)) / POS_TOL
+    if checked(ref_palm):
+        r = max(r, angle_deg(palm, ref_palm) / PALM_DEG)
+    if checked(ref_fingers):
+        r = max(r, angle_deg(fingers, ref_fingers) / FINGER_DEG)
+    return r
+
+
+def pose_score(spec, right, left):
+    """Both hands against a pose, as written (A on the right) or mirrored (A on the left), whichever is closer:
+    (score, mirrored) (PoseMatch.Match)."""
+    _, a, b = spec
+    written = max(hand_score(a, *right), hand_score(b, *left))
+    mirrored = max(hand_score(mirror_hand(a), *left), hand_score(mirror_hand(b), *right))
+    return (written, False) if written <= mirrored else (mirrored, True)
+
+
+def hand_sample(snap, hand, pair):
+    h = snap[hand]
+    return h["pos"], axis_dir(h, pair[0]), axis_dir(h, pair[1])
+
+
+def guess_axes(snaps, hand):
+    """The palm and finger axes of one hand's controller, found without the order: the pair under which the rows come
+    closest to some hand of some pose (its own side's as written, the other side's mirrored), each row's score capped at
+    2 so that rows which are no pose at all do not decide it."""
+    own = 1 if hand == "right" else 2
+    hands = [spec[own] for spec in SPEC] + [mirror_hand(spec[3 - own]) for spec in SPEC]
+    best = None
+    for pair in PAIRS:
+        total = sum(min(2.0, min(hand_score(c, *hand_sample(snap, hand, pair)) for c in hands)) for snap in snaps)
+        if best is None or total < best[0]:
+            best = (total, pair)
+    return best[1]
+
+
+def guess(snaps):
+    """For a capture that is not the 16 poses in order: the axes found from the rows themselves, each row's nearest pose of
+    spec 3.3 (mirroring allowed) and its score, the rows that look like no pose (score over 1), the poses no row looks
+    like, and the poses two or more rows look like."""
+    axes = {h: guess_axes(snaps, h) for h in HANDS}
+    rows = []
+    for i, snap in enumerate(snaps):
+        right, left = hand_sample(snap, "right", axes["right"]), hand_sample(snap, "left", axes["left"])
+        score, mirrored, name = min(pose_score(spec, right, left) + (spec[0],) for spec in SPEC)
+        rows.append({"row": i + 1, "n": snap["n"], "pose": name, "mirrored": mirrored, "score": score})
+    seen = {}
+    for r in rows:
+        if r["score"] <= 1.0:
+            seen.setdefault(r["pose"], []).append(r["row"])
+    return {"axes": axes, "rows": rows,
+            "junk": [r["row"] for r in rows if r["score"] > 1.0],
+            "missing": [name for name in NAMES if name not in seen],
+            "twice": {name: rs for name, rs in seen.items() if len(rs) > 1}}
+
+
+def print_guess(g):
+    print("What each row looks like (axes found from the rows: %s; the game's score, 1 is the edge of a pose; mirrored ="
+          " A on the left hand):" % "; ".join("%s palm %s, fingers %s" % (h, g["axes"][h][0], g["axes"][h][1]) for h in HANDS))
+    for r in g["rows"]:
+        name = r["pose"] + (" mirrored" if r["mirrored"] else "")
+        if r["score"] <= 1.0:
+            print("  row %2d (n %2s): %-17s %.2f" % (r["row"], r["n"], name, r["score"]))
+        else:
+            print("  row %2d (n %2s): matches no pose well (nearest %s, %.2f)" % (r["row"], r["n"], name, r["score"]))
+    print("Rows that look like no pose (a rest, a slip, or a pose struck far from the design's: check them against the order):"
+          " %s" % (", ".join(str(x) for x in g["junk"]) or "none"))
+    print("Poses no row looks like (strike them again, in their place in the order): %s" % (", ".join(g["missing"]) or "none"))
+    print("Poses two or more rows look like (keep the better one): %s"
+          % ("; ".join("%s (rows %s)" % (k, ", ".join(str(x) for x in v)) for k, v in g["twice"].items()) or "none"))
+    print("The fit wants the 16 poses in the table's order, one row each: delete or reorder rows (keep the header line) and run it again.")
 
 
 # ----- the selftest ----------------------------------------------------------------------------------------------------
@@ -270,15 +361,20 @@ def random_unit(rng):
             return normalized(v)
 
 
-def synthetic_capture(seed, axes, pos_noise=0.03, turn_noise_deg=8.0, count=16):
+# hands hanging at the sides, palms in, fingers down (the C# tests' IdleR / IdleL): what a rest looks like
+REST = ("rest", ((0.25, -0.95, 0.05), NX, NY), ((-0.25, -0.95, 0.05), PX, NY))
+
+
+def synthetic_capture(seed, axes, pos_noise=0.03, turn_noise_deg=8.0, count=16, poses=None):
     """Rows of a capture of spec 3.3's poses (A on the right hand), as the recorder writes them: each hand's place moved
     up to pos_noise metres and the whole controller turned up to turn_noise_deg degrees about a random axis. axes is
-    {"right": (palm axis, finger axis), "left": (...)}. count other than 16 repeats or drops poses at the end."""
+    {"right": (palm axis, finger axis), "left": (...)}. count other than 16 repeats or drops poses at the end; poses (a
+    list of SPEC-like entries) replaces the table."""
     rng = random.Random(seed)
     head, yaw = (rng.uniform(-500, 500), rng.uniform(150, 250), rng.uniform(-500, 500)), rng.uniform(-180, 180)
+    poses = poses or [SPEC[i % len(SPEC)] for i in range(count)]
     rows, t = [], 0.0
-    for i in range(count):
-        _, a, b = SPEC[i % len(SPEC)]
+    for i, (_, a, b) in enumerate(poses):
         t += rng.uniform(2.0, 6.0)
         row = {"n": i + 1, "t": round(t, 3), "headX": head[0], "headY": head[1], "headZ": head[2], "yaw": yaw}
         for hand, (pos, palm, fingers) in (("right", a), ("left", b)):
@@ -435,6 +531,36 @@ def selftest(out_dir):
                 check("a capture of %d snapshots is refused" % count, False)
             except FitError as e:
                 check("a capture of %d snapshots is refused, naming the count (%s)" % (count, e), str(count) in str(e))
+        # a count other than 16: the guess names what each row looks like (mirroring allowed), with axes found from the rows
+        for which, (label, axes) in enumerate(scenarios):
+            for seed in range(5):
+                extra = os.path.join(tmp, "extra-%d-%d.csv" % (which, seed))
+                write_capture(synthetic_capture(10 + seed, axes, poses=SPEC[:6] + [REST] + SPEC[6:]), extra)
+                g = guess(read_capture(extra))
+                rows = g["rows"]
+                own = all(r["pose"] == name and r["score"] <= 1.0 for r, (name, _, _) in zip(rows[:6] + rows[7:], SPEC))
+                check("%s, seed %d: 17 rows with a rest as row 7: axes %s found from the rows" % (label, seed, g["axes"]), g["axes"] == {h: axes[h] for h in HANDS})
+                check("%s, seed %d: the rest (row 7) matches no pose well (nearest %s, %.2f), every other row its own pose (%s)"
+                      % (label, seed, rows[6]["pose"], rows[6]["score"], [(r["row"], r["pose"], round(r["score"], 2)) for r in rows if r["row"] != 7]),
+                      len(rows) == 17 and rows[6]["score"] > 1.0 and own and g["junk"] == [7] and not g["missing"] and not g["twice"])
+        short = os.path.join(tmp, "short.csv")
+        write_capture(synthetic_capture(3, scenarios[0][1], poses=[p for p in SPEC if p[0] != "Kick"]), short)
+        g = guess(read_capture(short))
+        check("15 rows without Kick: the guess says no row looks like Kick (%s)" % g["missing"], g["missing"] == ["Kick"] and not g["junk"])
+        mirrored = [(n, mirror_hand(b), mirror_hand(a)) if n == "Kick" else (n, a, b) for n, a, b in SPEC]
+        doubled = os.path.join(tmp, "doubled.csv")
+        write_capture(synthetic_capture(4, scenarios[0][1], poses=mirrored + [SPEC[5]]), doubled)
+        g = guess(read_capture(doubled))
+        kick = g["rows"][7]
+        check("17 rows, Kick struck mirrored and Wall twice: Kick is named mirrored, Wall twice (%s, %s)" % (kick, g["twice"]),
+              kick["pose"] == "Kick" and kick["mirrored"] and g["twice"] == {"Wall": [6, 17]} and not g["missing"] and not g["junk"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([os.path.join(tmp, "extra-0-0.csv")])
+        text = out.getvalue()
+        check("the command line refuses 17 rows and prints the guess (exit %d)" % code,
+              code == 1 and "REFUSED" in text and "17 snapshots" in text and "row  7" in text and "matches no pose well" in text)
+
         missing = os.path.join(tmp, "missing.csv")
         write_capture(synthetic_capture(2, scenarios[0][1]), missing, [c for c in CAPTURE_COLUMNS if c != "leftYaxisZ"])
         try:
@@ -461,7 +587,10 @@ The capture is the CSV the game writes with [EarthPose] Capture = true
 taken in the spec 3.3 table's order:
   %s
 and A is the RIGHT hand in every snapshot (the owner strikes each pose with A, the hand the table's first columns
-describe, on the right). The fit assumes both: a capture with any other count is refused, naming the count.
+describe, on the right). The fit assumes both: a capture with any other count is refused, naming the count, and
+then each row is shown with the pose of the table it looks most like and the game's score for it (mirrored allowed;
+the axes found from the rows themselves), so the rows that are rests or slips, and the poses missing or struck twice,
+can be found. The same list follows the fit's warning when an axis agrees badly (the poses out of order).
 
 For each hand it picks the signed local axis of the controller (+x -x +y -y +z -z) that agrees best with the spec's
 palm over all 16 poses, and separately the one that agrees best with its fingers, and prints the agreement in degrees.
@@ -486,14 +615,22 @@ def main(argv):
         ap.print_usage()
         return 2
     try:
-        result = fit(read_capture(args.capture))
+        snaps = read_capture(args.capture)
     except FitError as e:
         print("REFUSED: " + str(e))
         return 1
     except OSError as e:
         print("REFUSED: cannot read %s: %s" % (args.capture, e))
         return 1
-    report(result)
+    try:
+        result = fit(snaps)
+    except FitError as e:
+        print("REFUSED: " + str(e))
+        if snaps:
+            print_guess(guess(snaps))
+        return 1
+    if report(result) > 25.0:
+        print_guess(guess(snaps))
     folder = os.path.join(args.out, "Earthbending") if args.out else os.path.dirname(os.path.abspath(args.capture))
     path = write_poses(result, folder, os.path.basename(args.capture))
     print("Wrote " + path)
