@@ -120,7 +120,7 @@ Pushes are in N s: the speed is the push over the mass (2300 on a 275 kg Pillar 
 
 - **Jump:** 6 m/s up (about 2.2 m). **Dash:** 8 m/s the way you look, with 0.5 m/s up. Both on your own game, with a dust puff.
 - **Power** = the stone's own, +1 still or sliding on the ground (not rising or stomped), +1 moving faster than 3 m/s.
-- **Hits:** a stone moving at 2 m/s or more itself hits creatures, and players it is closing on, then it breaks. A creature takes 8 damage and 0.5 cripple per point of power (untuned guesses). A player off every ring takes power / 20 of their maximum health (RUMBLE's 20 health: a sliding Wall, power 5, takes a quarter) and 0.5 cripple per power; on a ring, fight health instead (below). A rising stone never hits. Your own stones can hit you, but not one you hold or flick.
+- **Hits:** a stone moving at 2 m/s or more itself hits creatures, and players it is closing on, then it breaks. A creature takes 8 damage and 0.5 cripple per point of power (untuned guesses). A player off every ring takes power / 20 of their maximum health as it is now (RUMBLE's 20 health: a sliding Wall, power 5, takes a quarter) and 0.5 cripple per power; on a ring, fight health instead (below). A rising stone never hits. Your own stones can hit you, but not one you hold or flick.
 - **Knockback:** a struck player is pushed 4 m/s along the stone's way (level, or 45° up) and cannot bend for power x 0.7 / 3 s (never after a Disc).
 - **Clashes:** more power breaks less; equal, both break. Both first freeze and shake for 0.06 + 0.02 x (both powers) s, then the winner carries on at its old speed.
 
@@ -129,7 +129,7 @@ Pushes are in N s: the speed is the push over the mass (2300 on a 275 kg Pillar 
 A duel with stakes and no death. On a ring:
 
 - Stepping onto the ring gives you **20 points** of fight health. A stone that hits you takes its power off them (Disc 0, Ball 1, Pillar 1, Cube 2, Wall 3, +1 still or sliding on the ground, +1 moving fast: a sliding Wall is 5) and never touches your real health. The knockback and the stun are as anywhere. Nothing gives points back while you stay on the ring.
-- **The hit that takes you to 0 flings you out**: along the stone's way, 45 degrees up, fast enough to land 3 m past the ring's edge (8 to 16 m/s), with 1.5 s of no bending, and a shockwave and a boom at you on every game. It never really hurts you.
+- **The hit that takes you to 0 flings you out**: along the stone's way, 45 degrees up, fast enough to land 3 m past the ring's edge (8 to 16 m/s), with 1.5 s of no bending, and a shockwave and a boom at you on every game. The fling starts from rest (whatever you were doing), and it never really hurts you: not even the fall when you land. If you still come down on the ring you cannot bend there; after 5 s on it you are back in with 20 points.
 - **A fight ends when anyone leaves the ring** (flung, fallen, pushed or walked off, after 0.3 s off it): everyone still on it goes back to 20. Whoever left has none until they step back on, which gives them 20 again. Leaving the server, dying or being downed counts as leaving.
 - **Watchers are safe:** stones ignore anyone in the arena round the ring (the rim, the pit), and anyone on the ring with no points (the one just flung, still over it): no damage, no knockback, the stone does not break on them. Blasts leave them alone too.
 - **Off every ring** a stone takes power / 20 of your real health, and can really kill.
@@ -235,6 +235,9 @@ Everything is in `UserData\Earthbending.cfg`, written in full at the first start
 | `FlingMinSpeed` | 8 | ... flung at least this fast, m/s ... |
 | `FlingMaxSpeed` | 16 | ... and at most this fast, m/s. |
 | `FlingHitstunSeconds` | 1.5 | No bending this long after the finishing hit. |
+| `OutSeconds` | 5 | A knocked-out player still on the ring cannot bend; after this long there they are back in with full points. |
+
+At the game's gravity (-8) a 16 m/s fling clears a ring up to 14.5 m in radius from its far side; the server warns (start-up, `earth ring`) about a wider one.
 
 ### [EarthPose] (each game)
 
@@ -323,7 +326,7 @@ earth spawn <disc|ball|pillar|cube|wall> <player>   a loose stone on the ground,
 earth push <player> <up m/s>                        throws that player straight up (no stun)
 earth list                                          every stone, its number and place
 earth clear                                         breaks every stone (a marked one does not blast)
-earth ring <player> [radius]                        a test ring round where that player stands (10 m; the arena 6 m wider), drawn
+earth ring <player> [radius]                        a test ring round where that player stands (10 m; the arena 6 m wider), drawn; the floor is their feet, so on a slope anyone over 1 m under it is in the arena, not on the ring
 earth ring off                                      removes the console's test ring
 earth ring                                          where the ring is, and who fights on it with how many points
 ```

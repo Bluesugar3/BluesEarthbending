@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using Alta.Impact;
 using Alta.Networking;
 using Alta.Networking.Scripts.Player;
+using Alta.PlayerEffects.General.Health;
 using MelonLoader;
 using UnityEngine;
 
@@ -18,15 +20,28 @@ namespace Earthbending {
     //     ledger knows who is not (left the server, died, downed, no body) is forgotten, which refills the others. Every change
     //     goes to every game at once. Every 5 s, and at once when a player joins, the ring and every fighter's points go to
     //     every game again (a game that joined or missed a message catches up within 5 s).
-    //   - Nothing is saved. Log lines: one at start-up and per ring change, a Summary line per finishing hit (Hits), Debug
-    //     lines for each change of points.
+    //   - A knocked-out player still on the ring cannot bend: Server refuses their Summon and Modify claims (OutOnRing), and
+    //     after [EarthFight] OutSeconds there (the ledger's rule) they are back in with full points, so nobody is stuck.
+    //   - The fling's own fall never hurts (spec 3.3): from the knock-out the server marks the player's FIRST fall damage
+    //     within FallSafeSeconds (6) as handled, through the game's own PlayerHealth.HandleDamage event (ReceiveDamage invokes
+    //     it before dealing anything and returns when a handler called SetAsHandled; the game's fall damage is a
+    //     DamageData(DamageSource.FallDamage) the server deals when the player's game reports the landing,
+    //     SmoothLocomotion.DealFallDamage). One handler per PlayerHealth, added once and left on, inactive, afterwards; every
+    //     other damage, and any fall damage once the window is spent, passes untouched. A landing too short to hurt sends no
+    //     fall damage, so the window then just runs out.
+    //   - Nothing is saved. Log lines: one at start-up and per ring change (with a warning when the ring is wider than the
+    //     fling can clear, FightRules.MaxClearRadius), a Summary line per finishing hit (Hits), Debug lines for each change of
+    //     points, a refused claim and a fall made harmless.
     internal static class FightServer {
-        const float ResendSeconds = 5f;
+        const float ResendSeconds = 5f, FallSafeSeconds = 6f;
 
         static MelonPreferences_Entry<bool>? enabledEntry;
         static MelonPreferences_Entry<int>? pointsEntry;
         static MelonPreferences_Entry<string>? ringEntry;
-        static MelonPreferences_Entry<float>? flingClearEntry, flingMinEntry, flingMaxEntry, flingHitstunEntry;
+        static MelonPreferences_Entry<float>? flingClearEntry, flingMinEntry, flingMaxEntry, flingHitstunEntry, outSecondsEntry;
+        static readonly Dictionary<ulong, float> fallSafeUntil = new Dictionary<ulong, float>();   // account -> unscaled time
+        static readonly HashSet<PlayerHealth> guarded = new HashSet<PlayerHealth>();
+        static bool fallFailed, playerFailed;
 
         static bool enabled = true, ready;
         static FightRing? arenaRing, consoleRing, settingRing;
@@ -66,6 +81,7 @@ namespace Earthbending {
             flingMinEntry = cat.CreateEntry("FlingMinSpeed", FightRules.DefaultFlingMin, description: "Server. The finishing hit's fling is at least this fast, in m/s (from near the edge). 0 or more.");
             flingMaxEntry = cat.CreateEntry("FlingMaxSpeed", FightRules.DefaultFlingMax, description: "Server. The finishing hit's fling is at most this fast, in m/s ([EarthMovement] MaxPushSpeed on each game, 20, caps it again). Above 0.");
             flingHitstunEntry = cat.CreateEntry("FlingHitstunSeconds", FightRules.DefaultFlingHitstun, description: "Server. The flung player cannot bend for this many seconds. 0 or more.");
+            outSecondsEntry = cat.CreateEntry("OutSeconds", (float)FightRules.DefaultOutSeconds, description: "Server. A knocked-out player cannot bend while they are still on the ring (their summons and modifiers are refused); after this many seconds there without leaving they are back in with full points, so nobody is stuck on the ring. Leaving the ring for 0.3 s and stepping back on gives full points at once, as always. 0.5 to 600.");
             ready = true;
             Apply();
             Cfg.Changed += Apply;
@@ -83,6 +99,7 @@ namespace Earthbending {
             FlingMin = Cfg.NotNegative(flingMinEntry, "EarthFight", "FlingMinSpeed", FightRules.DefaultFlingMin);
             FlingMax = Cfg.Positive(flingMaxEntry, "EarthFight", "FlingMaxSpeed", FightRules.DefaultFlingMax);
             FlingHitstun = Cfg.NotNegative(flingHitstunEntry, "EarthFight", "FlingHitstunSeconds", FightRules.DefaultFlingHitstun);
+            float outSeconds = Cfg.Positive(outSecondsEntry, "EarthFight", "OutSeconds", (float)FightRules.DefaultOutSeconds);
             string text = (ringEntry?.Value ?? "").Trim();
             if (text != settingText) {
                 settingText = text;
@@ -93,11 +110,14 @@ namespace Earthbending {
                     MelonLogger.Warning($"[Earth] Settings: [EarthFight] Ring \"{text}\" is not \"x, y, z, ring radius, arena radius\" (a ring radius above 0, an arena radius at least that): no ring from the setting");
                 }
             }
-            if (points != ledger.Points) {
-                EndAll($"[EarthFight] Points is now {points}");
-                ledger = new FightLedger(points);
+            var fresh = new FightLedger(points, outSeconds);
+            if (fresh.Points != ledger.Points || fresh.OutSeconds != ledger.OutSeconds) {
+                EndAll($"[EarthFight] Points or OutSeconds is now {fresh.Points} / {fresh.OutSeconds:0.##} s");
+                ledger = fresh;
             }
+            bool warn = hasRing;
             Recompute();
+            if (warn && hasRing && ready) WarnWide();   // a changed FlingMaxSpeed or FlingClearMetres on the same ring
         }
 
         // ---------------------------------------------------------------- the ring
@@ -131,7 +151,21 @@ namespace Earthbending {
             ring = next;
             ringFrom = has ? from : "none";
             MelonLogger.Msg($"[Earth] Fight: {(has ? $"the ring is {ring} (from {ringFrom})" : enabled ? "no ring: stone hits take a share of real health everywhere" : "no ring ([EarthFight] Enabled is off)")}");
+            if (has) WarnWide();
             SendRing();
+        }
+
+        /// <summary>"" when FlingMaxSpeed can carry a knocked-out player out of the ring from anywhere on it; else the warning.</summary>
+        internal static string WideWarning() {
+            if (!hasRing) return "";
+            float widest = FightRules.MaxClearRadius(Physics.gravity.y, FlingMax, FlingClear);
+            return ring.Radius <= widest ? ""
+                : $"the ring's radius {ring.Radius:0.##} m is over the {widest:0.##} m that [EarthFight] FlingMaxSpeed {FlingMax:0.##} m/s can clear from its far side (gravity {Physics.gravity.y:0.##}, FlingClearMetres {FlingClear:0.##}): a knocked-out player can land back on it (they then cannot bend for OutSeconds)";
+        }
+
+        static void WarnWide() {
+            string w = WideWarning();
+            if (w.Length > 0) MelonLogger.Warning("[Earth] Fight: " + w);
         }
 
         static bool Same(in FightRing a, in FightRing b) =>
@@ -158,6 +192,14 @@ namespace Earthbending {
         /// <summary>Whether the player has fight health now (always false with no ring).</summary>
         internal static bool Fighting(Player p) => hasRing && p != null && ledger.Fighting(Server.AccountOf(p));
 
+        /// <summary>Whether the player was knocked out and is still on the ring (their claims are refused: they cannot bend).</summary>
+        internal static bool OutOnRing(Player p) {
+            if (!hasRing || p == null || p.UserInfo == null || !ledger.IsOut(Server.AccountOf(p))) return false;
+            PlayerController pc = p.PlayerController;
+            if (pc == null) return false;
+            return Where(pc.RealFeetPosition) == FightWhere.Ring;
+        }
+
         /// <summary>The player's fight health now, -1 for none.</summary>
         internal static int PointsOf(ulong account) => hasRing ? ledger.PointsOf(account) : -1;
 
@@ -168,7 +210,48 @@ namespace Earthbending {
             changes.Clear();
             FightHit r = ledger.Hit(Server.AccountOf(p), power, changes);
             Send(changes, r == FightHit.KnockedOut ? "knocked out" : "hit");
+            if (r == FightHit.KnockedOut) GuardFall(p);
             return r;
+        }
+
+        // ---------------------------------------------------------------- the fling's fall (I-2)
+
+        // The knocked-out player's next fall damage (within FallSafeSeconds) is made harmless; their PlayerHealth gets our
+        // handler once.
+        static void GuardFall(Player p) {
+            try {
+                PlayerController pc = p.PlayerController;
+                if (pc == null || !(pc.Health is PlayerHealth ph) || ph == null) return;
+                fallSafeUntil[Server.AccountOf(p)] = Time.unscaledTime + FallSafeSeconds;
+                if (guarded.Contains(ph)) return;
+                if (guarded.Count > 64) guarded.RemoveWhere(x => x == null);
+                guarded.Add(ph);
+                PlayerHealth target = ph;
+                ph.HandleDamage += state => OnDamage(target, state);
+            }
+            catch (Exception e) {
+                if (!fallFailed) { fallFailed = true; MelonLogger.Warning($"[Earth] Fight: the fling's fall could not be made harmless, so a knocked-out player may take fall damage (said once): {e.Message}"); }
+            }
+        }
+
+        // The game's own PlayerHealth.HandleDamage, before any damage is dealt: the guarded player's first fall damage in the
+        // window is handled (nothing dealt), and the window ends. Never throws into the game's damage.
+        static void OnDamage(PlayerHealth ph, DamageState state) {
+            try {
+                if (fallSafeUntil.Count == 0 || state == null || state.DamageImpact == null || state.DamageImpact.Source != DamageSource.FallDamage) return;
+                PlayerController pc = ph != null ? ph.Player : null!;
+                Player? p = pc != null ? pc.NetworkPlayer : null;
+                if (p == null || p.UserInfo == null) return;
+                ulong account = Server.AccountOf(p);
+                if (!fallSafeUntil.TryGetValue(account, out float until)) return;
+                fallSafeUntil.Remove(account);   // the landing: the window is spent either way
+                if (Time.unscaledTime > until) return;
+                state.SetAsHandled();
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Fight: {Server.NameOf(p)} landed from the fling: fall damage {state.Damage:0.##} (cripple {state.Cripple:0.##}) not dealt");
+            }
+            catch (Exception e) {
+                if (!fallFailed) { fallFailed = true; MelonLogger.Warning($"[Earth] Fight: guarding a fling's fall failed (said once): {e.Message}"); }
+            }
         }
 
         /// <summary>The finishing hit's knockback: 45 degrees up along the flat way of <paramref name="stoneVelocity"/> (the
@@ -192,8 +275,9 @@ namespace Earthbending {
 
         /// <summary>Every frame on the server (Main.OnUpdate, before the headless return). See the header.</summary>
         internal static void Tick() {
+            if (fallSafeUntil.Count > 0) PruneFallSafe();
             if (!ready || !hasRing) {
-                if (ready && Time.unscaledTime >= resendAt) {   // no ring: a game that missed the "none" hears it again
+                if (ready && enabled && Time.unscaledTime >= resendAt) {   // no ring: a game that missed the "none" hears it again (not while switched off: Recompute sent it once)
                     resendAt = Time.unscaledTime + ResendSeconds;
                     SendRing();
                 }
@@ -211,12 +295,18 @@ namespace Earthbending {
                     ulong account = Server.AccountOf(p);
                     if (account == 0UL) continue;
                     if (!seenBefore.Contains(account)) joined = true;
-                    PlayerController pc = p.PlayerController;
-                    if (pc == null || !pc.IsAlive || pc.IsDowned) continue;   // dead, downed or no body: forgotten below
-                    Vector3 feet = pc.RealFeetPosition;
-                    if (float.IsNaN(feet.x) || float.IsNaN(feet.y) || float.IsNaN(feet.z)) continue;
-                    seen.Add(account);
-                    ledger.See(account, ring.Where(new V3(feet.x, feet.y, feet.z)), now, changes);
+                    try {   // one player's failure (still joining) leaves the others to the tick
+                        PlayerController pc = p.PlayerController;
+                        if (pc == null || !pc.IsAlive || pc.IsDowned) continue;   // dead, downed or no body: forgotten below
+                        Vector3 feet = pc.RealFeetPosition;
+                        if (float.IsNaN(feet.x) || float.IsNaN(feet.y) || float.IsNaN(feet.z)) continue;
+                        seen.Add(account);
+                        ledger.See(account, ring.Where(new V3(feet.x, feet.y, feet.z)), now, changes);
+                    }
+                    catch (Exception e) {
+                        seen.Add(account);   // not forgotten for a failed read: seen again next frame
+                        if (!playerFailed) { playerFailed = true; MelonLogger.Warning($"[Earth] Fight: a player could not be read for the ring; left as they were (said once): {e.Message}"); }
+                    }
                 }
                 known.Clear();
                 ledger.Known(known);
@@ -238,6 +328,15 @@ namespace Earthbending {
                 if (!tickFailed) { tickFailed = true; MelonLogger.Warning($"[Earth] Fight: the fight tick failed (said once): {e}"); }
                 else if (Logs.Debug) MelonLogger.Msg($"[Earth] Fight: the fight tick failed again: {e.Message}");
             }
+        }
+
+        static readonly List<ulong> expired = new List<ulong>();
+
+        static void PruneFallSafe() {
+            float now = Time.unscaledTime;
+            expired.Clear();
+            foreach (KeyValuePair<ulong, float> kv in fallSafeUntil) if (now > kv.Value) expired.Add(kv.Key);
+            foreach (ulong k in expired) fallSafeUntil.Remove(k);
         }
 
         /// <summary>Every fighter now, with their points (the console's `earth ring`).</summary>

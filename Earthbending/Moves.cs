@@ -40,14 +40,16 @@ namespace Earthbending {
     //     push ends.
     //   - The friction above also runs in the AIR (every frame of ApplyGravityAndMovement that is not zeroed): a push's flat
     //     speed falls as e^-t while it flies. A fight's finishing hit (FightServer.Fling: up to 16 m/s at 45 degrees, aimed to
-    //     land 3 m past the ring's edge without friction) would land at about 40% of the distance it is aimed at (10.2 m
-    //     instead of 26 m at 16 m/s). So the fling flies without it (Fling): from its knockback until the player stands again
-    //     (or 5 s; or it never left the ground within 0.25 s), the local player's SmoothLocomotion gets friction 0 through its
-    //     own private GetFrictionMultiplier event (one more handler on its backing field, Root.Township.dll IL checked
+    //     land 3 m past the ring's edge without friction) would land at about a third of the distance it is aimed at (10.6 m
+    //     instead of 32 m at 16 m/s, with this game's gravity of -8). So the fling replaces the player's velocity (a knockback
+    //     otherwise adds) and flies without friction (Fling): from its knockback until the player stands again (ZeroBelow
+    //     and the friction handler both end it) (or 5 s; or it never left the ground within 0.25 s), the local player's
+    //     SmoothLocomotion gets friction 0 through its own private GetFrictionMultiplier event (one more handler on its backing field, Root.Township.dll IL checked
     //     2026-11-23: `.field private GeneralDelegates/ValueUpdater GetFrictionMultiplier`; Climber, the only other handler,
     //     multiplies, so 0 stays 0). The game's knockback message has no flag for a fling: a knockback is the fling when this
     //     game's own player was told they have no fight health (Net.FightReceived, -1 for their own account) within
-    //     FlingPairSeconds of it, in either order (the server sends the points just before the knockback).
+    //     FlingPairSeconds of it, in either order (the server sends the points just before the knockback; the newest knockback
+    //     wins). The fling's fall damage is the server's to drop (FightServer: PlayerHealth.HandleDamage).
     public static class Moves {
         /// <summary>The game zeroes a grounded player's velocity while its y is at most 0.1 m/s.</summary>
         const float GameZeroBelow = 0.1f;
@@ -84,6 +86,7 @@ namespace Earthbending {
         static bool warnedNoLocomotion;
 
         static float knockedOutAt = float.NegativeInfinity, knockbackAt = float.NegativeInfinity;   // unscaled times
+        static Vector3 lastKnockback;
         static SmoothLocomotion? knockbackLoco;   // the locomotion the last knockback pushed
         static SmoothLocomotion? flying;          // the local player's locomotion while a fling flies (no friction)
         static float flyingSince, flyingUntil;
@@ -124,29 +127,41 @@ namespace Earthbending {
             dustRetryAt = 0f;   // a changed name, or the same name saved again, is looked for at the next dust
         }
 
+        // A knockback adds to the player's velocity (pushes stack), except the fling: the finishing hit's knockback REPLACES
+        // it (review I-1: FightRules.FlingSpeed assumes a launch from rest, and a Dash or an earlier knockback toward the
+        // ring's middle would otherwise bring the loser down on the ring).
         static void OnKnockback(Vector3 velocity, float hitstun) {
+            float now = Time.unscaledTime;
+            bool fling = now - knockedOutAt <= FlingPairSeconds;
+            SmoothLocomotion? loco = CurrentLoco();
+            if (fling && loco != null && Finite(velocity)) loco.velocity = Vector3.zero;   // the fling starts from rest
             bool pushed = Push(velocity);
             Stun(hitstun);
-            float now = Time.unscaledTime;
             knockbackAt = pushed ? now : float.NegativeInfinity;
-            knockbackLoco = pushed ? CurrentLoco() : null;
-            if (pushed && now - knockedOutAt <= FlingPairSeconds) {
+            knockbackLoco = pushed ? loco : null;
+            lastKnockback = velocity;
+            if (pushed && fling) {
                 knockedOutAt = float.NegativeInfinity;
-                Fling(knockbackLoco);
+                Fling(loco);
             }
         }
 
-        // Fight health: this game's own player has none any more (Net.FightReceived). Paired with a knockback within
-        // FlingPairSeconds, either side of it, that knockback is the finishing hit's fling.
+        // Fight health: this game's own player has none any more (Net.FightReceived). The server sends it just BEFORE the
+        // finishing hit's knockback, so the next knockback within FlingPairSeconds is the fling. If a knockback came within
+        // FlingPairSeconds before it instead (the messages swapped, or a Hurt knockback just before the finishing one), that one
+        // is made the fling now (its velocity replaces the player's), and the next one, if it comes, replaces it again: the
+        // newest knockback always wins.
         static void OnFight(int account, int points) {
             if (points >= 0 || !IsOwnAccount(account)) return;
             float now = Time.unscaledTime;
+            knockedOutAt = now;
             if (now - knockbackAt <= FlingPairSeconds && knockbackLoco != null) {
                 knockbackAt = float.NegativeInfinity;
-                Fling(knockbackLoco);
-                return;
+                SmoothLocomotion loco = knockbackLoco;
+                V3 v = PushRule.Next(V3.Zero, new V3(lastKnockback.x, lastKnockback.y, lastKnockback.z), Grounded(PlayerController.Current), maxSpeed);
+                loco.velocity = new Vector3(v.X, v.Y, v.Z);
+                Fling(loco);
             }
-            knockedOutAt = now;
         }
 
         static bool IsOwnAccount(int account) {
@@ -175,8 +190,9 @@ namespace Earthbending {
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: knocked out: the fling flies without friction ({loco.velocity} m/s)");
         }
 
-        // Puts NoFrictionInFlight on the locomotion's private GetFrictionMultiplier event once (a new locomotion, after a
-        // respawn, gets it again). False, with one warning, when the game's field is not there: the fling then falls short.
+        // Puts NoFrictionInFlight on the locomotion's private GetFrictionMultiplier event once; it is never removed, only left
+        // on, inactive, between flings (a new locomotion, after a respawn, gets its own). False, with one warning, when the
+        // game's field is not there: the fling then falls short.
         static bool HookFriction(SmoothLocomotion loco) {
             if (ReferenceEquals(loco, frictionHooked)) return true;
             try {
@@ -354,6 +370,12 @@ namespace Earthbending {
         /// infinity (never zero) while the local player's push lasts. Called every grounded frame, so it ends the push too.</summary>
         public static float ZeroBelow(SmoothLocomotion s) {
             try {
+                // review Minor 1: the game skips the friction handler on a frame it zeroes the velocity, so a fling that
+                // lands is also ended here (this runs on every grounded frame)
+                if (flying != null && ReferenceEquals(s, flying) && flyingAirborne) {
+                    flying = null;
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: the fling's flight ended after {Time.time - flyingSince:0.00} s (landed)");
+                }
                 if (!ReferenceEquals(s, holding)) return GameZeroBelow;
                 Vector3 v = s.velocity;
                 float flat = v.x * v.x + v.z * v.z;

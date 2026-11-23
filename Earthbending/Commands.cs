@@ -154,6 +154,8 @@ namespace Earthbending {
                 text.Append($"{list.Count} on it:");
                 foreach (FightLedger.Change c in list) text.Append($" {FightServer.NameOf(c.Player)} {c.Points}/{FightServer.Points};");
             }
+            string wide = FightServer.WideWarning();
+            if (wide.Length > 0) text.Append(" WARNING: ").Append(wide).Append('.');
             return text.ToString();
         }
 

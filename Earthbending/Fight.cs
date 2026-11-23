@@ -72,6 +72,8 @@ namespace Earthbending {
         /// <summary>RUMBLE's 20 health ([EarthFight] Points).</summary>
         public const int DefaultPoints = 20;
         public const float DefaultFlingClear = 3f, DefaultFlingMin = 8f, DefaultFlingMax = 16f, DefaultFlingHitstun = 1.5f, LeftSeconds = 0.3f, DefaultHealthPoints = 20f;
+        /// <summary>[EarthFight] OutSeconds: a knocked-out player still on the ring this long is back in (never stuck).</summary>
+        public const double DefaultOutSeconds = 5.0;
         static readonly float Diagonal = (float)Math.Sqrt(0.5);
 
         /// <summary>Spec 3.6, outside every ring: a stone of <paramref name="power"/> takes power / <paramref name="healthPoints"/>
@@ -113,6 +115,18 @@ namespace Earthbending {
             return s < min ? min : s > max ? max : s;
         }
 
+        /// <summary>The widest ring radius a fling at <paramref name="max"/> m/s can clear by <paramref name="clear"/> m from its
+        /// far edge (straight across: 2 x radius + clear = max^2 / |gravity|). Infinity with no gravity; 0 when even a
+        /// standing start cannot. A ring wider than this can leave a knocked-out player on it (the server warns).</summary>
+        public static float MaxClearRadius(float gravity, float max, float clear) {
+            float g = Math.Abs(gravity);
+            if (!(g > 0f) || float.IsInfinity(g)) return float.PositiveInfinity;
+            if (!(max > 0f) || float.IsInfinity(max)) return 0f;
+            if (!(clear >= 0f) || float.IsInfinity(clear)) clear = 0f;
+            float r = (max * max / g - clear) * 0.5f;
+            return r > 0f ? r : 0f;
+        }
+
         /// <summary>The fling's velocity: <paramref name="speed"/> 45 degrees up along the flat way of
         /// <paramref name="flatDir"/> (the way out through the feet when it has none).</summary>
         public static V3 FlingVelocity(in FightRing ring, V3 feet, V3 flatDir, float speed) {
@@ -141,8 +155,11 @@ namespace Earthbending {
     /// <summary>Each player's fight health on the one ring (spec 3.2-3.4), keyed by account. A player seen on the ring with no
     /// entry (and not "out") gets full points; one seen off it for <see cref="FightRules.LeftSeconds"/> loses theirs and every
     /// other fighter refills; the hit that reaches 0 removes the entry, marks the player "out" (no points until they have been
-    /// off the ring for LeftSeconds) and refills every other fighter. Every call adds each player whose points changed to the
-    /// caller's list once, with their points now (-1 = none). Never saved.</summary>
+    /// off the ring for LeftSeconds) and refills every other fighter. A knocked-out player who stays on the ring
+    /// <see cref="OutSeconds"/> (counted from the first time they are seen on it after the knock-out; a step off shorter than
+    /// LeftSeconds does not stop the count) is back in with full points, so nobody is stuck "out" on the ring. Forget (gone,
+    /// downed, no body) keeps "out". Every call adds each player whose points changed to the caller's list once, with their
+    /// points now (-1 = none). Never saved.</summary>
     internal sealed class FightLedger {
         public readonly struct Change {
             public readonly ulong Player;
@@ -156,12 +173,19 @@ namespace Earthbending {
             public int Points = -1;            // -1: no entry
             public bool Out;                   // knocked out: no entry until off the ring for LeftSeconds
             public double OffSince = double.NaN;   // when this stretch off the ring began (NaN: on it)
+            public double OutSince = double.NaN;   // out: first seen on the ring after the knock-out (NaN: not yet)
         }
 
         readonly Dictionary<ulong, State> players = new Dictionary<ulong, State>();
         readonly List<ulong> keys = new List<ulong>();
 
-        public FightLedger(int points) => Points = points < 1 ? 1 : points > 250 ? 250 : points;
+        public FightLedger(int points, double outSeconds = FightRules.DefaultOutSeconds) {
+            Points = points < 1 ? 1 : points > 250 ? 250 : points;
+            OutSeconds = double.IsNaN(outSeconds) ? FightRules.DefaultOutSeconds : outSeconds < 0.5 ? 0.5 : outSeconds > 600.0 ? 600.0 : outSeconds;
+        }
+
+        /// <summary>How long a knocked-out player stays out while on the ring, 0.5..600 s.</summary>
+        public double OutSeconds { get; }
 
         /// <summary>Full fight health, 1..250.</summary>
         public int Points { get; }
@@ -175,7 +199,13 @@ namespace Earthbending {
                     players[player] = s;
                 }
                 s.OffSince = double.NaN;
-                if (s.Out || s.Points >= 0) return;
+                if (s.Points >= 0) return;
+                if (s.Out) {
+                    if (double.IsNaN(s.OutSince)) s.OutSince = now;
+                    if (!(now - s.OutSince >= OutSeconds - 1e-9)) return;
+                    s.Out = false;   // never stuck: back in
+                    s.OutSince = double.NaN;
+                }
                 s.Points = Points;
                 changes.Add(new Change(player, Points));
                 return;
@@ -202,6 +232,7 @@ namespace Earthbending {
             }
             s.Points = -1;
             s.Out = true;
+            s.OutSince = double.NaN;
             changes.Add(new Change(player, -1));
             RefillOthers(player, changes);
             return FightHit.KnockedOut;
@@ -213,10 +244,14 @@ namespace Earthbending {
         /// <summary>Whether the player has fight health now.</summary>
         public bool Fighting(ulong player) => PointsOf(player) >= 0;
 
+        /// <summary>Whether the player was knocked out and has not yet left the ring (or been let back in).</summary>
+        public bool IsOut(ulong player) => players.TryGetValue(player, out State? s) && s.Out;
+
         /// <summary>The player is gone (left the server, died, has no body): their entry goes and, if they had points, every
-        /// other fighter refills.</summary>
+        /// other fighter refills. An out player stays out (seen off the ring for LeftSeconds, the mark goes as usual).</summary>
         public void Forget(ulong player, List<Change> changes) {
             if (!players.TryGetValue(player, out State? s)) return;
+            if (s.Out) return;
             players.Remove(player);
             if (s.Points < 0) return;
             changes.Add(new Change(player, -1));

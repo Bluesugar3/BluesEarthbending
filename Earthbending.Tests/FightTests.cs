@@ -14,6 +14,7 @@ internal static class FightTests {
         Damage();
         Fling();
         Landing();
+        OutRules();
         Ledger();
         Pips();
     }
@@ -100,11 +101,25 @@ internal static class FightTests {
 
     // From 50 random places on the ring along 8 directions, the fling (45 degrees up, at FlingSpeed, under that gravity)
     // comes back to the floor's height outside the ring's radius, or flies at the maximum.
+    // From 50 random places on the ring along 8 directions, the fling (45 degrees up, at FlingSpeed, under that gravity, from
+    // rest: the player's game replaces their velocity with it) comes back to the floor's height outside the ring's radius,
+    // every time the maximum speed can reach that far (ExitDistance + clear at most max^2 / |g|). A fling the maximum cannot
+    // carry out happens only on a ring wider than FightRules.MaxClearRadius, which the server warns about.
     static void Landing() {
-        FightRing r = Ring();
-        const float g = -9.81f, clear = 3f, min = 8f, max = 16f;
+        // this game's gravity is -8 (ProjectSettings DynamicsManager m_Gravity), its GravityMultiplier 1
+        Landing("g -8, ring 10", Ring(), -8f, expectShort: false);
+        Landing("g -9.81, ring 10", Ring(), -9.81f, expectShort: false);
+        Landing("g -8, ring 16", new FightRing(new V3(0f, 10f, 0f), 16f, 22f, true), -8f, expectShort: true);
+        Check("fling: the widest ring 16 m/s clears from the far side at g -8 is 14.5 m", Math.Abs(FightRules.MaxClearRadius(-8f, 16f, 3f) - 14.5f) < 1e-3f);
+        Check("fling: no gravity or no speed, no limit / 0", float.IsPositiveInfinity(FightRules.MaxClearRadius(0f, 16f, 3f)) && FightRules.MaxClearRadius(-8f, 0f, 3f) == 0f
+            && FightRules.MaxClearRadius(-8f, 4f, 3f) == 0f);
+        Check("fling: from the centre at g -8, sqrt(13 x 8) = 10.20", Math.Abs(FightRules.FlingSpeed(Ring(), new V3(0f, 10f, 0f), PlusX, -8f, 3f, 8f, 16f) - 10.198f) < 0.01f);
+    }
+
+    static void Landing(string name, FightRing r, float g, bool expectShort) {
+        const float clear = 3f, min = 8f, max = 16f;
         var rng = new Random(23);
-        int bad = 0, total = 0;
+        int bad = 0, total = 0, cannot = 0, maxed = 0;
         for (int i = 0; i < 50; i++) {
             double a = rng.NextDouble() * Math.PI * 2, d = Math.Sqrt(rng.NextDouble()) * r.Radius * 0.999;
             var feet = new V3((float)(Math.Cos(a) * d), r.Centre.Y, (float)(Math.Sin(a) * d));
@@ -113,7 +128,8 @@ internal static class FightTests {
                 var dir = new V3((float)Math.Cos(b), 0f, (float)Math.Sin(b));
                 float s = FightRules.FlingSpeed(r, feet, dir, g, clear, min, max);
                 total++;
-                if (s == max) continue;
+                if (s == max) maxed++;
+                bool reachable = FightRules.ExitDistance(r, feet, dir) + clear <= max * max / Math.Abs(g) + 1e-3f;
                 // stepped as the game does, 90 frames a second
                 float vx = s * (float)Math.Sqrt(0.5), vy = vx, x = feet.X, y = feet.Y, z = feet.Z;
                 const float dt = 1f / 90f;
@@ -125,10 +141,65 @@ internal static class FightTests {
                     if (y < r.Centre.Y && vy < 0f) break;
                 }
                 float flat = (float)Math.Sqrt(x * x + z * z);
-                if (!(flat > r.Radius)) bad++;
+                bool outside = flat > r.Radius;
+                if (!reachable) { cannot++; if (s != max) bad++; continue; }   // past the maximum: it must at least fly at it
+                if (!outside) bad++;
             }
         }
-        Check($"fling: every fling lands outside the ring ({bad} of {total} did not)", bad == 0);
+        Check($"fling ({name}): every fling the maximum can carry lands outside the ring ({bad} of {total} did not; {maxed} at the maximum)", bad == 0);
+        if (expectShort)
+            Check($"fling ({name}): some flings cannot clear the ring ({cannot}), and the ring is wider than MaxClearRadius", cannot > 0 && r.Radius > FightRules.MaxClearRadius(g, max, clear));
+        else
+            Check($"fling ({name}): every fling clears the ring ({cannot} cannot), and the ring is within MaxClearRadius", cannot == 0 && r.Radius <= FightRules.MaxClearRadius(g, max, clear));
+    }
+
+    // Review fixes: a knocked-out player still on the ring is back in after OutSeconds there; Forget keeps "out".
+    static void OutRules() {
+        var c = new List<FightLedger.Change>();
+        var l = new FightLedger(20, 5.0);
+        Check("out: the default OutSeconds is 5", Near((float)FightRules.DefaultOutSeconds, 5f) && Near((float)new FightLedger(20).OutSeconds, 5f));
+        l.See(A, FightWhere.Ring, 0.0, c);
+        l.See(B, FightWhere.Ring, 0.0, c);
+        l.Hit(A, 20, c);
+        Check("out: knocked out is out", l.IsOut(A) && !l.Fighting(A) && !l.IsOut(B) && !l.IsOut(X));
+        c.Clear();
+        l.See(A, FightWhere.Ring, 0.05, c);   // the clock starts at the first sighting on the ring after the knock-out
+        l.See(A, FightWhere.Ring, 2.0, c);
+        l.See(A, FightWhere.Arena, 3.0, c);   // a brief step off (under 0.3 s) is not leaving
+        l.See(A, FightWhere.Ring, 3.2, c);
+        l.See(A, FightWhere.Ring, 4.95, c);
+        Check("out: at 4.9 s still out", l.IsOut(A) && l.PointsOf(A) == -1 && c.Count == 0);
+        l.See(A, FightWhere.Ring, 5.15, c);
+        Check("out: at 5.1 s back in with full points, one change", !l.IsOut(A) && l.PointsOf(A) == 20 && c.Count == 1 && Has(c, A, 20));
+        c.Clear();
+        l.See(A, FightWhere.Ring, 6.0, c);
+        Check("out: then an ordinary fighter", c.Count == 0 && l.Fighting(A));
+
+        // leaving and returning earlier still works as before
+        var m = new FightLedger(20, 5.0);
+        m.See(A, FightWhere.Ring, 0.0, c);
+        m.Hit(A, 20, c);
+        m.See(A, FightWhere.Ring, 0.1, c);
+        m.See(A, FightWhere.Arena, 1.0, c);
+        m.See(A, FightWhere.Arena, 1.31, c);
+        c.Clear();
+        m.See(A, FightWhere.Ring, 1.5, c);
+        Check("out: leaving and coming back gives 20 at once", m.PointsOf(A) == 20 && !m.IsOut(A) && Has(c, A, 20));
+
+        // Forget (downed, no body, left) keeps "out": back on the ring they are still out
+        var f = new FightLedger(20, 5.0);
+        f.See(A, FightWhere.Ring, 0.0, c);
+        f.See(B, FightWhere.Ring, 0.0, c);
+        f.Hit(A, 20, c);
+        c.Clear();
+        f.Forget(A, c);
+        Check("out: forgetting an out player sends nothing", c.Count == 0);
+        f.See(A, FightWhere.Ring, 1.0, c);
+        Check("out: forgotten, back on the ring, still out", f.IsOut(A) && f.PointsOf(A) == -1 && c.Count == 0);
+        f.Clear(c);
+        Check("out: a clear ends out", !f.IsOut(A));
+        Check("out: OutSeconds held to 0.5..600", Near((float)new FightLedger(20, 0.0).OutSeconds, 0.5f) && Near((float)new FightLedger(20, 1e9).OutSeconds, 600f)
+            && Near((float)new FightLedger(20, double.NaN).OutSeconds, 5f));
     }
 
     static bool Has(List<FightLedger.Change> c, ulong player, int points) {
