@@ -8,8 +8,8 @@ namespace Earthbending {
     // (PoseGuide in Poses.cs, by the recorder's snapshot count), and two markers show where the right and the left hand go:
     // a ring at the hand's place (lying in the palm's plane), a line along the fingers (12 cm) and a shorter one out of the
     // palm (6 cm), from that pose's built-in spec (PoseLibrary.Defaults, never poses.txt: the capture is what makes it), the
-    // A hand on the right. A marker turns nearly white and thicker while its hand is within the pose's position tolerance of
-    // it; directions are not judged. After the sixteenth snapshot the card says so and the markers go.
+    // A hand on the right. A marker turns nearly white and thicker while its hand is inside the pose's zone round it (the
+    // ellipsoid of spec 3.3); directions are not judged. After the sixteenth snapshot the card says so and the markers go.
     //
     // Everything is placed from the head's place and flat yaw (the body frame run backwards, BodyFrame.ToWorld, at body
     // scale 1 as the recorder writes it), eased toward the head with [EarthLooks] GuideFollowSeconds so head jitter does not
@@ -222,7 +222,8 @@ namespace Earthbending {
         }
 
         /// <summary>One marker for this frame: the ring at the hand's place in the palm's plane, the fingers' line and the
-        /// palm's, and whether the hand itself is within the pose's position tolerance of it.</summary>
+        /// palm's, and whether the hand itself is inside the pose's zone round it (PoseMatch.Zone, in the guide's own body
+        /// frame at scale 1).</summary>
         static void Place(Marker m, in HandSpec h, V3 origin, Vector3 hand) {
             Vector3 spot = W(BodyFrame.ToWorld(origin, yaw, h.Pos));
             Vector3 palm = W(BodyFrame.DirToWorld(yaw, h.Palm.Normalized)), fingers = W(BodyFrame.DirToWorld(yaw, h.Fingers.Normalized));
@@ -235,7 +236,8 @@ namespace Earthbending {
             m.Fingers.SetPosition(1, spot + fingers * FingersMetres);
             m.Palm.SetPosition(0, spot);
             m.Palm.SetPosition(1, spot + palm * PalmMetres);
-            bool near = (hand - spot).sqrMagnitude <= h.PosTol * h.PosTol;
+            V3 inBody = BodyFrame.ToBody(origin, yaw, new V3(hand.x, hand.y, hand.z), V3.Zero, V3.Zero, 1f).Pos;
+            bool near = PoseMatch.Zone(in h, inBody - h.Pos) <= 1f;
             if (near != m.Near) Tint(m, near);
         }
 

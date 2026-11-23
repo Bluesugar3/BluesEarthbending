@@ -34,26 +34,27 @@ STOMP_PALM, STOMP_FINGERS = (0.0, -0.71, -0.71), (0.0, -0.71, 0.71)
 
 SPEC = [
     ("Base",     ((0.20, -0.55, 0.30), PY, PZ),                   ((-0.20, -0.55, 0.30), PY, PZ)),
-    ("Disc",     ((0.05, -0.30, 0.60), NX, PZ),                   ((-0.05, -0.30, 0.35), NZ, PX)),
-    ("Ball",     ((0.15, -0.30, 0.25), NX, PZ),                   ((-0.10, -0.30, 0.60), PX, PZ)),
+    ("Disc",     ((0.05, -0.30, 0.45), NX, PZ),                   ((-0.05, -0.30, 0.28), NZ, PX)),
+    ("Ball",     ((0.15, -0.30, 0.22), NX, PZ),                   ((-0.10, -0.30, 0.45), PX, PZ)),
     ("Pillar",   ((0.20, -0.55, 0.30), NX, PZ),                   ((-0.20, -0.05, 0.25), PX, PY)),
     ("Cube",     ((0.20, -0.05, 0.25), NX, PY),                   ((-0.20, -0.05, 0.25), PX, PY)),
-    ("Wall",     ((0.20, 0.10, 0.30), PY, PZ),                    ((-0.20, 0.10, 0.30), PY, PZ)),
-    ("Straight", ((0.20, -0.25, 0.25), NX, PY),                   ((-0.15, -0.25, 0.60), NY, PZ)),
-    ("Kick",     ((0.20, -0.25, 0.25), NX, PY),                   ((-0.05, -0.70, 0.20), NZ, NY)),
-    ("Stomp",    ((0.20, -0.55, 0.40), STOMP_PALM, STOMP_FINGERS), ((-0.20, -0.55, 0.40), STOMP_PALM, STOMP_FINGERS)),
-    ("Uppercut", ((0.20, -0.30, 0.25), NX, (0.0, 0.97, 0.26)),    ((-0.05, -0.05, 0.35), NZ, PY)),
-    ("Parry",    ((0.20, -0.25, 0.50), PZ, PY),                   ((-0.20, -0.25, 0.50), PZ, PY)),
-    ("Hold",     ((0.05, -0.25, 0.50), PZ, PY),                   ((0.05, -0.40, 0.45), PY, PZ)),
-    ("Flick",    ((0.10, -0.25, 0.50), PX, PZ),                   ((0.10, -0.50, 0.45), PX, PZ)),
-    ("Explode",  ((0.06, -0.50, 0.30), NZ, NX),                   ((-0.06, -0.50, 0.30), NZ, PX)),
-    ("Jump",     ((0.20, -0.75, 0.20), PY, PZ),                   ((-0.20, 0.10, 0.10), PX, PY)),
-    ("Dash",     ((0.20, -0.75, 0.20), PY, PZ),                   ((-0.10, -0.30, 0.60), PX, PZ)),
+    ("Wall",     ((0.20, 0.00, 0.30), PY, PZ),                    ((-0.20, 0.00, 0.30), PY, PZ)),
+    ("Straight", ((0.20, -0.25, 0.25), NX, PY),                   ((-0.15, -0.25, 0.45), NY, PZ)),
+    ("Kick",     ((0.20, -0.25, 0.25), NX, PY),                   ((-0.05, -0.65, 0.22), NZ, NY)),
+    ("Stomp",    ((0.20, -0.55, 0.35), STOMP_PALM, STOMP_FINGERS), ((-0.20, -0.55, 0.35), STOMP_PALM, STOMP_FINGERS)),
+    ("Uppercut", ((0.20, -0.30, 0.25), NX, (0.0, 0.97, 0.26)),    ((-0.05, -0.10, 0.32), NZ, PY)),
+    ("Parry",    ((0.20, -0.25, 0.42), PZ, PY),                   ((-0.20, -0.25, 0.42), PZ, PY)),
+    ("Hold",     ((0.05, -0.25, 0.42), PZ, PY),                   ((0.05, -0.40, 0.38), PY, PZ)),
+    ("Flick",    ((0.10, -0.25, 0.42), PX, PZ),                   ((0.10, -0.48, 0.38), PX, PZ)),
+    ("Explode",  ((0.06, -0.50, 0.28), NZ, NX),                   ((-0.06, -0.50, 0.28), NZ, PX)),
+    ("Jump",     ((0.20, -0.72, 0.20), PY, PZ),                   ((-0.20, 0.05, 0.10), PX, PY)),
+    ("Dash",     ((0.20, -0.72, 0.20), PY, PZ),                   ((-0.10, -0.30, 0.45), PX, PZ)),
 ]
 NAMES = [s[0] for s in SPEC]
 
-# the default tolerances of spec 3.3 (PoseLibrary.DefaultPosTol, DefaultPalmDeg, DefaultFingerDeg)
-POS_TOL, PALM_DEG, FINGER_DEG = 0.18, 40.0, 45.0
+# the default tolerances of spec 3.3 (PoseLibrary.DefaultTolX/Y/Z, DefaultPalmDeg, DefaultFingerDeg): each hand's place is a
+# zone, an ellipsoid with these half-sizes sideways, up/down and in reach (metres), and the directions are cones (degrees)
+ZONE, PALM_DEG, FINGER_DEG = (0.25, 0.20, 0.30), 60.0, 60.0
 
 AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
 HANDS = ("right", "left")
@@ -101,6 +102,11 @@ def rotated(v, axis, deg):
 def checked(v):
     """A direction of a pose is checked unless it is zero (PoseMatch.Checked)."""
     return length(v) > 1e-6
+
+
+def zone(offset):
+    """How deep an offset from a pose's place is in its zone (PoseMatch.Zone): the ellipsoid distance, 1 on the edge."""
+    return math.sqrt(sum((d / t) ** 2 for d, t in zip(offset, ZONE)))
 
 
 def mirror_hand(h):
@@ -203,7 +209,7 @@ def n3(x):
 
 
 def format_poses(result, source):
-    """poses.txt's lines, in PoseLibrary.Parse's format: <Name> | A | B | posTol palmDeg fingerDeg, A the right hand."""
+    """poses.txt's lines, in PoseLibrary.Parse's format: <Name> | A | B | tx ty tz palmDeg fingerDeg, A the right hand."""
     def hand(h):
         return "  ".join(" ".join(n3(c) for c in v) for v in (h["pos"], h["palm"], h["fingers"]))
 
@@ -211,10 +217,10 @@ def format_poses(result, source):
     lines = [
         "# Blue's Earthbending poses: the owner's own, fitted by fit_poses.py from %s on %s (%s)."
         % (source, datetime.now().strftime("%Y-%m-%d %H:%M"), axes),
-        "# <Name> | A: x y z  palm x y z  fingers x y z | B: the same | posTol palmDeg fingerDeg",
-        "# Body frame: metres from the head as captured (BodyScale 1), +Z ahead (head yaw only), +Y up, +X right; A is the right hand; 0 0 0 = not checked.",
+        "# <Name> | A: x y z  palm x y z  fingers x y z | B: the same | tx ty tz palmDeg fingerDeg",
+        "# Body frame: metres from the head as captured (BodyScale 1), +Z ahead (head yaw only), +Y up, +X right; A is the right hand; 0 0 0 = not checked; tx ty tz = the zone's half-sizes sideways, up/down, reach.",
     ]
-    tol = "%g %g %g" % (POS_TOL, PALM_DEG, FINGER_DEG)
+    tol = "%g %g %g %g %g" % (ZONE + (PALM_DEG, FINGER_DEG))
     for p in result["poses"]:
         lines.append("%s | %s | %s | %s" % (p["name"], hand(p["right"]), hand(p["left"]), tol))
     return lines
@@ -239,13 +245,15 @@ def report(result):
             r = result[h][part]
             print("  %-5s %-7s %s  %5.1f deg  (worst %5.1f, %s; next %s at %5.1f)"
                   % (h, part, r["axis"], r["mean"], r["worst"], r["worst_pose"], r["next_axis"], r["next_mean"]))
-    print("Per pose, how far the owner's is from the design's (palm deg, fingers deg, place m; ! = outside 40 / 45 / 0.18):")
+    print("Per pose, how far the owner's is from the design's (palm deg, fingers deg, place m; ! = outside the %g / %g degree"
+          " cones or the place's zone, %g sideways, %g up/down, %g reach):" % ((PALM_DEG, FINGER_DEG) + ZONE))
     for k, (name, a, b) in enumerate(SPEC):
         cells = []
         for h, spec_hand in (("right", a), ("left", b)):
             p = result["poses"][k][h]
-            d = (angle_deg(p["palm"], spec_hand[1]), angle_deg(p["fingers"], spec_hand[2]), length(sub(p["pos"], spec_hand[0])))
-            marks = ["!" if v > lim else " " for v, lim in zip(d, (PALM_DEG, FINGER_DEG, POS_TOL))]
+            off = sub(p["pos"], spec_hand[0])
+            d = (angle_deg(p["palm"], spec_hand[1]), angle_deg(p["fingers"], spec_hand[2]), length(off))
+            marks = ["!" if out else " " for out in (d[0] > PALM_DEG, d[1] > FINGER_DEG, zone(off) > 1.0)]
             cells.append("%-5s %5.1f%s %5.1f%s %5.2f%s" % (h, d[0], marks[0], d[1], marks[1], d[2], marks[2]))
         print("  %2s %-9s %s   %s" % (result["poses"][k]["n"], name, cells[0], cells[1]))
     worst = max(result[h][part]["mean"] for h in HANDS for part in ("palm", "fingers"))
@@ -262,10 +270,10 @@ PAIRS = [(p, f) for p in AXES for f in AXES if p[1] != f[1]]
 
 
 def hand_score(spec_hand, pos, palm, fingers):
-    """One hand against one hand of a pose, as the game scores it (PoseMatch.Score): the largest of the place's error over
-    0.18 m and each checked direction's angle over its cone; 1 is the edge of the pose, lower is closer."""
+    """One hand against one hand of a pose, as the game scores it (PoseMatch.Score): the largest of the place's zone
+    distance and each checked direction's angle over its cone; 1 is the edge of the pose, lower is closer."""
     ref_pos, ref_palm, ref_fingers = spec_hand
-    r = length(sub(pos, ref_pos)) / POS_TOL
+    r = zone(sub(pos, ref_pos))
     if checked(ref_palm):
         r = max(r, angle_deg(palm, ref_palm) / PALM_DEG)
     if checked(ref_fingers):
@@ -400,7 +408,7 @@ def write_capture(rows, path, columns=None):
 
 
 def parse_poses(lines):
-    """poses.txt read as PoseLibrary.Parse reads it (a check of what this script writes): {name: (A 9 numbers, B 9, tol 3)}."""
+    """poses.txt read as PoseLibrary.Parse reads it (a check of what this script writes): {name: (A 9 numbers, B 9, tol 5)}."""
     poses = {}
     for line in lines:
         text = line.split("#", 1)[0].strip()
@@ -410,7 +418,7 @@ def parse_poses(lines):
         if len(parts) != 4:
             raise ValueError("%d parts in: %s" % (len(parts), line))
         nums = [[float(w) for w in p.split()] for p in parts[1:]]
-        if [len(n) for n in nums] != [9, 9, 3]:
+        if [len(n) for n in nums] != [9, 9, 5]:
             raise ValueError("wrong counts in: " + line)
         poses[parts[0].strip()] = tuple(nums)
     return poses
@@ -518,7 +526,8 @@ def selftest(out_dir):
                     and near_v(tuple(poses[name][1][3 * i:3 * i + 3]), result["poses"][k]["left"][part], 9e-4)
                     for k, name in enumerate(NAMES) for i, part in enumerate(("pos", "palm", "fingers")))
         check("poses.txt: the numbers are the fit's to 3 decimals", exact)
-        check("poses.txt: default tolerances 0.18 40 45", all(p[2] == [POS_TOL, PALM_DEG, FINGER_DEG] for p in poses.values()))
+        check("poses.txt: default tolerances 0.25 0.2 0.3 60 60", all(p[2] == list(ZONE) + [PALM_DEG, FINGER_DEG] for p in poses.values())
+              and all(l.endswith("| 0.25 0.2 0.3 60 60") for l in lines if l.split("#")[0].strip()))
         check("poses.txt: directions length 1", all(abs(length(tuple(p[h][3 * i:3 * i + 3])) - 1.0) < 2e-3 for p in poses.values() for h in (0, 1) for i in (1, 2)))
         print("selftest: wrote " + path)
 
@@ -594,7 +603,8 @@ can be found. The same list follows the fit's warning when an axis agrees badly 
 
 For each hand it picks the signed local axis of the controller (+x -x +y -y +z -z) that agrees best with the spec's
 palm over all 16 poses, and separately the one that agrees best with its fingers, and prints the agreement in degrees.
-It writes poses.txt from the measured places and directions (tolerances 0.18 m, 40 and 45 degrees) and prints the four
+It writes poses.txt from the measured places and directions (spec 3.3's tolerances: each place a zone of 0.25 m
+sideways, 0.20 m up/down and 0.30 m in reach; the palm and fingers within 60 degrees) and prints the four
 settings PalmAxisRight, FingerAxisRight, PalmAxisLeft and FingerAxisLeft.
 
 poses.txt goes to <UserData folder>\\Earthbending\\poses.txt with --out, else beside the capture. An older poses.txt

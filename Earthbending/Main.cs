@@ -29,17 +29,18 @@ namespace Earthbending {
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
     //   Moves.cs      games: pushing the local player (Straight's pushback too), the hitstun after a knockback, the
     //                 movement moves' dust, the game's grounded flag
-    //   Poses.cs      Unity-free: the pose engine (spec 3.3), the rules of feeding it (axes, empty hands, ground grace, push),
+    //   Poses.cs      Unity-free: the pose engine (spec 3.3: zones, pass-through), the measured body scale
+    //                 (BodyScaleEstimate), the rules of feeding it (axes, empty hands, ground grace, push),
     //                 and the pose recorder's rules (CaptureGate, PoseCapture)
     //   Hands.cs      games: the local player's head and hands (Hands.Raw, Hands.Read), empty hands, the ground under the
     //                 feet, the [EarthPose] axis settings and BodyScale, the pose recorder
     //   CaptureGuide.cs  games: the pose recorder's guide, a floating card naming the next pose and two hand markers
-    //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump, a structure's Summon claim,
-    //                 a modifier's target and Modify claim), Bender.CanBend, poses.txt
+    //   Bend.cs       games: the pose machine every frame (Bend.Tick), the measured body scale, the fired moves (Jump, a
+    //                 structure's Summon claim, a modifier's target and Modify claim), Bender.CanBend, poses.txt
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings (run it with python -I)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
-        public const string Version = "0.4.1";
+        public const string Version = "0.4.2";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;

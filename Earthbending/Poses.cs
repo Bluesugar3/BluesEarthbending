@@ -25,18 +25,22 @@ namespace Earthbending {
         public HandSample(V3 pos, V3 palm, V3 fingers) { Pos = pos; Palm = palm; Fingers = fingers; }
     }
 
-    /// <summary>One hand of a pose: where it is and how it is turned, and how far off each may be. A zero <see cref="Palm"/> or
-    /// <see cref="Fingers"/> is not checked. The directions need not be length 1.</summary>
+    /// <summary>One hand of a pose: where it is and how it is turned, and how far off each may be (spec 3.3, "flow, not
+    /// hold"). The place is a ZONE: an ellipsoid round <see cref="Pos"/> with the half-sizes <see cref="TolX"/> sideways,
+    /// <see cref="TolY"/> up/down and <see cref="TolZ"/> in reach (forward/back), in body-frame metres. The directions are
+    /// cones of <see cref="PalmDeg"/> and <see cref="FingerDeg"/>. A zero <see cref="Palm"/> or <see cref="Fingers"/> is not
+    /// checked. The directions need not be length 1.</summary>
     internal struct HandSpec {
         public V3 Pos, Palm, Fingers;
-        public float PosTol, PalmDeg, FingerDeg;
+        public float TolX, TolY, TolZ, PalmDeg, FingerDeg;
 
-        public HandSpec(V3 pos, V3 palm, V3 fingers, float posTol, float palmDeg, float fingerDeg) {
-            Pos = pos; Palm = palm; Fingers = fingers; PosTol = posTol; PalmDeg = palmDeg; FingerDeg = fingerDeg;
+        public HandSpec(V3 pos, V3 palm, V3 fingers, float tolX, float tolY, float tolZ, float palmDeg, float fingerDeg) {
+            Pos = pos; Palm = palm; Fingers = fingers; TolX = tolX; TolY = tolY; TolZ = tolZ; PalmDeg = palmDeg; FingerDeg = fingerDeg;
         }
 
-        /// <summary>The same hand on the other side (x flipped in the place and both directions).</summary>
-        public readonly HandSpec Mirrored() => new HandSpec(Pos.MirrorX(), Palm.MirrorX(), Fingers.MirrorX(), PosTol, PalmDeg, FingerDeg);
+        /// <summary>The same hand on the other side (x flipped in the place and both directions); the zone, square to the
+        /// body frame's axes, is the same.</summary>
+        public readonly HandSpec Mirrored() => new HandSpec(Pos.MirrorX(), Palm.MirrorX(), Fingers.MirrorX(), TolX, TolY, TolZ, PalmDeg, FingerDeg);
     }
 
     /// <summary>A two-hand pose: <see cref="A"/> on the right hand and <see cref="B"/> on the left as written.</summary>
@@ -79,10 +83,46 @@ namespace Earthbending {
         }
     }
 
+    /// <summary>The measured body scale (<c>[EarthPose] BodyScale</c> 0, spec 3.3): the player's standing eye height over the
+    /// design player's, <see cref="DesignEyeHeight"/> 1.63 m, held to <see cref="MinScale"/>..<see cref="MaxScale"/>. Fed one
+    /// sample a frame (Bend.cs): the head's height over the feet and whether the game has the player on the ground. The
+    /// standing height is a slow running average of the grounded samples (time constant <see cref="AverageSeconds"/>) that
+    /// never moves more than <see cref="MaxMetresPerSecond"/> (a frame counts at most <see cref="MaxStepSeconds"/>), so a bad
+    /// frame cannot jump it. A sample under <see cref="IgnoreBelow"/> of the estimate (a crouch, a lean), in the air, or not a
+    /// number is ignored. It starts at the design height, so the scale starts at 1. Allocates nothing.</summary>
+    internal sealed class BodyScaleEstimate {
+        public const float DesignEyeHeight = 1.63f, MinScale = 0.7f, MaxScale = 1.3f, IgnoreBelow = 0.85f;
+        public const float AverageSeconds = 2f, MaxMetresPerSecond = 0.04f, MaxStepSeconds = 0.1f;
+
+        static readonly float MinHeight = MinScale * DesignEyeHeight, MaxHeight = MaxScale * DesignEyeHeight;
+
+        float height = DesignEyeHeight;
+
+        /// <summary>The standing eye height as measured so far, in metres.</summary>
+        public float Height => height;
+
+        /// <summary><see cref="Height"/> over <see cref="DesignEyeHeight"/>, within <see cref="MinScale"/>..<see cref="MaxScale"/>.</summary>
+        public float Scale => height <= MinHeight ? MinScale : height >= MaxHeight ? MaxScale : height / DesignEyeHeight;
+
+        /// <summary>One frame of <paramref name="dt"/> seconds: the head's height over the feet, and whether the player is on
+        /// the ground. A frame time that is not above 0 or not a number moves nothing.</summary>
+        public void Step(float dt, float eyeHeight, bool grounded) {
+            if (!grounded || !(dt > 0f) || float.IsNaN(eyeHeight) || float.IsInfinity(eyeHeight)) return;
+            if (eyeHeight < IgnoreBelow * height) return;
+            if (dt > MaxStepSeconds) dt = MaxStepSeconds;
+            float toward = (eyeHeight - height) * (1f - (float)Math.Exp(-dt / AverageSeconds));
+            float most = MaxMetresPerSecond * dt;
+            if (toward > most) toward = most;
+            else if (toward < -most) toward = -most;
+            float next = height + toward;
+            height = next < MinHeight ? MinHeight : next > MaxHeight ? MaxHeight : next;
+        }
+    }
+
     internal static class PoseMatch {
         /// <summary>Whether the hands strike the pose, as written (A = right) or mirrored (A = left), whichever is closer.
-        /// <paramref name="score"/> is the largest of (position error / tolerance, angle / cone) over every checked part of both
-        /// hands: 0 is exact, 1 is the edge, lower is better. A tie counts as written.</summary>
+        /// <paramref name="score"/> is the largest of (the place's <see cref="Zone"/> distance, angle / cone) over every checked
+        /// part of both hands: 0 is exact, 1 is the edge, lower is better. A tie counts as written.</summary>
         public static bool Match(in PoseSpec s, in HandSample right, in HandSample left, out bool rightIsA, out float score) {
             float asWritten = Math.Max(Score(in s.A, in right), Score(in s.B, in left));
             PoseSpec m = s.Mirrored();
@@ -93,12 +133,22 @@ namespace Earthbending {
         }
 
         /// <summary>One hand's score against one hand of a pose (see <see cref="Match"/>); never NaN: a hand that cannot be
-        /// judged (NaN, no direction where one is checked, a tolerance of 0) scores infinity.</summary>
+        /// judged (NaN, no direction where one is checked, a tolerance or half-size of 0) scores infinity.</summary>
         public static float Score(in HandSpec h, in HandSample x) {
-            float r = Ratio((x.Pos - h.Pos).Length, h.PosTol);
+            float r = Zone(in h, x.Pos - h.Pos);
             if (Checked(h.Palm)) r = Math.Max(r, Ratio(Angle(x.Palm, h.Palm), h.PalmDeg));
             if (Checked(h.Fingers)) r = Math.Max(r, Ratio(Angle(x.Fingers, h.Fingers), h.FingerDeg));
             return r;
+        }
+
+        /// <summary>How deep <paramref name="offset"/> (a hand's place less the pose's, body frame) is in the hand's zone: the
+        /// ellipsoid distance sqrt((dx/tx)^2 + (dy/ty)^2 + (dz/tz)^2), 0 at the centre and 1 on the edge. Infinity, never NaN,
+        /// when it cannot be judged (a half-size that is 0, negative or not a number, or an offset that is not a number).</summary>
+        public static float Zone(in HandSpec h, V3 offset) {
+            if (!(h.TolX > 0f && h.TolY > 0f && h.TolZ > 0f)) return float.PositiveInfinity;
+            double x = offset.X / (double)h.TolX, y = offset.Y / (double)h.TolY, z = offset.Z / (double)h.TolZ;
+            double r = Math.Sqrt(x * x + y * y + z * z);
+            return double.IsNaN(r) ? float.PositiveInfinity : (float)r;
         }
 
         /// <summary>A direction of a pose is checked unless it is zero (a NaN one is checked, and matches nothing).</summary>
@@ -120,11 +170,13 @@ namespace Earthbending {
     }
 
     /// <summary>The sixteen poses, and the text of <c>UserData\Earthbending\poses.txt</c>: one line per pose,
-    /// <c>&lt;Name&gt; | ax ay az  anx any anz  afx afy afz | bx by bz  bnx bny bnz  bfx bfy bfz | posTol palmDeg fingerDeg</c>
-    /// (A the right hand, <c>0 0 0</c> a direction not checked, one set of tolerances for both hands, <c>#</c> starts a
-    /// comment, numbers in the invariant culture).</summary>
+    /// <c>&lt;Name&gt; | ax ay az  anx any anz  afx afy afz | bx by bz  bnx bny bnz  bfx bfy bfz | tx ty tz palmDeg fingerDeg</c>
+    /// (A the right hand, <c>0 0 0</c> a direction not checked, one set of tolerances for both hands: the zone's half-sizes
+    /// sideways, up/down and in reach, then the two cones; <c>#</c> starts a comment, numbers in the invariant culture). The
+    /// tail of a file from before 0.4.2, <c>posTol palmDeg fingerDeg</c>, still reads: <c>posTol</c> is all three half-sizes.</summary>
     internal static class PoseLibrary {
-        public const float DefaultPosTol = 0.18f, DefaultPalmDeg = 40f, DefaultFingerDeg = 45f;
+        // spec 3.3, "flow, not hold": roomy zones and wide cones, so a pose fires as the hands pass through it
+        public const float DefaultTolX = 0.25f, DefaultTolY = 0.20f, DefaultTolZ = 0.30f, DefaultPalmDeg = 60f, DefaultFingerDeg = 60f;
 
         static readonly V3 PX = new V3(1f, 0f, 0f), NX = new V3(-1f, 0f, 0f), PY = new V3(0f, 1f, 0f), NY = new V3(0f, -1f, 0f),
             PZ = new V3(0f, 0f, 1f), NZ = new V3(0f, 0f, -1f);
@@ -133,29 +185,30 @@ namespace Earthbending {
         // degrees below forward overlapped Base, and Base's own hands struck Stomp (Task 4's ruling, option A).
         static readonly V3 StompPalm = new V3(0f, -0.71f, -0.71f);
 
-        // the spec 3.3 table, starting values read from the wiki's words (Task 3's capture replaces them through poses.txt)
+        // the spec 3.3 table, second design (2026-11-22, after the first capture): near the body, no straight arm ("arm out"
+        // is about half reach, 0.42-0.45 m ahead of the head); a natural capture's poses.txt re-centres each zone
         static readonly PoseSpec[] Table = {
             P(Move.Base,     new V3(0.20f, -0.55f, 0.30f), PY, PZ, new V3(-0.20f, -0.55f, 0.30f), PY, PZ),
-            P(Move.Disc,     new V3(0.05f, -0.30f, 0.60f), NX, PZ, new V3(-0.05f, -0.30f, 0.35f), NZ, PX),
-            P(Move.Ball,     new V3(0.15f, -0.30f, 0.25f), NX, PZ, new V3(-0.10f, -0.30f, 0.60f), PX, PZ),
+            P(Move.Disc,     new V3(0.05f, -0.30f, 0.45f), NX, PZ, new V3(-0.05f, -0.30f, 0.28f), NZ, PX),
+            P(Move.Ball,     new V3(0.15f, -0.30f, 0.22f), NX, PZ, new V3(-0.10f, -0.30f, 0.45f), PX, PZ),
             P(Move.Pillar,   new V3(0.20f, -0.55f, 0.30f), NX, PZ, new V3(-0.20f, -0.05f, 0.25f), PX, PY),
             P(Move.Cube,     new V3(0.20f, -0.05f, 0.25f), NX, PY, new V3(-0.20f, -0.05f, 0.25f), PX, PY),
-            P(Move.Wall,     new V3(0.20f, 0.10f, 0.30f), PY, PZ, new V3(-0.20f, 0.10f, 0.30f), PY, PZ),
-            P(Move.Straight, new V3(0.20f, -0.25f, 0.25f), NX, PY, new V3(-0.15f, -0.25f, 0.60f), NY, PZ),
-            P(Move.Kick,     new V3(0.20f, -0.25f, 0.25f), NX, PY, new V3(-0.05f, -0.70f, 0.20f), NZ, NY),
-            P(Move.Stomp,    new V3(0.20f, -0.55f, 0.40f), StompPalm, new V3(0f, -0.71f, 0.71f), new V3(-0.20f, -0.55f, 0.40f), StompPalm, new V3(0f, -0.71f, 0.71f)),
-            P(Move.Uppercut, new V3(0.20f, -0.30f, 0.25f), NX, new V3(0f, 0.97f, 0.26f), new V3(-0.05f, -0.05f, 0.35f), NZ, PY),
-            P(Move.Parry,    new V3(0.20f, -0.25f, 0.50f), PZ, PY, new V3(-0.20f, -0.25f, 0.50f), PZ, PY),
-            P(Move.Hold,     new V3(0.05f, -0.25f, 0.50f), PZ, PY, new V3(0.05f, -0.40f, 0.45f), PY, PZ),
-            P(Move.Flick,    new V3(0.10f, -0.25f, 0.50f), PX, PZ, new V3(0.10f, -0.50f, 0.45f), PX, PZ),
-            P(Move.Explode,  new V3(0.06f, -0.50f, 0.30f), NZ, NX, new V3(-0.06f, -0.50f, 0.30f), NZ, PX),
-            P(Move.Jump,     new V3(0.20f, -0.75f, 0.20f), PY, PZ, new V3(-0.20f, 0.10f, 0.10f), PX, PY),
-            P(Move.Dash,     new V3(0.20f, -0.75f, 0.20f), PY, PZ, new V3(-0.10f, -0.30f, 0.60f), PX, PZ),
+            P(Move.Wall,     new V3(0.20f, 0.00f, 0.30f), PY, PZ, new V3(-0.20f, 0.00f, 0.30f), PY, PZ),
+            P(Move.Straight, new V3(0.20f, -0.25f, 0.25f), NX, PY, new V3(-0.15f, -0.25f, 0.45f), NY, PZ),
+            P(Move.Kick,     new V3(0.20f, -0.25f, 0.25f), NX, PY, new V3(-0.05f, -0.65f, 0.22f), NZ, NY),
+            P(Move.Stomp,    new V3(0.20f, -0.55f, 0.35f), StompPalm, new V3(0f, -0.71f, 0.71f), new V3(-0.20f, -0.55f, 0.35f), StompPalm, new V3(0f, -0.71f, 0.71f)),
+            P(Move.Uppercut, new V3(0.20f, -0.30f, 0.25f), NX, new V3(0f, 0.97f, 0.26f), new V3(-0.05f, -0.10f, 0.32f), NZ, PY),
+            P(Move.Parry,    new V3(0.20f, -0.25f, 0.42f), PZ, PY, new V3(-0.20f, -0.25f, 0.42f), PZ, PY),
+            P(Move.Hold,     new V3(0.05f, -0.25f, 0.42f), PZ, PY, new V3(0.05f, -0.40f, 0.38f), PY, PZ),
+            P(Move.Flick,    new V3(0.10f, -0.25f, 0.42f), PX, PZ, new V3(0.10f, -0.48f, 0.38f), PX, PZ),
+            P(Move.Explode,  new V3(0.06f, -0.50f, 0.28f), NZ, NX, new V3(-0.06f, -0.50f, 0.28f), NZ, PX),
+            P(Move.Jump,     new V3(0.20f, -0.72f, 0.20f), PY, PZ, new V3(-0.20f, 0.05f, 0.10f), PX, PY),
+            P(Move.Dash,     new V3(0.20f, -0.72f, 0.20f), PY, PZ, new V3(-0.10f, -0.30f, 0.45f), PX, PZ),
         };
 
         static PoseSpec P(Move m, V3 ap, V3 an, V3 af, V3 bp, V3 bn, V3 bf) => new PoseSpec(m,
-            new HandSpec(ap, an, af, DefaultPosTol, DefaultPalmDeg, DefaultFingerDeg),
-            new HandSpec(bp, bn, bf, DefaultPosTol, DefaultPalmDeg, DefaultFingerDeg));
+            new HandSpec(ap, an, af, DefaultTolX, DefaultTolY, DefaultTolZ, DefaultPalmDeg, DefaultFingerDeg),
+            new HandSpec(bp, bn, bf, DefaultTolX, DefaultTolY, DefaultTolZ, DefaultPalmDeg, DefaultFingerDeg));
 
         /// <summary>The built-in poses (a fresh copy each time), in the table's order.</summary>
         public static PoseSpec[] Defaults => (PoseSpec[])Table.Clone();
@@ -201,14 +254,14 @@ namespace Earthbending {
         }
 
         /// <summary>The poses as poses.txt's lines (with two comment lines on top), which <see cref="Parse"/> reads back
-        /// exactly. Each line carries A's tolerances for both hands.</summary>
+        /// exactly. Each line carries A's tolerances for both hands, always in the 5-number form.</summary>
         public static string[] Format(PoseSpec[] poses) {
             var lines = new List<string> {
-                "# <Name> | A: x y z  palm x y z  fingers x y z | B: the same | posTol palmDeg fingerDeg",
-                "# Body frame: metres from the head for a 1.75 m player, +Z ahead (head yaw only), +Y up, +X right; A is the right hand; 0 0 0 = not checked.",
+                "# <Name> | A: x y z  palm x y z  fingers x y z | B: the same | tx ty tz palmDeg fingerDeg",
+                "# Body frame: metres from the head for a 1.75 m player, +Z ahead (head yaw only), +Y up, +X right; A is the right hand; 0 0 0 = not checked; tx ty tz = the zone's half-sizes sideways, up/down, reach.",
             };
             foreach (PoseSpec s in poses ?? new PoseSpec[0])
-                lines.Add(s.Move + " | " + Hand(s.A) + " | " + Hand(s.B) + " | " + N(s.A.PosTol) + " " + N(s.A.PalmDeg) + " " + N(s.A.FingerDeg));
+                lines.Add(s.Move + " | " + Hand(s.A) + " | " + Hand(s.B) + " | " + N(s.A.TolX) + " " + N(s.A.TolY) + " " + N(s.A.TolZ) + " " + N(s.A.PalmDeg) + " " + N(s.A.FingerDeg));
             return lines.ToArray();
         }
 
@@ -224,14 +277,29 @@ namespace Earthbending {
             if (!TryMove(name, out Move move)) { why = "no pose named '" + name + "'"; return false; }
             if (!TryNumbers(parts[1], 9, out float[] a, out why)) { why = "hand A: " + why; return false; }
             if (!TryNumbers(parts[2], 9, out float[] b, out why)) { why = "hand B: " + why; return false; }
-            if (!TryNumbers(parts[3], 3, out float[] t, out why)) { why = "tolerances: " + why; return false; }
-            if (!(t[0] > 0f && t[1] > 0f && t[2] > 0f)) { why = "tolerances must be above 0"; return false; }
+            if (!TryTolerances(parts[3], out float[] t, out why)) { why = "tolerances: " + why; return false; }
             spec = new PoseSpec(move, Hand(a, t), Hand(b, t));
             return true;
         }
 
+        /// <summary>The tail as <c>tx ty tz palmDeg fingerDeg</c>; the old <c>posTol palmDeg fingerDeg</c> gives posTol to all
+        /// three half-sizes. Every number above 0.</summary>
+        static bool TryTolerances(string text, out float[] t, out string why) {
+            int count = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+            if (count != 5 && count != 3) {
+                t = new float[5];
+                why = count + " numbers, want 5 (tx ty tz palmDeg fingerDeg) or the old 3 (posTol palmDeg fingerDeg)";
+                return false;
+            }
+            if (!TryNumbers(text, count, out float[] n, out why)) { t = new float[5]; return false; }
+            t = count == 5 ? n : new[] { n[0], n[0], n[0], n[1], n[2] };
+            foreach (float f in t)
+                if (!(f > 0f)) { why = "tolerances must be above 0"; return false; }
+            return true;
+        }
+
         static HandSpec Hand(float[] v, float[] t) =>
-            new HandSpec(new V3(v[0], v[1], v[2]), new V3(v[3], v[4], v[5]), new V3(v[6], v[7], v[8]), t[0], t[1], t[2]);
+            new HandSpec(new V3(v[0], v[1], v[2]), new V3(v[3], v[4], v[5]), new V3(v[6], v[7], v[8]), t[0], t[1], t[2], t[3], t[4]);
 
         static bool TryMove(string name, out Move move) {
             foreach (Move m in (Move[])Enum.GetValues(typeof(Move)))
@@ -276,7 +344,8 @@ namespace Earthbending {
                 c[(int)Move.Hold] = 0.8f;
                 c[(int)Move.Flick] = 0.8f;
                 c[(int)Move.Explode] = 0.3f;
-                return new PoseValues { MinHoldSeconds = 0.05f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f, Cooldown = c };
+                // MinHoldSeconds 0: a pose fires the first frame the hands are inside it (spec 3.3, "flow, not hold")
+                return new PoseValues { MinHoldSeconds = 0f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f, Cooldown = c };
             }
         }
 
@@ -306,13 +375,14 @@ namespace Earthbending {
 
     /// <summary>Turns the hands of every frame into moves (spec 3.3). Each pose keeps its own state:
     /// <list type="bullet">
-    /// <item>it counts once it has matched for <see cref="PoseValues.MinHoldSeconds"/> without a break (a hand sweeping
-    /// through it fires nothing), and that entry is judged once, then: it fires, or it is used up (a gate, its cooldown or a
-    /// better pose the same frame), and it fires again only after it has stopped matching for
-    /// <see cref="PoseValues.RearmSeconds"/>;</item>
+    /// <item>it counts once it has matched for <see cref="PoseValues.MinHoldSeconds"/> without a break (the default 0: the
+    /// first frame the hands are inside it, so a hand passing through a pose fires it), and that entry is judged once, then:
+    /// it fires, or it is used up (a gate, its cooldown or a better pose the same frame), and it fires again only after it
+    /// has stopped matching for <see cref="PoseValues.RearmSeconds"/>;</item>
     /// <item><see cref="Move.Base"/> never fires: while it counts it arms the structures, which fire only when the base
     /// counted within <see cref="PoseValues.StructureWindowSeconds"/> before the structure's pose started matching, with the
-    /// player grounded on natural ground; firing a structure disarms;</item>
+    /// player grounded on natural ground; firing a structure disarms. While armed (the base counted within that window of
+    /// now) Jump and Dash do not fire, so moving from the base into a structure never dashes on the way;</item>
     /// <item>modifiers need natural ground under a grounded player, or the air; movement needs natural ground under a
     /// grounded player; each move waits out its own cooldown;</item>
     /// <item>with anything in a hand nothing counts and every pose and the arming start over (the cooldowns stay); while
@@ -404,13 +474,14 @@ namespace Earthbending {
             return fired;
         }
 
-        /// <summary>0 an armed structure, 1 a modifier, 2 movement; -1 when it may not fire now.</summary>
+        /// <summary>0 an armed structure, 1 a modifier, 2 movement; -1 when it may not fire now (movement also while a
+        /// structure is armed).</summary>
         int Rank(Move m, double since, double now, bool grounded, bool onNatural) {
             if (now - lastFired[(int)m] < values.CooldownOf(m) - Eps) return -1;
             bool onEarth = grounded && onNatural;
             if (IsStructure(m)) return onEarth && since - baseAt <= values.StructureWindowSeconds + Eps ? 0 : -1;
             if (IsModifier(m)) return onEarth || !grounded ? 1 : -1;
-            if (IsMovement(m)) return onEarth ? 2 : -1;
+            if (IsMovement(m)) return onEarth && !(now - baseAt <= values.StructureWindowSeconds + Eps) ? 2 : -1;
             return -1;
         }
 
@@ -556,12 +627,12 @@ namespace Earthbending {
         // the owner's words (the task's table); the right hand is the pose's A hand
         static readonly Entry[] Table = {
             E(Move.Base,     "palm up, fingers forward, just above the waist", "the same, shoulder width apart"),
-            E(Move.Disc,     "arm fully out in front, fingers forward, palm facing left", "across your right forearm, palm toward you, fingers pointing right"),
-            E(Move.Ball,     "near your body, just under the shoulder, palm facing left, fingers forward", "arm fully out, just under the shoulder, palm facing right, fingers forward"),
+            E(Move.Disc,     "arm half out in front, fingers forward, palm facing left", "across your right forearm, palm toward you, fingers pointing right"),
+            E(Move.Ball,     "near your body, just under the shoulder, palm facing left, fingers forward", "arm half out, just under the shoulder, palm facing right, fingers forward"),
             E(Move.Pillar,   "low, where Base was, palm facing left, fingers forward", "at face height, palm facing right, fingers up"),
             E(Move.Cube,     "at face height, fingers up, palm facing left", "at face height, fingers up, palm facing right"),
-            E(Move.Wall,     "palm up, lifted just above your eyes", "the same"),
-            E(Move.Straight, "in front of your right shoulder, palm facing left, fingers up", "arm fully out in front, palm down, fingers forward"),
+            E(Move.Wall,     "palm up, lifted to your forehead", "the same"),
+            E(Move.Straight, "in front of your right shoulder, palm facing left, fingers up", "arm half out in front, palm down, fingers forward"),
             E(Move.Kick,     "in front of your right shoulder, palm facing left, fingers up", "at your belly button, palm toward you, fingers down"),
             E(Move.Stomp,    "in front at waist height, fingers forward and down, palm down", "the same"),
             E(Move.Uppercut, "in front of your right shoulder, fingers up, tilted a little forward", "half out in front of your face, palm toward your face, fingers up"),
@@ -570,7 +641,7 @@ namespace Earthbending {
             E(Move.Flick,    "arm out at shoulder height, palm facing right, fingers forward", "a few fists under your right hand, palm facing right, fingers forward"),
             E(Move.Explode,  "at your belly, palm toward you, fingers pointing left, knuckles touching the left", "at your belly, palm toward you, fingers pointing right"),
             E(Move.Jump,     "at your hip, palm up, fingers forward", "above your shoulder, palm facing right, fingers up"),
-            E(Move.Dash,     "at your hip, palm up, fingers forward", "arm out in front, palm facing right, fingers forward"),
+            E(Move.Dash,     "at your hip, palm up, fingers forward", "arm half out in front, palm facing right, fingers forward"),
         };
 
         static readonly Move[] Order = Array.ConvertAll(Table, e => e.Move);

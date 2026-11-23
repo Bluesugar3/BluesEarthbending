@@ -8,7 +8,8 @@ using UnityEngine;
 namespace Earthbending {
     // Games only: the local player's head and hands (spec 3.1), and the pose recorder (Task 3). What the pose machine is fed
     // (Task 5, Bend.cs): Hands.Read (both hands in the body frame: each controller's place, and its palm and fingers as the
-    // local axes the four [EarthPose] axis settings name, through BodyFrame.ToBody at [EarthPose] BodyScale), Hands.Empty
+    // local axes the four [EarthPose] axis settings name, through BodyFrame.ToBody at the body scale Bend gives it: [EarthPose]
+    // BodyScale when above 0, else the measured one, BodyScaleEstimate in Poses.cs), Hands.Empty
     // (neither hand interacting with anything: a pickup, a climbing hold, a bow string) and Hands.GroundState (the game's
     // grounded flag, and the natural-ground test under the feet).
     //
@@ -25,7 +26,7 @@ namespace Earthbending {
         // the double buzz of a snapshot: feedback of a one-off tool, so not settings
         const float BuzzStrength = 0.6f, BuzzSeconds = 0.06f, BuzzGapSeconds = 0.15f;
         const float DefaultStillMetres = 0.01f, DefaultStillSeconds = 0.6f, DefaultMoveMetres = 0.2f, DefaultRestBelowMetres = 0.7f;
-        const float DefaultBodyScale = 1f;
+        const float DefaultBodyScale = 0f;   // measured
 
         static MelonPreferences_Entry<bool>? capture;
         static MelonPreferences_Entry<float>? stillMetres, stillSeconds, moveMetres, restBelowMetres, bodyScaleEntry;
@@ -58,7 +59,7 @@ namespace Earthbending {
             FingerAxisRight = cat.CreateEntry("FingerAxisRight", HandAxes.FingersRight.ToString(), description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
             PalmAxisLeft = cat.CreateEntry("PalmAxisLeft", HandAxes.PalmLeft.ToString(), description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture. Anything else, or the same axis as FingerAxisLeft, uses the defaults (+x, +z) and says so in the log.");
             FingerAxisLeft = cat.CreateEntry("FingerAxisLeft", HandAxes.FingersLeft.ToString(), description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
-            bodyScaleEntry = cat.CreateEntry("BodyScale", DefaultBodyScale, description: "Per game. Your size against the player the poses were made for: every pose's hand places are this many times as far from the head. The built-in poses are a 1.75 m player's (a 1.60 m player: 0.91); poses.txt from the pose capture are the capturer's own (1 for them). Above 0.");
+            bodyScaleEntry = cat.CreateEntry("BodyScale", DefaultBodyScale, description: "Per game. Your size against the player the poses were made for: every pose's hand places are this many times as far from the head. 0 (the default): measured, your standing eye height (head over feet while on the ground; crouching does not count) over the design player's 1.63 m, held to 0.7 to 1.3, followed a few cm a second. Above 0: that number, fixed (a 1.60 m player: 0.91; poses.txt from the pose capture are the capturer's own, so 1 for them). 0 or more.");
             Apply();
             Cfg.Changed += Apply;
         }
@@ -92,22 +93,21 @@ namespace Earthbending {
             return Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg;
         }
 
-        /// <summary>Both hands in the body frame (spec 3.3), the head's world place and its yaw: each controller's place, and
-        /// its palm and fingers as the local axes the [EarthPose] axis settings name, through BodyFrame.ToBody at
-        /// [EarthPose] BodyScale. False (the hands default) when <see cref="Raw"/> is. Allocates nothing.</summary>
-        internal static bool Read(out HandSample right, out HandSample left, out Vector3 head, out float yawDeg) {
-            right = default;
-            left = default;
-            if (!Raw(out head, out yawDeg, out Transform r, out Transform l)) return false;
+        /// <summary>[EarthPose] BodyScale as the game uses it: above 0 a fixed body scale, 0 the measured one (Bend.cs).</summary>
+        internal static float FixedBodyScale => bodyScale;
+
+        /// <summary>Both hands in the body frame (spec 3.3), from what <see cref="Raw"/> gave: each controller's place, and its
+        /// palm and fingers as the local axes the [EarthPose] axis settings name, through BodyFrame.ToBody at
+        /// <paramref name="scale"/>. Allocates nothing.</summary>
+        internal static void Read(Vector3 head, float yawDeg, Transform r, Transform l, float scale, out HandSample right, out HandSample left) {
             V3 h = V(head);
-            right = Sample(h, yawDeg, r, palmR, fingersR);
-            left = Sample(h, yawDeg, l, palmL, fingersL);
-            return true;
+            right = Sample(h, yawDeg, r, palmR, fingersR, scale);
+            left = Sample(h, yawDeg, l, palmL, fingersL, scale);
         }
 
-        static HandSample Sample(V3 head, float yawDeg, Transform t, HandAxis palm, HandAxis fingers) {
+        static HandSample Sample(V3 head, float yawDeg, Transform t, HandAxis palm, HandAxis fingers, float scale) {
             V3 x = V(t.right), y = V(t.up), z = V(t.forward);
-            return BodyFrame.ToBody(head, yawDeg, V(t.position), palm.Pick(x, y, z), fingers.Pick(x, y, z), bodyScale);
+            return BodyFrame.ToBody(head, yawDeg, V(t.position), palm.Pick(x, y, z), fingers.Pick(x, y, z), scale);
         }
 
         /// <summary>The local player's hands are both empty: neither controller's Interactor is interacting with anything (a
@@ -148,7 +148,7 @@ namespace Earthbending {
         internal static int CaptureTaken => taken;
 
         static void Apply() {
-            bodyScale = Cfg.Positive(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
+            bodyScale = Cfg.NotNegative(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
             var warnings = new List<string>();
             HandAxes.Check("PalmAxisRight", PalmAxisRight?.Value, "FingerAxisRight", FingerAxisRight?.Value, HandAxes.PalmRight, HandAxes.FingersRight, out palmR, out fingersR, warnings);
             HandAxes.Check("PalmAxisLeft", PalmAxisLeft?.Value, "FingerAxisLeft", FingerAxisLeft?.Value, HandAxes.PalmLeft, HandAxes.FingersLeft, out palmL, out fingersL, warnings);

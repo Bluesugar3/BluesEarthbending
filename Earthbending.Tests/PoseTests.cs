@@ -48,7 +48,12 @@ internal static class PoseTests {
     /// <summary>The hand turned about its own fingers: the palm moves by deg, the fingers stay.</summary>
     static HandSample Turned(HandSample h, float deg) => new HandSample(h.Pos, Rot(h.Palm, h.Fingers, deg), h.Fingers);
 
-    static HandSample Shifted(HandSample h, float metres) => new HandSample(h.Pos + new V3(metres, 0f, 0f), h.Palm, h.Fingers);
+    static HandSample Shifted(HandSample h, float metres) => Moved(h, new V3(metres, 0f, 0f));
+
+    static HandSample Moved(HandSample h, V3 by) => new HandSample(h.Pos + by, h.Palm, h.Fingers);
+
+    /// <summary>A poses.txt line with its tolerances (the part after the last |) replaced.</summary>
+    static string Tail(string line, string tolerances) => line.Substring(0, line.LastIndexOf('|') + 1) + " " + tolerances;
 
     /// <summary>Unity's turn about +Y: positive yaw is clockwise seen from above, so yaw 90 takes +Z to +X.</summary>
     static V3 RotY(V3 v, float deg) {
@@ -99,7 +104,7 @@ internal static class PoseTests {
         a.Pos.X == b.Pos.X && a.Pos.Y == b.Pos.Y && a.Pos.Z == b.Pos.Z &&
         a.Palm.X == b.Palm.X && a.Palm.Y == b.Palm.Y && a.Palm.Z == b.Palm.Z &&
         a.Fingers.X == b.Fingers.X && a.Fingers.Y == b.Fingers.Y && a.Fingers.Z == b.Fingers.Z &&
-        a.PosTol == b.PosTol && a.PalmDeg == b.PalmDeg && a.FingerDeg == b.FingerDeg;
+        a.TolX == b.TolX && a.TolY == b.TolY && a.TolZ == b.TolZ && a.PalmDeg == b.PalmDeg && a.FingerDeg == b.FingerDeg;
 
     static bool Equal(PoseSpec[] a, PoseSpec[] b) {
         if (a.Length != b.Length) return false;
@@ -113,11 +118,15 @@ internal static class PoseTests {
         CaptureChecks();
         GameSideChecks();
         GuideChecks();
+        BodyScaleChecks();
 
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
         Check("defaults: the sixteen poses in the table's order", defaults.Length == 16 && defaults.Select(s => (int)s.Move).SequenceEqual(Enumerable.Range((int)Move.Base, 16)));
-        Check("defaults: tolerances 0.18 m, 40 and 45 degrees", defaults.All(s => s.A.PosTol == 0.18f && s.B.PosTol == 0.18f && s.A.PalmDeg == 40f && s.B.PalmDeg == 40f && s.A.FingerDeg == 45f && s.B.FingerDeg == 45f));
+        Check("defaults: zones 0.25 sideways, 0.20 up/down, 0.30 reach, palm 60 and fingers 60 degrees, on both hands",
+            defaults.All(s => new[] { s.A, s.B }.All(h => h.TolX == 0.25f && h.TolY == 0.20f && h.TolZ == 0.30f && h.PalmDeg == 60f && h.FingerDeg == 60f)));
+        Check("defaults: no pose needs a straight arm (no hand more than 0.45 m ahead of the head)", defaults.All(s => s.A.Pos.Z <= 0.45f && s.B.Pos.Z <= 0.45f));
+        Check("a mirrored hand keeps its zone", new[] { Spec(Move.Disc).A.Mirrored() }.All(h => h.TolX == 0.25f && h.TolY == 0.20f && h.TolZ == 0.30f && h.PalmDeg == 60f && h.FingerDeg == 60f && h.Pos.X == -0.05f));
         Check("defaults: stomp checks its palms, down and back", NearV(Spec(Move.Stomp).A.Palm, new V3(0f, -0.71f, -0.71f)) && NearV(Spec(Move.Stomp).B.Palm, new V3(0f, -0.71f, -0.71f))
             && Near(V3.Dot(Spec(Move.Stomp).A.Palm, Spec(Move.Stomp).A.Fingers), 0f));
         bool apart = true;
@@ -140,13 +149,31 @@ internal static class PoseTests {
         Check("base matches", PoseMatch.Match(Spec(Move.Base), R(Move.Base), L(Move.Base), out _, out float sBase) && sBase < 0.01f);
         Check("mirrored straight is straight, left is A", PoseMatch.Match(Spec(Move.Straight), At(Move.Straight, true).r, At(Move.Straight, true).l, out bool rA, out _) && !rA);
         Check("straight as written, right is A", PoseMatch.Match(Spec(Move.Straight), R(Move.Straight), L(Move.Straight), out bool rA2, out _) && rA2);
-        Check("palm 60 off fails", !PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 60f), L(Move.Parry), out _, out _));
-        Check("palm 30 off still matches", PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 30f), L(Move.Parry), out _, out float sPalm) && Near(sPalm, 30f / 40f));
-        Check("pos 0.25 off fails", !PoseMatch.Match(Spec(Move.Cube), Shifted(R(Move.Cube), 0.25f), L(Move.Cube), out _, out _));
-        Check("pos 0.15 off still matches", PoseMatch.Match(Spec(Move.Cube), Shifted(R(Move.Cube), 0.15f), L(Move.Cube), out _, out float sPos) && Near(sPos, 0.15f / 0.18f));
-        Check("fingers 50 off fails", !PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 50f)), L(Move.Parry), out _, out _));
+        Check("palm 70 off fails", !PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 70f), L(Move.Parry), out _, out _));
+        Check("palm 50 off still matches", PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 50f), L(Move.Parry), out _, out float sPalm) && Near(sPalm, 50f / 60f));
+        Check("fingers 70 off fails, 50 off still matches", !PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 70f)), L(Move.Parry), out _, out _)
+            && PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 50f)), L(Move.Parry), out _, out float sFingers) && Near(sFingers, 50f / 60f));
+
+        // the zones: an ellipsoid round each hand's place, 0.25 m sideways, 0.20 m up/down, 0.30 m in reach
+        PoseSpec cube = Spec(Move.Cube);
+        bool CubeWith(V3 by, out float sc) => PoseMatch.Match(cube, Moved(R(Move.Cube), by), L(Move.Cube), out _, out sc);
+        Check("zone: 0.24 m to the side matches, 0.26 m does not", CubeWith(new V3(0.24f, 0f, 0f), out float sSide) && Near(sSide, 0.24f / 0.25f) && !CubeWith(new V3(0.26f, 0f, 0f), out _));
+        Check("zone: 0.29 m in reach matches, 0.31 m does not", CubeWith(new V3(0f, 0f, 0.29f), out float sReach) && Near(sReach, 0.29f / 0.30f) && !CubeWith(new V3(0f, 0f, 0.31f), out _)
+            && CubeWith(new V3(0f, 0f, -0.29f), out _) && !CubeWith(new V3(0f, 0f, -0.31f), out _));
+        Check("zone: 0.19 m up matches, 0.21 m does not", CubeWith(new V3(0f, 0.19f, 0f), out _) && !CubeWith(new V3(0f, 0.21f, 0f), out _) && !CubeWith(new V3(0f, -0.21f, 0f), out _));
+        Check("zone: an ellipsoid: 0.2 m to the side and 0.15 m up each match alone, together they do not (0.8^2 + 0.75^2 > 1)",
+            CubeWith(new V3(0.2f, 0f, 0f), out _) && CubeWith(new V3(0f, 0.15f, 0f), out _) && !CubeWith(new V3(0.2f, 0.15f, 0f), out float sBoth)
+            && Near(sBoth, (float)Math.Sqrt(0.8 * 0.8 + 0.75 * 0.75)));
+        Check("zone: the place's score is the ellipsoid distance, 1 at the edge", Near(PoseMatch.Zone(cube.A, new V3(0.125f, 0.1f, 0.15f)), (float)Math.Sqrt(0.75)) && PoseMatch.Zone(cube.A, V3.Zero) == 0f);
+        HandSpec flat = cube.A, broken = cube.A;
+        flat.TolY = 0f;
+        broken.TolZ = float.NaN;
+        float sFlat = PoseMatch.Score(flat, R(Move.Cube)), sBroken = PoseMatch.Score(broken, R(Move.Cube));
+        Check("zone: a half-size of 0 or NaN never matches and never scores NaN, even at the exact place",
+            float.IsPositiveInfinity(sFlat) && float.IsPositiveInfinity(sBroken) && float.IsPositiveInfinity(PoseMatch.Zone(flat, V3.Zero)));
+
         PoseSpec stomp = Spec(Move.Stomp);
-        var noPalm = new PoseSpec(Move.Stomp, new HandSpec(stomp.A.Pos, V3.Zero, stomp.A.Fingers, 0.18f, 40f, 45f), new HandSpec(stomp.B.Pos, V3.Zero, stomp.B.Fingers, 0.18f, 40f, 45f));
+        var noPalm = new PoseSpec(Move.Stomp, new HandSpec(stomp.A.Pos, V3.Zero, stomp.A.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f), new HandSpec(stomp.B.Pos, V3.Zero, stomp.B.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f));
         var palmUp = new HandSample(R(Move.Stomp).Pos, new V3(0f, 1f, 0f), R(Move.Stomp).Fingers);
         Check("an unchecked palm is not checked", PoseMatch.Match(noPalm, palmUp, L(Move.Stomp), out _, out _) && !PoseMatch.Match(stomp, palmUp, L(Move.Stomp), out _, out _));
         Check("a sample with no palm fails a checked palm", !PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, V3.Zero, R(Move.Parry).Fingers), L(Move.Parry), out _, out _));
@@ -166,9 +193,12 @@ internal static class PoseTests {
         Check("body scale leaves directions", NearV(BodyFrame.ToBody(V3.Zero, 0f, new V3(0, -0.9f, 0), up * 3f, fwd, 0.5f).Palm, up));
         Check("body scale 0 or NaN reads as 1", Near(BodyFrame.ToBody(V3.Zero, 0f, new V3(0, -0.9f, 0), up, fwd, 0f).Pos.Y, -0.9f) && Near(BodyFrame.ToBody(V3.Zero, 0f, new V3(0, -0.9f, 0), up, fwd, float.NaN).Pos.Y, -0.9f));
 
-        // the machine: hold, entry, rearm
-        Check("one frame sweep fires nothing", Run(M(), OneFrame(Move.Jump), 0.5).Count == 0);
+        // the machine: entry (the first frame inside a pose counts: flow, not hold), rearm
+        Check("a hand passing through a pose for one frame fires it once", Run(M(), OneFrame(Move.Jump), 0.5).SequenceEqual(new[] { Move.Jump }));
         Check("held jump fires once", Run(M(), Hold(Move.Jump, 0.3), 0.3).SequenceEqual(new[] { Move.Jump }));
+        var held = new PoseValues { MinHoldSeconds = 0.05f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f, Cooldown = PoseValues.Default.Cooldown };
+        Check("MinHoldSeconds above 0 still asks for a hold: one frame fires nothing, a held pose fires",
+            Run(new PoseMachine(PoseLibrary.Defaults, held), OneFrame(Move.Jump), 0.5).Count == 0 && Run(new PoseMachine(PoseLibrary.Defaults, held), Hold(Move.Jump, 0.3), 0.3).SequenceEqual(new[] { Move.Jump }));
         Check("held mirrored jump fires once, left is A", Run(M(), Hold(Move.Jump, 0.3, mirrored: true), 0.3, true, true, out var jumpA).SequenceEqual(new[] { Move.Jump }) && !jumpA[0]);
         Check("base fires nothing", Run(M(), Hold(Move.Base, 1.0), 1.0).Count == 0);
 
@@ -178,9 +208,18 @@ internal static class PoseTests {
         Check("base then mirrored pillar", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2, mirrored: true)), 0.4).SequenceEqual(new[] { Move.Pillar }));
         Check("base too long ago", Run(M(), Seq(Hold(Move.Base, 0.2), Idle(1.3), Hold(Move.Pillar, 0.2)), 1.7).Count == 0);
         Check("base just in time", Run(M(), Seq(Hold(Move.Base, 0.2), Idle(1.0), Hold(Move.Pillar, 0.2)), 1.4).SequenceEqual(new[] { Move.Pillar }));
-        Check("a base swept through for one frame does not arm", Run(M(), Seq(OneFrame(Move.Base), Hold(Move.Pillar, 0.3)), 0.4).Count == 0);
+        Check("a base passed through for one frame arms", Run(M(), Seq(OneFrame(Move.Base), Hold(Move.Pillar, 0.3)), 0.4).SequenceEqual(new[] { Move.Pillar }));
         Check("pillar twice needs base twice", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2), Idle(0.3), Hold(Move.Pillar, 0.2)), 0.9).SequenceEqual(new[] { Move.Pillar }));
         Check("base, pillar, base, pillar: two pillars", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2), Idle(0.3), Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2)), 1.1).SequenceEqual(new[] { Move.Pillar, Move.Pillar }));
+
+        // armed (the base within the structure window): Jump and Dash do not fire, so moving from the base into a structure
+        // never dashes on the way; a blocked entry is used up; modifiers still fire
+        Check("armed: no jump", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Jump, 0.3)), 0.5).Count == 0);
+        Check("armed: no dash", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Dash, 0.3)), 0.5).Count == 0);
+        Check("armed: a straight still fires", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Straight, 0.3)), 0.5).SequenceEqual(new[] { Move.Straight }));
+        Check("armed: a jump blocked by the arming is used up (held on past the window, it still does not fire)", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Jump, 2.0)), 2.2).Count == 0);
+        Check("armed: once the window is over a jump fires", Run(M(), Seq(Hold(Move.Base, 0.2), Idle(1.3), Hold(Move.Jump, 0.3)), 1.8).SequenceEqual(new[] { Move.Jump }));
+        Check("armed: a structure fired disarms, so a jump after it fires", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2), Hold(Move.Jump, 0.3)), 0.7).SequenceEqual(new[] { Move.Pillar, Move.Jump }));
 
         // rearm and cooldown
         Check("rearm: hold straight 1 s fires once; leave 0.15 s, re-enter fires again after cooldown", Run(M(), Seq(Hold(Move.Straight, 1.0), Idle(0.15), Hold(Move.Straight, 0.3)), 1.45).SequenceEqual(new[] { Move.Straight, Move.Straight }));
@@ -212,7 +251,7 @@ internal static class PoseTests {
         var both = new PoseMachine(new[] { twin, Spec(Move.Base), pillar }, PoseValues.Default);
         Check("priority: armed structure beats a modifier matching the same frame", Run(both, Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.5)), 0.7).SequenceEqual(new[] { Move.Pillar }));
         Check("priority: unarmed, the modifier fires", Run(new PoseMachine(new[] { twin, Spec(Move.Base), pillar }, PoseValues.Default), Hold(Move.Pillar, 0.3), 0.3).SequenceEqual(new[] { Move.Straight }));
-        var farther = new PoseSpec(Move.Kick, new HandSpec(pillar.A.Pos + new V3(0.05f, 0f, 0f), pillar.A.Palm, pillar.A.Fingers, 0.18f, 40f, 45f), pillar.B);
+        var farther = new PoseSpec(Move.Kick, new HandSpec(pillar.A.Pos + new V3(0.05f, 0f, 0f), pillar.A.Palm, pillar.A.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f), pillar.B);
         Check("priority: within a group the lower score", Run(new PoseMachine(new[] { farther, twin }, PoseValues.Default), Hold(Move.Pillar, 0.3), 0.3).SequenceEqual(new[] { Move.Straight }));
         var jumpTwin = new PoseSpec(Move.Jump, pillar.A, pillar.B);
         Check("priority: a modifier beats movement", Run(new PoseMachine(new[] { jumpTwin, twin }, PoseValues.Default), Hold(Move.Pillar, 0.3), 0.3).SequenceEqual(new[] { Move.Straight }));
@@ -222,14 +261,14 @@ internal static class PoseTests {
             && PoseMachine.IsModifier(Move.Straight) && PoseMachine.IsModifier(Move.Explode) && !PoseMachine.IsModifier(Move.Jump) && !PoseMachine.IsModifier(Move.Wall)
             && PoseMachine.IsMovement(Move.Jump) && PoseMachine.IsMovement(Move.Dash) && !PoseMachine.IsMovement(Move.Base) && !PoseMachine.IsMovement(Move.None));
         PoseValues pv = PoseValues.Default;
-        Check("values: the spec's numbers", Near(pv.MinHoldSeconds, 0.05f) && Near(pv.RearmSeconds, 0.1f) && Near(pv.StructureWindowSeconds, 1.2f) && Near(pv.MoveCooldownSeconds, 0.6f));
+        Check("values: the spec's numbers (no hold: passing through counts)", pv.MinHoldSeconds == 0f && Near(pv.RearmSeconds, 0.1f) && Near(pv.StructureWindowSeconds, 1.2f) && Near(pv.MoveCooldownSeconds, 0.6f));
         Check("cooldowns by move", new[] { Move.Disc, Move.Ball, Move.Pillar, Move.Cube, Move.Wall }.All(m => Near(pv.CooldownOf(m), 0.3f))
             && Near(pv.CooldownOf(Move.Straight), 0.5f) && Near(pv.CooldownOf(Move.Kick), 0.3f) && Near(pv.CooldownOf(Move.Stomp), 0.3f) && Near(pv.CooldownOf(Move.Uppercut), 0.5f)
             && Near(pv.CooldownOf(Move.Parry), 0.3f) && Near(pv.CooldownOf(Move.Hold), 0.8f) && Near(pv.CooldownOf(Move.Flick), 0.8f) && Near(pv.CooldownOf(Move.Explode), 0.3f)
             && Near(pv.CooldownOf(Move.Jump), 0.6f) && Near(pv.CooldownOf(Move.Dash), 0.6f) && pv.CooldownOf(Move.Base) == 0f);
         var bad = new PoseValues { MinHoldSeconds = float.NaN, RearmSeconds = -1f, StructureWindowSeconds = float.PositiveInfinity, MoveCooldownSeconds = 0.25f, Cooldown = new float[] { 0f, 0f, float.NaN } };
         PoseValues ok = bad.Clamped();
-        Check("values: NaN, negative and infinite fall back to the defaults", Near(ok.MinHoldSeconds, 0.05f) && Near(ok.RearmSeconds, 0.1f) && Near(ok.StructureWindowSeconds, 1.2f) && Near(ok.MoveCooldownSeconds, 0.25f)
+        Check("values: NaN, negative and infinite fall back to the defaults", ok.MinHoldSeconds == 0f && Near(ok.RearmSeconds, 0.1f) && Near(ok.StructureWindowSeconds, 1.2f) && Near(ok.MoveCooldownSeconds, 0.25f)
             && Near(ok.CooldownOf(Move.Disc), 0.3f) && Near(ok.CooldownOf(Move.Hold), 0.8f) && Near(ok.CooldownOf(Move.Jump), 0.25f) && new PoseValues().Clamped().Cooldown!.Length == (int)Move.Dash + 1);
 
         // poses.txt
@@ -240,18 +279,76 @@ internal static class PoseTests {
             "# my poses",
             "",
             wallLine + "   # mine",
-            "Nope | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0 | 0.18 40 45",
-            "Base | 1 2 3 | 0 0 0  0 0 0  0 0 0 | 0.18 40 45",
-            "Jump | 0 0 0  0 0 0  0 0 x | 0 0 0  0 0 0  0 0 0 | 0.18 40 45",
-            "Dash | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0 | 0 40 45",
+            "Nope | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0 | 0.25 0.2 0.3 60 60",
+            "Base | 1 2 3 | 0 0 0  0 0 0  0 0 0 | 0.25 0.2 0.3 60 60",
+            "Jump | 0 0 0  0 0 0  0 0 x | 0 0 0  0 0 0  0 0 0 | 0.25 0.2 0.3 60 60",
+            "Dash | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0 | 0.25 0 0.3 60 60",
             "Cube | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0",
+            "Disc | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0 | 0.25 0.2 0.3 60",
+            "Ball | 0 0 0  0 0 0  0 0 0 | 0 0 0  0 0 0  0 0 0 | 0 40 45",
         }, out List<string> errors);
         Check("parse: round-trip of Defaults through text equals Defaults", roundErrors.Count == 0 && Equal(back, defaults));
+        Check("parse: every default pose alone round-trips through Format and Parse", defaults.All(s => {
+            PoseSpec[] one = PoseLibrary.Parse(PoseLibrary.Format(new[] { s }), out List<string> e1);
+            return e1.Count == 0 && one.Length == 1 && one[0].Move == s.Move && Equal(one[0].A, s.A) && Equal(one[0].B, s.B);
+        }));
+        Check("format: the tail is the zone's three half-sizes, then the palm's and the fingers' cones", wallLine.EndsWith("| 0.25 0.2 0.3 60 60"));
         Check("parse: a bad line is skipped and named", some.Length == 1 && some[0].Move == Move.Wall && Equal(some[0].A, Spec(Move.Wall).A)
-            && errors.Count == 5 && errors[0].Contains("line 4") && errors[1].Contains("line 5") && errors[2].Contains("line 6") && errors[3].Contains("line 7") && errors[4].Contains("line 8"));
-        PoseSpec[] twice = PoseLibrary.Parse(new[] { wallLine, wallLine.Replace("0.18 40 45", "0.3 40 45") }, out List<string> twiceErrors);
-        Check("parse: a repeated pose keeps the first and names the repeat", twice.Length == 1 && twice[0].A.PosTol == 0.18f && twiceErrors.Count == 1 && twiceErrors[0].Contains("line 2"));
-        Check("parse: names in any case, numbers with a dot", PoseLibrary.Parse(new[] { "wALL | 0.2 0.1 0.3  0 1 0  0 0 1 | -0.2 0.1 0.3  0 1 0  0 0 1 | 0.18 40 45" }, out _).Length == 1);
+            && errors.Count == 7 && errors[0].Contains("line 4") && errors[1].Contains("line 5") && errors[2].Contains("line 6") && errors[3].Contains("line 7") && errors[4].Contains("line 8")
+            && errors[5].Contains("line 9") && errors[6].Contains("line 10"));
+        PoseSpec[] twice = PoseLibrary.Parse(new[] { wallLine, Tail(wallLine, "0.3 0.3 0.3 40 45") }, out List<string> twiceErrors);
+        Check("parse: a repeated pose keeps the first and names the repeat", twice.Length == 1 && twice[0].A.TolX == 0.25f && twiceErrors.Count == 1 && twiceErrors[0].Contains("line 2"));
+        Check("parse: names in any case, numbers with a dot", PoseLibrary.Parse(new[] { "wALL | 0.2 0.1 0.3  0 1 0  0 0 1 | -0.2 0.1 0.3  0 1 0  0 0 1 | 0.25 0.2 0.3 60 60" }, out _).Length == 1);
+
+        // the old tail (posTol palmDeg fingerDeg: one round tolerance) still reads, as all three half-sizes; it is written back
+        // in the new form, which reads back the same
+        PoseSpec[] old = PoseLibrary.Parse(new[] { Tail(wallLine, "0.18 40 45") }, out List<string> oldErrors);
+        bool oldOk = oldErrors.Count == 0 && old.Length == 1 && new[] { old[0].A, old[0].B }.All(h => h.TolX == 0.18f && h.TolY == 0.18f && h.TolZ == 0.18f && h.PalmDeg == 40f && h.FingerDeg == 45f)
+            && NearV(old[0].A.Pos, Spec(Move.Wall).A.Pos) && NearV(old[0].B.Palm, Spec(Move.Wall).B.Palm);
+        string[] oldWritten = PoseLibrary.Format(old);
+        PoseSpec[] oldBack = PoseLibrary.Parse(oldWritten, out List<string> oldBackErrors);
+        Check("parse: the old 3-number tail reads as a round zone", oldOk);
+        Check("parse: an old pose is written with the new tail and reads back the same", oldWritten[2].EndsWith("| 0.18 0.18 0.18 40 45") && oldBackErrors.Count == 0 && Equal(oldBack, old));
+        PoseSpec[] mixed = PoseLibrary.Parse(new[] { Tail(wallLine, "0.18 40 45"), Tail(PoseLibrary.Format(new[] { Spec(Move.Base) })[2], "0.3 0.25 0.4 50 55") }, out List<string> mixedErrors);
+        Check("parse: old and new tails in one file", mixedErrors.Count == 0 && mixed.Length == 2 && mixed[0].A.TolY == 0.18f
+            && mixed[1].A.TolX == 0.3f && mixed[1].B.TolY == 0.25f && mixed[1].A.TolZ == 0.4f && mixed[1].B.PalmDeg == 50f && mixed[1].A.FingerDeg == 55f);
+    }
+
+    // the measured body scale ([EarthPose] BodyScale 0): standing eye height over 1.63 m, held to 0.7..1.3
+    static void BodyScaleChecks() {
+        const float frame = 1f / 90f;
+        static void Feed(BodyScaleEstimate e, double seconds, float height, bool grounded = true) {
+            for (int i = 0, n = (int)Math.Round(seconds * 90.0); i < n; i++) e.Step(1f / 90f, height, grounded);
+        }
+        var est = new BodyScaleEstimate();
+        Check("body scale: it starts at 1 (the design player's 1.63 m)", est.Scale == 1f && est.Height == 1.63f);
+        Feed(est, 30, 1.80f);
+        Check("body scale: standing at 1.80 m settles at about 1.10", Math.Abs(est.Scale - 1.80f / 1.63f) < 0.002f && Math.Abs(est.Scale - 1.10f) < 0.01f);
+        float settled = est.Scale;
+        Feed(est, 10, 1.20f);
+        Check("body scale: a crouch (under 85% of the estimate) does not lower it", est.Scale == settled);
+        Feed(est, 10, 2.6f, grounded: false);
+        Check("body scale: a sample in the air is ignored", est.Scale == settled);
+        for (int i = 0; i < 90; i++) { est.Step(frame, float.NaN, true); est.Step(frame, float.PositiveInfinity, true); est.Step(float.NaN, 2f, true); est.Step(-1f, 2f, true); }
+        Check("body scale: a NaN or infinite sample, or a broken frame time, is ignored", est.Scale == settled && !float.IsNaN(est.Scale));
+
+        var fresh = new BodyScaleEstimate();
+        fresh.Step(frame, 1.9f, true);
+        Check("body scale: one frame of a bad sample hardly moves it", Math.Abs(fresh.Scale - 1f) < 0.001f);
+        fresh.Step(30f, 1.9f, true);
+        Check("body scale: a long frame (a hitch) moves it no more than a short one would", Math.Abs(fresh.Scale - 1f) < 0.01f);
+        var climb = new BodyScaleEstimate();
+        Feed(climb, 1, 2.2f);
+        Check("body scale: it moves at most a few cm per second", climb.Height - 1.63f <= 0.05f && climb.Height > 1.63f);
+
+        var tall = new BodyScaleEstimate();
+        Feed(tall, 60, 2.6f);
+        Check("body scale: clamped at 1.3", tall.Scale == 1.3f);
+        var small = new BodyScaleEstimate();
+        for (int i = 0; i < 90 * 60; i++) small.Step(frame, Math.Max(0.9f, 1.63f - 0.02f * i * frame), true);   // getting smaller at 2 cm/s, each sample within 85%
+        Check("body scale: clamped at 0.7", small.Scale == 0.7f);
+        Feed(small, 60, 1.63f);
+        Check("body scale: from the floor of the clamp it comes back up to a standing 1.63 m", Math.Abs(small.Scale - 1f) < 0.002f);
     }
 
     // the capture guide (Task 3b): the hand lines in the recorder's order, the next pose for a count, the card's text, the
@@ -265,10 +362,14 @@ internal static class PoseTests {
             && PoseGuide.Right(m).Length > 0 && PoseGuide.Left(m).Length > 0));
         Check("guide: no line for a move that is no pose", PoseGuide.Right(Move.None) == "" && PoseGuide.Left((Move)99) == "");
         Check("guide: Base's lines", PoseGuide.Right(Move.Base) == "palm up, fingers forward, just above the waist" && PoseGuide.Left(Move.Base) == "the same, shoulder width apart");
-        Check("guide: Disc's lines", PoseGuide.Right(Move.Disc) == "arm fully out in front, fingers forward, palm facing left" && PoseGuide.Left(Move.Disc) == "across your right forearm, palm toward you, fingers pointing right");
+        Check("guide: Disc's lines", PoseGuide.Right(Move.Disc) == "arm half out in front, fingers forward, palm facing left" && PoseGuide.Left(Move.Disc) == "across your right forearm, palm toward you, fingers pointing right");
+        Check("guide: Ball's lines", PoseGuide.Right(Move.Ball) == "near your body, just under the shoulder, palm facing left, fingers forward" && PoseGuide.Left(Move.Ball) == "arm half out, just under the shoulder, palm facing right, fingers forward");
+        Check("guide: Straight's lines", PoseGuide.Right(Move.Straight) == "in front of your right shoulder, palm facing left, fingers up" && PoseGuide.Left(Move.Straight) == "arm half out in front, palm down, fingers forward");
+        Check("guide: Wall's lines", PoseGuide.Right(Move.Wall) == "palm up, lifted to your forehead" && PoseGuide.Left(Move.Wall) == "the same");
+        Check("guide: no line asks for an arm fully out", PoseGuide.Moves.All(m => !PoseGuide.Right(m).Contains("fully") && !PoseGuide.Left(m).Contains("fully")));
         Check("guide: Uppercut's lines", PoseGuide.Right(Move.Uppercut) == "in front of your right shoulder, fingers up, tilted a little forward" && PoseGuide.Left(Move.Uppercut) == "half out in front of your face, palm toward your face, fingers up");
         Check("guide: Explode's lines", PoseGuide.Right(Move.Explode) == "at your belly, palm toward you, fingers pointing left, knuckles touching the left" && PoseGuide.Left(Move.Explode) == "at your belly, palm toward you, fingers pointing right");
-        Check("guide: Dash's lines", PoseGuide.Right(Move.Dash) == "at your hip, palm up, fingers forward" && PoseGuide.Left(Move.Dash) == "arm out in front, palm facing right, fingers forward");
+        Check("guide: Dash's lines", PoseGuide.Right(Move.Dash) == "at your hip, palm up, fingers forward" && PoseGuide.Left(Move.Dash) == "arm half out in front, palm facing right, fingers forward");
 
         // the next pose for a count of snapshots
         Check("guide: done from 16 on", !PoseGuide.Done(0) && !PoseGuide.Done(15) && PoseGuide.Done(16) && PoseGuide.Done(40));
@@ -280,7 +381,7 @@ internal static class PoseTests {
         string[] lines = card.Split('\n');
         string flat = string.Join(" ", lines.Select(Untagged));
         Check("guide: the card's first line is the title", lines[0] == "Pose 2 of 16: Disc");
-        Check("guide: the card says what each hand does, the hint and the colours", flat.Contains("RIGHT: arm fully out in front, fingers forward, palm facing left")
+        Check("guide: the card says what each hand does, the hint and the colours", flat.Contains("RIGHT: arm half out in front, fingers forward, palm facing left")
             && flat.Contains("LEFT: across your right forearm, palm toward you, fingers pointing right")
             && flat.Contains("Hold still until both hands buzz twice. Rest your arms at your sides between poses.") && flat.Contains("orange = right, blue = left"));
         Check("guide: each hand's lines are in its marker's colour, tag by tag on every line", lines.Where(l => Untagged(l).StartsWith("RIGHT:")).All(l => l.StartsWith("<color=#FF8A1E>") && l.EndsWith("</color>"))
@@ -383,23 +484,25 @@ internal static class PoseTests {
         grace.Seconds = 0f;
         grace.Step(3.0, true, true, out _);
         Check("grace 0: only a grounded frame is grounded", grace.Step(3.0, false, false, out _) && !grace.Step(3.0 + Dt, false, false, out _));
-        // the grounded flag of the game flickers; every 5th frame off puts the frame the Jump is judged on (its 6th) in the air
+        // the grounded flag of the game flickers; every 5th frame off, and idle hands until frame 10, put the frame the Jump is
+        // judged on (its first, frame 10) in the air
         Func<int, bool> flicker = f => f % 5 != 0;
-        Check("grace: a held jump on flickering ground fires once; without the grace the flicker eats it",
-            RunGated(M(), Hold(Move.Jump, 0.5), 0.5, null, new GroundGrace(0.15f), flicker).SequenceEqual(new[] { Move.Jump })
-            && RunGated(M(), Hold(Move.Jump, 0.5), 0.5, null, null, flicker).Count == 0);
+        Seg[] lateJump = Seq(Idle(0.1 + Dt / 2), Hold(Move.Jump, 0.5));
+        Check("grace: a jump struck on a flicker of the ground fires once; without the grace the flicker eats it",
+            RunGated(M(), lateJump, 0.6, null, new GroundGrace(0.15f), flicker).SequenceEqual(new[] { Move.Jump })
+            && RunGated(M(), lateJump, 0.6, null, null, flicker).Count == 0);
 
         // poses.txt over the defaults: the file's pose replaces the default of the same move, in the defaults' order; a pose
         // the file leaves out, or whose line did not parse, stays the default
         PoseSpec[] d = PoseLibrary.Defaults;
         PoseSpec[] none = PoseLibrary.Merge(d, null, out int r0);
         Check("merge: no file is the defaults", r0 == 0 && Equal(none, d));
-        string wall = PoseLibrary.Format(new[] { Spec(Move.Wall) })[2].Replace("| 0.18 40 45", "| 0.3 40 45");
-        string jumpBad = PoseLibrary.Format(new[] { Spec(Move.Jump) })[2].Replace("0.18 40 45", "0.18 40");
+        string wall = Tail(PoseLibrary.Format(new[] { Spec(Move.Wall) })[2], "0.3 0.2 0.3 60 60");
+        string jumpBad = Tail(PoseLibrary.Format(new[] { Spec(Move.Jump) })[2], "0.18 40");
         PoseSpec[] file = PoseLibrary.Parse(new[] { "# mine", jumpBad, wall }, out List<string> fileErrors);
         PoseSpec[] merged = PoseLibrary.Merge(d, file, out int r1);
         Check("merge: a file pose replaces its default in place; a bad line keeps the default", r1 == 1 && fileErrors.Count == 1 && merged.Length == 16
-            && merged.Select(s => s.Move).SequenceEqual(d.Select(s => s.Move)) && merged[(int)Move.Wall - 1].A.PosTol == 0.3f
+            && merged.Select(s => s.Move).SequenceEqual(d.Select(s => s.Move)) && merged[(int)Move.Wall - 1].A.TolX == 0.3f
             && Equal(merged[(int)Move.Jump - 1].A, Spec(Move.Jump).A) && merged.Where(s => s.Move != Move.Wall).All(s => Equal(s.A, Spec(s.Move).A) && Equal(s.B, Spec(s.Move).B)));
         Check("merge: the defaults are not changed", Equal(d, PoseLibrary.Defaults));
 
@@ -515,7 +618,7 @@ internal static class PoseTests {
         Check("capture rest: a pose, a rest, then the next pose 5 cm from the first: two snapshots and the rest between",
             twice.Count == 2 && twice[0] < 2.0 && twice[1] > 4.0 && cycle.Count == 1 && cycle[0] > 2.0 && cycle[0] < 4.0);
         PoseSpec jump = Spec(Move.Jump);
-        Check("capture rest: Jump's default hands (the low one 0.75 m under the head) snapshot",
+        Check("capture rest: Jump's default hands (the low one 0.72 m under the head) snapshot",
             Snaps(G(), 2.0, Glide(hangR, H + jump.A.Pos, 0.0), Glide(hangL, H + jump.B.Pos, 0.0)).Count == 1);
         Check("capture rest: one hand hanging and the other raised is no rest",
             Snaps(G(), 2.0, _ => hangR, Glide(hangL, H + new V3(-0.2f, 0.1f, 0.1f), 0.0)).Count == 1);
@@ -669,14 +772,19 @@ internal static class PoseTests {
         return list;
     }
 
-    /// <summary>A hand inside both specs, if there is one: the place between the two centres split by their tolerances, and
-    /// the way of turning it that is deepest inside both.</summary>
+    /// <summary>A hand inside both specs, if there is one: the place on the line between the two centres where it is as deep
+    /// in one zone as in the other (exactly the deepest place when the two zones have the same half-sizes, as the defaults
+    /// and fit_poses.py's poses do), and the way of turning it that is deepest inside both.</summary>
     static bool Witness(HandSpec a, HandSpec b, List<(V3 n, V3 f)> orients, out HandSample w) {
         w = default;
         float depth = float.PositiveInfinity;
         V3 d = b.Pos - a.Pos;
-        if (d.Length > a.PosTol + b.PosTol) return false;
-        V3 pos = a.Pos + d * (a.PosTol / (a.PosTol + b.PosTol));
+        float na = PoseMatch.Zone(a, d), nb = PoseMatch.Zone(b, d);   // each zone's distance of the whole way between the centres
+        V3 pos = a.Pos;
+        if (d.Length > 0f) {
+            if (!(na * nb / (na + nb) <= 1f)) return false;            // the deepest place on the line is outside a zone
+            pos = a.Pos + d * (nb / (na + nb));                         // a's distance t * na equals b's (1 - t) * nb
+        }
         foreach (var (n, f) in orients) {
             var x = new HandSample(pos, n, f);
             float s = Math.Max(PoseMatch.Score(a, x), PoseMatch.Score(b, x));
