@@ -14,7 +14,7 @@ namespace Earthbending {
     // Each physics step (FixedUpdate, after the hold's) the server reads its copy of the flicker's two controllers and head
     // (PlayerController.RightController / LeftController / Head, the transforms Hold reads: StoneHold.LiveBody) and:
     //   - pulls the stone toward Pd.FlickTarget: the midpoint of the two hands plus Pd.HoldReach ([EarthModifiers]
-    //     HoldDistance to the stone's near side, Ruling 41) along the head's flat forward (the last one that had a flat way, the
+    //     HoldDistance + half the stone's size, Ruling 41) along the head's flat forward (the last one that had a flat way, the
     //     claim's yaw at first: a look straight up or down keeps it), with Pd.Follow (Ruling 40: a damped spring at
     //     FlickFollowRate x Pd.WeightFactor, damping FlickDamping; no integral: gravity is off, so nothing needs one), as a force
     //     (the acceleration times the mass), held so no step leaves the stone faster than [EarthModifiers] MaxStoneSpeed (ruling
@@ -89,6 +89,7 @@ namespace Earthbending {
             body.isKinematic = false;
             Detection(StoneState.Flicked);
             body.useGravity = false;   // the pull holds it up; every way out puts it back (LetGoFlick: Loosen; Stomp: its set-up)
+            if (body.maxAngularVelocity < 50f) body.maxAngularVelocity = 50f;   // the review of Task 17c, M4: Unity's 7 rad/s capped a turn past about 110 degrees
             body.constraints = RigidbodyConstraints.None;
             EndSlideMaterial();
             body.WakeUp();
@@ -101,7 +102,7 @@ namespace Earthbending {
             };
             flicking[account] = this;
             if (Logs.Debug)
-                MelonLogger.Msg($"[Earth] Flick: {Kind} #{Id} of {OwnerName} taken by {flick.Name} (A hand {HandName(flick.Hand)}){from}: {was} -> Flicked, {body.mass:0.#} kg, follows at {Server.FlickFollowRate * Pd.WeightFactor(body.mass):0.##} rad/s (x {Pd.WeightFactor(body.mass):0.###} for its weight), damping {Server.FlickDamping:0.##}, no gravity; its centre {Pd.HoldReach(Kind, Server.HoldDistance):0.##} m ahead of the hands (its near side {Server.HoldDistance:0.##} m); turns at {Server.FlickTurnRate:0.##} rad/s, damping {Server.FlickTurnDamping:0.##}");
+                MelonLogger.Msg($"[Earth] Flick: {Kind} #{Id} of {OwnerName} taken by {flick.Name} (A hand {HandName(flick.Hand)}){from}: {was} -> Flicked, {body.mass:0.#} kg, follows at {Server.FlickFollowRate * Pd.WeightFactor(body.mass):0.##} rad/s (x {Pd.WeightFactor(body.mass):0.###} for its weight), damping {Server.FlickDamping:0.##}, no gravity; its centre {Pd.HoldReach(Kind, Server.HoldDistance):0.##} m ahead of the hands (HoldDistance {Server.HoldDistance:0.##} + half its size); turns at {Server.FlickTurnRate:0.##} rad/s, damping {Server.FlickTurnDamping:0.##}");
         }
 
         // Each physics step of a flick, after the state's own step and the hold's: the flicker's hands and look, the pull
@@ -114,7 +115,7 @@ namespace Earthbending {
                 if (!HandsOf(f, out Transform handA, out Transform handB, out Vector3 look, out string gone)) { LetGoFlick(gone); return; }
                 KeepFlatLook(look, ref f.Look);
                 V3 a = V(handA.position), b = V(handB.position), way = V(f.Look);
-                V3 target = Pd.FlickTarget(a, b, way, Pd.HoldReach(Kind, Server.HoldDistance));   // Ruling 41: to its near side
+                V3 target = Pd.FlickTarget(a, b, way, Pd.HoldReach(Kind, Server.HoldDistance));   // Ruling 41: HoldDistance + half its size
                 V3 error = target - V(body.worldCenterOfMass);
                 V3 vel = V(body.velocity);
                 V3 pull = Pd.Follow(error, vel, body.mass, false, Server.FlickFollowRate, Server.FlickDamping, Time.fixedDeltaTime) * body.mass;   // Ruling 40

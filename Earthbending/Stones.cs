@@ -20,7 +20,7 @@ using System.Globalization;
 // the turn still to go and its acceleration); StoneFlick.cs runs them. Task 15: how long two clashing stones freeze
 // (StoneRules.HitstopSeconds), that a frozen one is broken by no contact (StoneRules.Breakable), and Dash's push
 // (MoveRules.Dash); StoneFreeze.cs, Hits.cs and Moves.cs run them. Task 17c: the follow by a rate (Pd.Follow, Ruling 40), the
-// near side HoldDistance from the hand (Pd.HoldReach, Ruling 41) and every push x PushScale (StoneRules.PushScale, Ruling 42).
+// centre HoldDistance + half its size from the hand (Pd.HoldReach, Ruling 41) and every push x PushScale (StoneRules.PushScale, Ruling 42).
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -181,14 +181,14 @@ namespace Earthbending {
         /// StoneBody holds every modifier taken while it rises until the rise ends (ruling C6), then applies it as if it had
         /// just arrived (a Ball, loose once up, is Free by then). Straight: a Still stone slides; every other state stays (Free
         /// flies, Sliding slides on, Stomped falls on, Floating floats on with the push, whose speed then ends the float, Held
-        /// stays held, Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still, Sliding, Stomped), a Floating
+        /// is let go and flies, Free (the review of Task 17c, I3: <see cref="PushLetsGo"/>), Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still, Sliding, Stomped), a Floating
         /// and a Held one are set loose, Free; Free stays Free; a Flicked one is pushed and stays in the hands. Stomp: a Free,
         /// Floating, Held or Flicked stone is Stomped (a flicked one drops: spec 2.4, "dropped only by Stomp or breaking"); a
         /// grounded one stays as it is. Parry (Task 12): Free, Still, Sliding, Stomped, Floating (its time starts over) and
         /// Held float, Floating; Flicked stays (refused: <see cref="CanApply"/>). Hold (Task 13, ruling C14): a grounded Still
         /// or Sliding stone slides, held (Sliding); a Free, Floating or Held one is Held; Stomped and Flicked stay (Hold is
-        /// refused there). A held stone whose state a modifier changes is let go (StoneHold.cs): Straight and Explode keep it
-        /// held. Flick (Task 14, ruling C15): a loose stone (Free, Floating, Held, Flicked) is Flicked (a hold or a float
+        /// refused there). A held stone (Held, or a held slide) is let go before Straight, Kick, Uppercut or Stomp pushes it
+        /// (<see cref="PushLetsGo"/>); Parry lets it go by changing its state; Explode keeps it held. Flick (Task 14, ruling C15): a loose stone (Free, Floating, Held, Flicked) is Flicked (a hold or a float
         /// ends; a flicked one goes to the newest flicker); a grounded one (Rising, Still, Sliding, Stomped) stays (refused).
         /// Explode only marks the stone (StoneBody.Exploding): every state stays; so does it for a modifier this build does
         /// not apply.</summary>
@@ -201,7 +201,7 @@ namespace Earthbending {
             bool anchored = s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped;
             switch (m) {
                 case Modifier.Straight:
-                    return s == StoneState.Still ? StoneState.Sliding : s;
+                    return s == StoneState.Still ? StoneState.Sliding : s == StoneState.Held ? StoneState.Free : s;
                 case Modifier.Kick:
                 case Modifier.Uppercut:
                     return anchored || loose ? StoneState.Free : s;   // Flicked: pushed, it stays in the hands
@@ -560,6 +560,29 @@ namespace Earthbending {
         /// by another player); <paramref name="hand"/> is the new Hold's hand.</summary>
         public static bool HoldAgain(int heldBy, int hand) => heldBy >= 0 && heldBy == hand;
 
+        /// <summary>The review of Task 17c, I3: a push lets a held stone go first. Straight, Kick, Uppercut and Stomp on a held
+        /// stone (Held, or a held slide) end the hold, then push it as an unheld one (in 1.0.0 the push's own speed did it);
+        /// Parry, Explode, Flick and Hold do not (Parry lets go by changing the state, Flick takes it out of the hand, Explode
+        /// keeps it held, Hold is the hold's own).</summary>
+        public static bool PushLetsGo(Modifier m) => m == Modifier.Straight || m == Modifier.Kick || m == Modifier.Uppercut || m == Modifier.Stomp;
+
+        /// <summary>The review of Task 17c, I2: for this many seconds after a hold ends (any let-go, a throw included) the stone
+        /// does not hit the player who held it.</summary>
+        public const float HolderSpareSeconds = 0.5f;
+
+        /// <summary>Whether a stone let go <paramref name="sinceLetGo"/> seconds ago still spares its last holder: from 0 up to
+        /// <see cref="HolderSpareSeconds"/>; a time that is not a number (or below 0) does not.</summary>
+        public static bool SparesHolder(double sinceLetGo) => sinceLetGo >= 0.0 && sinceLetGo <= HolderSpareSeconds;
+
+        /// <summary>The review of Task 17c, I2: whether a swing would throw the stone back toward its holder: the flat part of
+        /// its highest relative velocity <paramref name="swing"/> against the flat way from the holder's head to the stone's
+        /// target <paramref name="away"/> is below 0. A swing straight across (0) throws; either with no flat way, or not a
+        /// number, does not count as back.</summary>
+        public static bool ThrowsBack(V3 swing, V3 away) {
+            double d = (double)swing.X * away.X + (double)swing.Z * away.Z;
+            return d < 0.0;
+        }
+
         // ---------------------------------------------------------------- Task 15: hitstop
 
         /// <summary>[EarthDamage] HitstopSeconds' and HitstopPerPower's defaults (spec 3.7: two stones that clash freeze for
@@ -605,9 +628,9 @@ namespace Earthbending {
     /// (<see cref="CappedPull"/>). Ruling 40 replaced spec 2.4's gains by weight (a soft, under-damped spring: a Wall at 2.5
     /// rad/s, damping 0.28, trailed a walking hand by half a metre and swung past its place) with a damped spring set by a
     /// rate: <see cref="Follow"/>, the same acceleration on every stone but for <see cref="WeightFactor"/>. Ruling 41: a held
-    /// or flicked stone keeps <c>HoldDistance</c> between the hand and its NEAR side (<see cref="HoldReach"/>).</summary>
+    /// or flicked stone's centre is <c>HoldDistance</c> + half its size ahead (<see cref="HoldReach"/>).</summary>
     internal static class Pd {
-        /// <summary>[EarthModifiers] HoldDistance (m: from the hand to the stone's near side, Ruling 41), HoldLetGoSpeed (m/s),
+        /// <summary>[EarthModifiers] HoldDistance (m: plus half the stone's size, Ruling 41), HoldLetGoSpeed (m/s),
         /// HoldArmMetres (m) defaults (spec 2.4; ruling C28: armed within 0.5 m; Task 17c: the let-go speed re-checked against
         /// the firm follow's model swing: <see cref="DefaultHoldLetGoSpeed"/>).</summary>
         public const float DefaultHoldDistance = 1f, DefaultHoldArmMetres = 0.5f;
@@ -626,11 +649,15 @@ namespace Earthbending {
 
         /// <summary>Ruling 43 (amended): [EarthModifiers] HoldSwingSeconds' and HoldSwingMaxSeconds' defaults
         /// (<see cref="SwingGate"/>): the hand must stay above HoldLetGoSpeed this long before a throw can come, and the
-        /// throw comes at the latest this long after it passed it. HoldSwingSeconds is 0.11, not the ruling's 0.05: an 8 m/s
-        /// dash whose hand copy reaches the server 50 ms after the head's reads 4 m/s for about 0.06 s (the reading is the
-        /// change over 0.1 s, so a lag of L keeps it above 3.5 for about L + 0.01 s), and 0.05 let lags from 45 ms throw. At
-        /// 0.11 the longest lag that does not throw is 100 ms at 50 steps a second and 90 at 20.</summary>
-        public const float DefaultHoldSwingSeconds = 0.11f, DefaultHoldSwingMaxSeconds = 0.2f;
+        /// throw comes at the latest this long after it passed it. HoldSwingSeconds is 0.1 (the ruling said 0.05, then 0.11).
+        /// A single jump of the hand's copy (a late packet, a hitch, lost tracking, a snap turn) or a copy that freezes and
+        /// catches up is kept from throwing by HandTrack's lone-jump guard, at every step rate from 15 to 50 (the review of Task
+        /// 17c, I1: without it a jump stayed in the 0.1 s reading for ceil(0.1 / step) steps, 0.111 s at 45 steps a second, and
+        /// threw past 0.11). The sustain is then only for what the guard leaves; at 0.11 a swing of 0.8 m in a quarter second,
+        /// whose reading stays above 3.5 for 0.115 s, threw on only about half the start moments at 30 and 50 steps a second
+        /// (9 and 15 of 20); at 0.1 it throws 20 of 20 at 20, 30, 35, 40, 45 and 50. A short hard flick (0.6 m in 0.15 s)
+        /// throws only sometimes.</summary>
+        public const float DefaultHoldSwingSeconds = 0.1f, DefaultHoldSwingMaxSeconds = 0.2f;
 
         /// <summary>Ruling 43: the velocity a held stone is thrown with: <paramref name="headVelocity"/> +
         /// <paramref name="handRelative"/> (the hand's velocity relative to the head) x <paramref name="scale"/>
@@ -714,22 +741,23 @@ namespace Earthbending {
             return new V3(InRange(ax), InRange(ay), InRange(az));
         }
 
-        /// <summary>Ruling 41: a stone's flat half-diagonal, in metres: half the diagonal of its collider seen from above (half
-        /// of the square root of width² + depth², StoneTable's size), the Ball's radius. The Disc 0.49, the Ball 0.30, the
-        /// Pillar 0.39, the Cube 0.71, the Wall 1.23. 0 for a byte that is not a kind.</summary>
-        public static float HalfDiagonal(StoneKind k) {
+        /// <summary>Ruling 41 (the review of Task 17c, I4): a stone's size term for Hold's and Flick's distance, in metres:
+        /// (width + depth) / 4 of its collider (StoneTable's size; half its mean flat half-size), the Ball's radius. The Disc
+        /// 0.35, the Ball 0.30, the Pillar 0.275, the Cube 0.50, the Wall 0.725 (the flat half-diagonal, 1.23 for a Wall, put
+        /// a held Wall past the game's reach). 0 for a byte that is not a kind.</summary>
+        public static float HalfSize(StoneKind k) {
             if (!StoneTable.Valid(k)) return 0f;
             V3 s = StoneTable.Of(k).Size;
             if (k == StoneKind.Ball) return s.X * 0.5f;
-            return 0.5f * (float)Math.Sqrt((double)s.X * s.X + (double)s.Z * s.Z);
+            return (s.X + s.Z) * 0.25f;
         }
 
         /// <summary>Ruling 41: how far ahead of the hand (Hold) or of the point between the hands (Flick) the stone's centre
-        /// is pulled: <paramref name="distance"/> ([EarthModifiers] HoldDistance, from the hand to the stone's near side) +
-        /// <see cref="HalfDiagonal"/>. With the default 1 m: the Disc 1.49, the Ball 1.30, the Pillar 1.39, the Cube 1.71, the
-        /// Wall 2.23. A distance below 0 or not a number counts as 0 (the near side at the hand).</summary>
+        /// is pulled: <paramref name="distance"/> ([EarthModifiers] HoldDistance, about the gap from the hand to the stone) +
+        /// <see cref="HalfSize"/>. With the default 1 m: the Disc 1.35, the Ball 1.30, the Pillar 1.275, the Cube 1.50, the
+        /// Wall 1.725. A distance below 0 or not a number counts as 0.</summary>
         public static float HoldReach(StoneKind k, float distance) =>
-            (distance > 0f && !float.IsInfinity(distance) ? distance : 0f) + HalfDiagonal(k);
+            (distance > 0f && !float.IsInfinity(distance) ? distance : 0f) + HalfSize(k);
 
         /// <summary>Ruling C34: where a held stone is pulled to: <paramref name="hand"/> (the holding controller's place) plus
         /// <paramref name="distance"/> m (<see cref="HoldReach"/>) along <paramref name="headForward"/> (the holder's look)
@@ -766,7 +794,7 @@ namespace Earthbending {
         // ---------------------------------------------------------------- Task 14: Flick
 
         /// <summary>Where a flicked stone is pulled to: the midpoint of the two hands plus <paramref name="distance"/> m
-        /// (<see cref="HoldReach"/>: HoldDistance to its near side, Ruling 41) along <paramref name="headForward"/> (the
+        /// (<see cref="HoldReach"/>: HoldDistance + half its size, Ruling 41) along <paramref name="headForward"/> (the
         /// flicker's look) made flat and length 1. The midpoint itself when the look has no flat way (straight up or down, or
         /// not a number) or the distance is not above 0 (or not finite).</summary>
         public static V3 FlickTarget(V3 handA, V3 handB, V3 headForward, float distance) {
@@ -901,29 +929,87 @@ namespace Earthbending {
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }
 
-    /// <summary>Ruling 43: the holding hand's and the head's recent places (the server's copies), one sample a physics step,
-    /// and from them the hand's velocity RELATIVE TO THE HEAD and the head's own: each the change in place from the newest
-    /// sample at least <see cref="Window"/> seconds old to the newest one, over that time (the once-a-second Hold line's way
-    /// of measuring the hand, over about 0.1 s). Unity-free: StoneHold.cs feeds it. A sample that is not a number is
-    /// skipped; a time that goes back starts the track again. Nothing is allocated after it is made.</summary>
+    /// <summary>The settings one hold step reads ([EarthModifiers]): HoldLetGoSpeed, HoldSwingSeconds, HoldSwingMaxSeconds,
+    /// HoldArmMetres, HoldThrowScale and MaxStoneSpeed.</summary>
+    internal struct HoldThrowSettings {
+        public float LetGoSpeed, SwingSeconds, SwingMaxSeconds, ArmMetres, ThrowScale, MaxSpeed;
+
+        public HoldThrowSettings(float letGoSpeed, float swingSeconds, float swingMaxSeconds, float armMetres, float throwScale, float maxSpeed) {
+            LetGoSpeed = letGoSpeed;
+            SwingSeconds = swingSeconds;
+            SwingMaxSeconds = swingMaxSeconds;
+            ArmMetres = armMetres;
+            ThrowScale = throwScale;
+            MaxSpeed = maxSpeed;
+        }
+
+        /// <summary>The defaults.</summary>
+        public static HoldThrowSettings Default => new HoldThrowSettings(Pd.DefaultHoldLetGoSpeed, Pd.DefaultHoldSwingSeconds, Pd.DefaultHoldSwingMaxSeconds,
+            Pd.DefaultHoldArmMetres, Pd.DefaultHoldThrowScale, StoneRules.DefaultMaxStoneSpeed);
+    }
+
+    /// <summary>What one hold step decided: hold on, throw, or a swing back toward the holder that was let pass (held).</summary>
+    internal enum HoldOutcome : byte { Hold, Thrown, Back }
+
+    /// <summary>One physics step of a hold's throw (Ruling 43 and its review; the review's M5: StoneHold.DriveHold and the
+    /// tests' model both run this, so they cannot drift). In this order: the swing (<see cref="SwingGate"/>, fed the hand's
+    /// relative velocity when <paramref name="tracked"/>); a swing that ends on an armed stone throws it
+    /// (<see cref="Pd.ThrowVelocity"/> into <paramref name="thrown"/>), unless it points back toward the holder
+    /// (<see cref="StoneRules.ThrowsBack"/> against <paramref name="away"/>, the way from the head to the target: then the
+    /// stone stays held, <see cref="HoldOutcome.Back"/>, and the next swing starts over); then the arming
+    /// (<see cref="StoneRules.HoldArmed"/>, after the let-go: a swing ending in the very step the stone settles throws
+    /// nothing). <paramref name="swing"/> is the swing that ended this step (zero with none). The caller lets go first when the
+    /// stone changed between grounded and free.</summary>
+    internal static class HoldStep {
+        public static HoldOutcome Step(SwingGate gate, ref bool armed, double now, bool tracked, V3 handRelative, V3 headVelocity, V3 stoneVelocity,
+            float trail, V3 away, bool grounded, in HoldThrowSettings s, out V3 thrown, out V3 swing) {
+            float handSpeed = tracked ? handRelative.Length : float.NaN;
+            bool swung = gate.Step(now, handSpeed, handRelative, s.LetGoSpeed, s.SwingSeconds, s.SwingMaxSeconds, out swing);
+            thrown = stoneVelocity;
+            if (StoneRules.HoldLetGo(swung, false, armed)) {
+                if (StoneRules.ThrowsBack(swing, away)) return HoldOutcome.Back;
+                thrown = Pd.ThrowVelocity(stoneVelocity, headVelocity, swing, s.ThrowScale, grounded, s.MaxSpeed);
+                return HoldOutcome.Thrown;
+            }
+            armed = StoneRules.HoldArmed(armed, trail, handSpeed, s.ArmMetres, s.LetGoSpeed);
+            return HoldOutcome.Hold;
+        }
+    }
+
+    /// <summary>Ruling 43: the holding hand's and the head's recent places (the server's copies), one sample a step, and
+    /// from them the hand's velocity RELATIVE TO THE HEAD and the head's own over the newest stretch of at least
+    /// <see cref="Window"/> seconds (about 0.1 s). The head's is its change in place over that time. The hand's adds up the
+    /// stretch's step-by-step changes of (hand - head), but the largest single one counts for at most <see cref="JumpFactor"/>
+    /// times the second largest, and for nothing when every other step is still (the review of Task 17c, I1): a lone jump
+    /// of the hand's copy (a late packet, a hitch, lost tracking, a snap turn) is not a swing, whatever the step rate.
+    /// Unity-free: StoneHold.cs feeds it. A sample that is not a number is skipped (<see cref="Add"/> says so); a sample at
+    /// the newest sample's time replaces it (several physics steps in one frame read the same copies); a time that goes back
+    /// starts the track again. Nothing is allocated after it is made.</summary>
     internal sealed class HandTrack {
         /// <summary>The time the velocities are measured over, at least, in seconds.</summary>
         public const double Window = 0.1;
-        const int Size = 64;   // 0.1 s at up to 640 steps a second
+        /// <summary>The largest step of a stretch counts for at most this many times the second largest.</summary>
+        public const float JumpFactor = 3f;
+        const int Size = 64;   // 0.1 s at up to 640 samples a second
+        const double Eps = 1e-6;   // a time summed from a float step (review M1)
 
         readonly double[] at = new double[Size];
         readonly V3[] hand = new V3[Size], head = new V3[Size];
         int count, newest = -1;
 
-        /// <summary>One step's sample: the time (s), the hand's place and the head's place.</summary>
-        public void Add(double time, V3 handAt, V3 headAt) {
-            if (double.IsNaN(time) || double.IsInfinity(time) || !Finite(handAt) || !Finite(headAt)) return;
+        /// <summary>One step's sample: the time (s), the hand's place and the head's place. False, and nothing kept, for a
+        /// sample that is not a number (the caller then treats the step as untracked: review M2).</summary>
+        public bool Add(double time, V3 handAt, V3 headAt) {
+            if (double.IsNaN(time) || double.IsInfinity(time) || !Finite(handAt) || !Finite(headAt)) return false;
             if (count > 0 && time < at[newest]) Clear();
-            newest = (newest + 1) % Size;
+            if (count == 0 || time > at[newest]) {
+                newest = (newest + 1) % Size;
+                if (count < Size) count++;
+            }
             at[newest] = time;
             hand[newest] = handAt;
             head[newest] = headAt;
-            if (count < Size) count++;
+            return true;
         }
 
         /// <summary>Forgets every sample.</summary>
@@ -932,19 +1018,29 @@ namespace Earthbending {
             newest = -1;
         }
 
-        /// <summary>The hand's velocity relative to the head and the head's velocity (m/s), over the newest stretch of at least
-        /// <see cref="Window"/> seconds the track holds; false (both zero) until it holds one.</summary>
+        /// <summary>The hand's velocity relative to the head (a lone jump trimmed) and the head's velocity (m/s), over the
+        /// newest stretch of at least <see cref="Window"/> seconds the track holds; false (both zero) until it holds one.</summary>
         public bool Velocities(out V3 handRelative, out V3 headVelocity) {
             handRelative = V3.Zero;
             headVelocity = V3.Zero;
             if (count < 2) return false;
             for (int k = 1; k < count; k++) {
-                int i = ((newest - k) % Size + Size) % Size;
+                int i = Index(k);
                 double span = at[newest] - at[i];
-                if (span < Window - 1e-9) continue;
+                if (span < Window - Eps) continue;
                 float inv = (float)(1.0 / span);
                 headVelocity = (head[newest] - head[i]) * inv;
-                handRelative = ((hand[newest] - head[newest]) - (hand[i] - head[i])) * inv;
+                // the steps from sample i to the newest: the largest and the second largest
+                float m1 = 0f, m2 = 0f;
+                int big = -1;
+                for (int s = k; s >= 1; s--) {
+                    float m = Step(s).Length;
+                    if (m > m1) { m2 = m1; m1 = m; big = s; }
+                    else if (m > m2) m2 = m;
+                }
+                V3 sum = Rel(0) - Rel(k);
+                if (big >= 0 && m1 > JumpFactor * m2) sum = sum - Step(big) * (1f - JumpFactor * m2 / m1);
+                handRelative = sum * inv;
                 return true;
             }
             return false;
@@ -952,6 +1048,11 @@ namespace Earthbending {
 
         /// <summary>The hand's speed relative to the head (m/s); not a number until the track holds a whole window.</summary>
         public float RelativeSpeed => Velocities(out V3 rel, out _) ? rel.Length : float.NaN;
+
+        // the sample k back from the newest, its (hand - head), and the step into the sample s - 1 back from sample s back
+        int Index(int k) => ((newest - k) % Size + Size) % Size;
+        V3 Rel(int k) => hand[Index(k)] - head[Index(k)];
+        V3 Step(int s) => Rel(s - 1) - Rel(s);
 
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }

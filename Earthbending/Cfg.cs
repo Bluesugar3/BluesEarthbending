@@ -92,7 +92,7 @@ namespace Earthbending {
     /// modifier goes to with its own values (Bend.cs), the server checks the claim with its own plus RangeSlackMetres
     /// (Server.cs). Keep them the same on both; the server's are the ones that count.</summary>
     internal static class ReachSettings {
-        const float DefaultReach = 2.5f, DefaultMaxHeight = 2.4f;
+        const float DefaultReach = 3f, DefaultMaxHeight = 2.4f;   // the review of Task 17c, I4: 3 (was 2.5), so a held Wall stays in reach
 
         static MelonPreferences_Entry<float>? reachEntry, maxHeightEntry;
 
@@ -104,7 +104,7 @@ namespace Earthbending {
         /// <summary>From Main.OnInitializeMelon on every machine.</summary>
         internal static void Init() {
             MelonPreferences_Category cat = Cfg.Category("EarthModifiers");
-            reachEntry = cat.CreateEntry("Reach", DefaultReach, description: "Server and game. A modifier reaches a stone whose nearest point is within this many metres of the head, whose centre is in front of the head, and whose centre is at most MaxHeight above the feet (spec 2.4). The game picks the stone most in front with its own value; the server checks it with its own plus RangeSlackMetres, so keep both the same. Above 0.");
+            reachEntry = cat.CreateEntry("Reach", DefaultReach, description: "Server and game. A modifier reaches a stone whose nearest point is within this many metres of the head, whose centre is in front of the head, and whose centre is at most MaxHeight above the feet (spec 2.4). At 3 a held Wall (its near face about 2.1 m from the head with the hand 0.6 m out) stays in reach. The game picks the stone most in front with its own value; the server checks it with its own plus RangeSlackMetres, so keep both the same. Above 0.");
             maxHeightEntry = cat.CreateEntry("MaxHeight", DefaultMaxHeight, description: "Server and game. A modifier reaches a stone only when its centre is at most this many metres above the feet (see Reach). 0 or more.");
             Apply();
             Cfg.Changed += Apply;

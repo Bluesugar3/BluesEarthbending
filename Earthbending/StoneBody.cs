@@ -437,6 +437,11 @@ namespace Earthbending {
             StoneState was = State, next = StoneRules.After(was, m);
             if (m == Modifier.Hold) { TakeHold(by, hand, flatForward, was, next); return; }
             if (m == Modifier.Flick) { TakeFlick(by, hand, flatForward, was); return; }
+            if (grip != null && StoneRules.PushLetsGo(m)) {   // the review of Task 17c, I3: a push lets a held stone go first
+                LetGoHold(Logs.Debug ? $"{m} by {Server.NameOf(by)} pushes it" : "");
+                was = State;   // Held is Free now; a held slide slides on, unheld
+                next = StoneRules.After(was, m);
+            }
             if (grip != null && next != was) EndHold(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");
             if (flick != null && next != was) EndFlick(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");   // Stomp drops it
             if (m == Modifier.Parry) {

@@ -18,7 +18,7 @@ namespace Earthbending {
     // (PlayerController.RightController / LeftController .transform, a NetworkTransform about 22 ms plus ping behind) and head
     // and adds Pd.Follow's pull (Ruling 40: a damped spring at [EarthModifiers] HoldFollowRate x Pd.WeightFactor, damping
     // HoldDamping; the acceleration times the mass) toward Pd.HoldTarget: the hand plus Pd.HoldReach (HoldDistance to the
-    // stone's near side, Ruling 41) along the holder's look made
+    // stone's half size, Ruling 41) along the holder's look made
     // flat (PlayerController.Head's forward; the last one that had a flat way, the claim's yaw at first: StoneFlick's
     // KeepFlatLook, as Flick; ruling C34). Never the controller's own forward: its +z is not the fingers on every controller,
     // and the finger axis is a per-game [EarthPose] setting the server cannot see. The pull is held so no step leaves the
@@ -30,7 +30,10 @@ namespace Earthbending {
     // knock-back, throws nothing; walking and a head turn never pass it), at its peak (the first reading lower than its
     // highest, or HoldSwingMaxSeconds after it began): it takes the head's velocity + the swing's highest relative velocity x
     // HoldThrowScale when that is faster than its own (Pd.ThrowVelocity; a held slide only the flat part), held to
-    // MaxStoneSpeed. The throw counts only once the stone has settled near its
+    // MaxStoneSpeed. A swing whose peak points back toward the holder throws nothing (it stays held), and for 0.5 s after any
+    // let-go the stone does not hit the player who held it (Holder; the review of Task 17c, I2). The hand's track is timed
+    // on the real clock, and a single jump of the hand's copy is trimmed out of it (HandTrack). Straight, Kick, Uppercut and
+    // Stomp let a held stone go before they push it (StoneBody.Do, StoneRules.PushLetsGo; I3). The throw counts only once the stone has settled near its
     // target since the hold began: in one step within HoldArmMetres of it (flat, on a held slide: Pd.Trail) while the hand
     // was at HoldLetGoSpeed or slower (rulings C27, C28, StoneRules.HoldArmed: a stone caught flying or pulled in from afar
     // settles first). It is let go with no throw when its velocity is not a number, or at once when it changes between
@@ -70,8 +73,14 @@ namespace Earthbending {
         static readonly Dictionary<ulong, StoneBody> gripped = new Dictionary<ulong, StoneBody>();
         static bool holdFailed, letGoFailed;
 
-        /// <summary>The player holding it (Task 13), or null. It never hits them (ruling C16: Hits.TestPlayers).</summary>
-        internal Player? Holder => grip?.By;
+        /// <summary>The player holding it (Task 13), or for StoneRules.HolderSpareSeconds (0.5 s) after any let-go, a throw
+        /// included, the player who held it (the review of Task 17c, I2); else null. It never hits them (ruling C16:
+        /// Hits.TestPlayers asks this).</summary>
+        internal Player? Holder => grip != null ? grip.By : lastHolder != null && StoneRules.SparesHolder(Time.timeAsDouble - lastLetGoAt) ? lastHolder : null;
+
+        /// <summary>Who held it last and when the hold ended (Time.timeAsDouble), for <see cref="Holder"/>.</summary>
+        Player? lastHolder;
+        double lastLetGoAt = double.NegativeInfinity;
 
         static ulong HandKey(ulong account, int hand) => (account << 1) | (uint)(hand & 1);
 
@@ -123,7 +132,7 @@ namespace Earthbending {
             grip = new Grip { By = by, Account = account, Hand = hand & 1, Name = Server.NameOf(by), Grounded = StoneRules.IsGrounded(next), Look = look, Since = now, LogAt = now + 1.0 };
             gripped[HandKey(account, hand)] = this;
             if (Logs.Debug)
-                MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} of {OwnerName} taken by {grip.Name}'s {HandName(grip.Hand)} hand{from}: {was} -> {next}, {body.mass:0.#} kg, follows at {Server.HoldFollowRate * Pd.WeightFactor(body.mass):0.##} rad/s (x {Pd.WeightFactor(body.mass):0.###} for its weight), damping {Server.HoldDamping:0.##}{(grip.Grounded ? ", along the ground" : ", no gravity")}; its centre {Pd.HoldReach(Kind, Server.HoldDistance):0.##} m ahead of the hand along the look (its near side {Server.HoldDistance:0.##} m), no faster than {Server.MaxStoneSpeed:0.##} m/s; thrown once the hand moves past {Server.HoldLetGoSpeed:0.##} m/s relative to the head, at the swing x {Server.HoldThrowScale:0.##}");
+                MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} of {OwnerName} taken by {grip.Name}'s {HandName(grip.Hand)} hand{from}: {was} -> {next}, {body.mass:0.#} kg, follows at {Server.HoldFollowRate * Pd.WeightFactor(body.mass):0.##} rad/s (x {Pd.WeightFactor(body.mass):0.###} for its weight), damping {Server.HoldDamping:0.##}{(grip.Grounded ? ", along the ground" : ", no gravity")}; its centre {Pd.HoldReach(Kind, Server.HoldDistance):0.##} m ahead of the hand along the look (HoldDistance {Server.HoldDistance:0.##} + half its size), no faster than {Server.MaxStoneSpeed:0.##} m/s; thrown by a swing past {Server.HoldLetGoSpeed:0.##} m/s relative to the head for {Server.HoldSwingSeconds:0.###} s, at its peak x {Server.HoldThrowScale:0.##}, never back toward the holder");
         }
 
         // Each physics step of a hold, after the state's own step (a held slide that left the ground is Free by now): the
@@ -141,30 +150,37 @@ namespace Earthbending {
                 float speed = body.velocity.magnitude;
                 if (float.IsNaN(speed) || float.IsInfinity(speed)) { LetGoHold("its velocity is not a number"); return; }
                 Vector3 at = hand.position;
-                if (hasHead) g.Track.Add(Time.fixedTimeAsDouble, V(at), V(headAt));   // Ruling 43
-                bool tracked = g.Track.Velocities(out V3 handRel, out V3 headVel);
+                // Ruling 43: the copies arrive in real time, so the track and the swing are timed on the real clock (the review's
+                // M3: physics time falls behind under 15 server frames a second); a step that fed nothing (no head, a sample
+                // that is not a number) is untracked (M2: no stale reading carries a swing on)
+                double now = Time.realtimeSinceStartupAsDouble;
+                bool fed = hasHead && g.Track.Add(now, V(at), V(headAt));
+                bool tracked = fed & g.Track.Velocities(out V3 handRel, out V3 headVel);
                 float handSpeed = tracked ? handRel.Length : float.NaN;   // not a number until 0.1 s of track: no arming, no throw
                 KeepFlatLook(look, ref g.Look);   // ruling C34: the look, never the controller's own forward
-                V3 target = Pd.HoldTarget(V(at), V(g.Look), Pd.HoldReach(Kind, Server.HoldDistance));   // Ruling 41: to its near side
+                V3 target = Pd.HoldTarget(V(at), V(g.Look), Pd.HoldReach(Kind, Server.HoldDistance));   // Ruling 41: HoldDistance + half its size
                 V3 error = target - V(body.worldCenterOfMass);
                 float trail = Pd.Trail(error, g.Grounded);
-                // Ruling 43 (amended): the swing first (a sustained swing, thrown at its peak with its highest reading), then the
-                // let-go on the arming so far, then the arming: a swing ending in the very step the stone settles throws nothing
-                double now = Time.fixedTimeAsDouble, swingSince = g.Swing.Swinging ? g.Swing.Since : now;
-                bool swung = g.Swing.Step(now, handSpeed, handRel, Server.HoldLetGoSpeed, Server.HoldSwingSeconds, Server.HoldSwingMaxSeconds, out V3 swing);
                 g.Steps++;
-                if (StoneRules.HoldLetGo(swung, groundedChanged, g.Armed)) {
-                    if (groundedChanged) {
-                        LetGoHold(Logs.Debug ? $"it {(g.Grounded ? "left the ground" : "became grounded")} ({State})" : "");
-                        return;
-                    }
+                if (groundedChanged) {
+                    LetGoHold(Logs.Debug ? $"it {(g.Grounded ? "left the ground" : "became grounded")} ({State})" : "");
+                    return;
+                }
+                // Ruling 43 and its review: one Unity-free hold step (the tests' model runs the same): the swing (sustained,
+                // thrown at its peak with its highest reading), a swing back toward the holder let pass, the throw, the arming
+                double swingSince = g.Swing.Swinging ? g.Swing.Since : now;
+                bool wasArmed = g.Armed;
+                V3 headTo = target - V(headAt);
+                HoldOutcome outcome = HoldStep.Step(g.Swing, ref g.Armed, now, tracked, handRel, headVel, V(body.velocity), trail, hasHead ? headTo : V3.Zero,
+                    g.Grounded, Server.HoldThrow, out V3 thrown, out V3 swing);
+                if (outcome == HoldOutcome.Thrown) {
                     Vector3 before = body.velocity;   // the throw takes the swing when it is faster than the stone
-                    body.velocity = U(Pd.ThrowVelocity(V(before), headVel, swing, Server.HoldThrowScale, g.Grounded, Server.MaxStoneSpeed));
+                    body.velocity = U(thrown);
                     LetGoHold(Logs.Debug ? $"thrown: a swing of {now - swingSince:0.###} s, the hand at most {swing.Length:0.##} m/s relative to the head (now {handSpeed:0.##}; past [EarthModifiers] HoldLetGoSpeed {Server.HoldLetGoSpeed:0.##} for at least HoldSwingSeconds {Server.HoldSwingSeconds:0.###}), the head at {headVel.Length:0.##} m/s; the stone {before.magnitude:0.##} -> {body.velocity.magnitude:0.##} m/s (the swing x {Server.HoldThrowScale:0.##}{(g.Grounded ? ", flat" : "")})" : "");
                     return;
                 }
-                bool wasArmed = g.Armed;
-                g.Armed = StoneRules.HoldArmed(wasArmed, trail, handSpeed, Server.HoldArmMetres, Server.HoldLetGoSpeed);   // rulings C27, C28, 43
+                if (outcome == HoldOutcome.Back && Logs.Debug)
+                    MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} held by {g.Name}: a swing of {now - swingSince:0.###} s at up to {swing.Length:0.##} m/s pointed back toward the holder; not a throw, it stays held");
                 if (Logs.Debug && g.Armed && !wasArmed && g.Steps > 1)
                     MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} held by {g.Name} has settled {trail:0.##} m from its place at {speed:0.##} m/s (the hand {handSpeed:0.##} m/s relative to the head) after {now - g.Since:0.##} s; a throw counts from now (a swing past {Server.HoldLetGoSpeed:0.##} m/s for {Server.HoldSwingSeconds:0.###} s)");
                 V3 vel = V(body.velocity);
@@ -174,7 +190,7 @@ namespace Earthbending {
                     body.AddForce(force, ForceMode.Force);
                     body.WakeUp();   // NetworkRigidbody sends it while it is awake (ruling 21)
                 }
-                if (Logs.Debug && Time.fixedTimeAsDouble >= g.LogAt) LogHold(g, at, handSpeed, target, trail, speed);
+                if (Logs.Debug && Time.fixedTimeAsDouble >= g.LogAt) LogHold(g, at, handSpeed, target, trail, speed, now);
             }
             catch (Exception e) {
                 if (!holdFailed) { holdFailed = true; MelonLogger.Warning($"[Earth] Hold: holding a stone failed (said once; it is let go): {e}"); }
@@ -186,9 +202,9 @@ namespace Earthbending {
         // Debug, once a second per held stone (spec 4, unknown 3): the server's copy of the hand and its speed relative to the
         // head over the last 0.1 s (Ruling 43: what a throw is judged on), the target, how far the stone trails it (flat for a
         // held slide) and its speed.
-        void LogHold(Grip g, Vector3 hand, float handSpeed, V3 target, float trail, float speed) {
+        void LogHold(Grip g, Vector3 hand, float handSpeed, V3 target, float trail, float speed, double realNow) {
             double now = Time.fixedTimeAsDouble;
-            MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} in {g.Name}'s {HandName(g.Hand)} hand for {now - g.Since:0.#} s ({State}): the server's hand at {V(hand)}, moving {handSpeed:0.##} m/s relative to the head (a swing past {Server.HoldLetGoSpeed:0.##} for {Server.HoldSwingSeconds:0.###} s throws at its peak{(g.Swing.Swinging ? $"; a swing under way, {Time.fixedTimeAsDouble - g.Swing.Since:0.###} s, at most {g.Swing.Peak:0.##}" : "")}), the target {target}; the stone trails it by {trail:0.###} m{(g.Grounded ? " (flat)" : "")} at {speed:0.##} m/s{(g.Armed ? "" : $" (not settled yet: a throw counts once it is within {Server.HoldArmMetres:0.##} m while the hand is at {Server.HoldLetGoSpeed:0.##} m/s or slower)")}");
+            MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} in {g.Name}'s {HandName(g.Hand)} hand for {now - g.Since:0.#} s ({State}): the server's hand at {V(hand)}, moving {handSpeed:0.##} m/s relative to the head (a swing past {Server.HoldLetGoSpeed:0.##} for {Server.HoldSwingSeconds:0.###} s throws at its peak{(g.Swing.Swinging ? $"; a swing under way, {realNow - g.Swing.Since:0.###} s, at most {g.Swing.Peak:0.##}" : "")}), the target {target}; the stone trails it by {trail:0.###} m{(g.Grounded ? " (flat)" : "")} at {speed:0.##} m/s{(g.Armed ? "" : $" (not settled yet: a throw counts once it is within {Server.HoldArmMetres:0.##} m while the hand is at {Server.HoldLetGoSpeed:0.##} m/s or slower)")}");
             g.LogAt = now + 1.0;
         }
 
@@ -288,6 +304,8 @@ namespace Earthbending {
             Grip? g = grip;
             grip = null;
             if (g == null) return;
+            lastHolder = g.By;   // the review of Task 17c, I2: spared for HolderSpareSeconds (Holder)
+            lastLetGoAt = Time.timeAsDouble;
             ulong key = HandKey(g.Account, g.Hand);
             if (gripped.TryGetValue(key, out StoneBody known) && (known == null || ReferenceEquals(known, this))) gripped.Remove(key);
         }
