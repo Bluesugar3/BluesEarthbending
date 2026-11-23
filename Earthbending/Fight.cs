@@ -6,7 +6,7 @@ namespace Earthbending {
     // Unity-free (the tests compile it): fight health (docs/superpowers/specs/2026-11-23-earthbending-fight-health-design.md).
     // The ring's zones (FightRing), RUMBLE's damage share outside a ring and the finishing hit's fling (FightRules), and the
     // ledger of each player's fight health (FightLedger). The server (FightServer.cs) feeds the ledger every frame and on
-    // every stone hit; nothing here is ever saved.
+    // every stone hit; nothing here is ever saved. And where the small stones that show it sit (FightPips; FightLook.cs).
 
     /// <summary>Where a player's feet are, for one ring (spec 3.1).</summary>
     internal enum FightWhere : byte { Outside, Arena, Ring }
@@ -249,6 +249,73 @@ namespace Earthbending {
                 players[k].Points = Points;
                 changes.Add(new Change(k, Points));
             }
+        }
+    }
+
+    /// <summary>Where the small stones of a fighter's fight health sit (spec 3.7; FightLook.cs draws them): a row over the
+    /// head in groups of five, and rows of five across the forearm for the fighter who cannot see their own head.</summary>
+    internal static class FightPips {
+        /// <summary>No fighter is drawn more stones than <see cref="MaxShown"/>; a group is <see cref="Group"/> stones; one
+        /// line over a head holds <see cref="PerLine"/> (four groups), the rest go on in a line above it.</summary>
+        public const int MaxShown = 40, Group = 5, PerLine = 20;
+
+        /// <summary>The <paramref name="i"/>-th of <paramref name="n"/> stones in a row centred on 0 (the first at the low
+        /// end): stones <paramref name="size"/> + <paramref name="gap"/> apart, an extra <paramref name="groupGap"/> between
+        /// groups of five counted from the first stone. 0 for no stones or a place that is not in the row.</summary>
+        public static float RowOffset(int i, int n, float size, float gap, float groupGap) {
+            if (n <= 0 || i < 0 || i >= n) return 0f;
+            float pitch = size + gap;
+            float at = i * pitch + (i / Group) * groupGap, last = (n - 1) * pitch + ((n - 1) / Group) * groupGap;
+            return at - last * 0.5f;
+        }
+
+        /// <summary>How many lines <paramref name="n"/> stones take over a head.</summary>
+        public static int Lines(int n) => n <= 0 ? 0 : (n + PerLine - 1) / PerLine;
+
+        /// <summary>The line stone <paramref name="i"/> is on (0 the lowest).</summary>
+        public static int LineOf(int i) => i <= 0 ? 0 : i / PerLine;
+
+        /// <summary>How many of <paramref name="n"/> stones are on line <paramref name="line"/>.</summary>
+        public static int InLine(int line, int n) {
+            if (line < 0 || n <= 0) return 0;
+            int left = n - line * PerLine;
+            return left <= 0 ? 0 : left > PerLine ? PerLine : left;
+        }
+
+        /// <summary>The <paramref name="i"/>-th of <paramref name="n"/> places round a forearm, in radians: 0 on top, going
+        /// round evenly. 0 for no places or a place that is not one.</summary>
+        public static float BandAngle(int i, int n) {
+            if (n <= 0 || i < 0 || i >= n) return 0f;
+            return (float)(i * 2.0 * Math.PI / n);
+        }
+
+        /// <summary>The place (of <paramref name="n"/> round the forearm, see <see cref="BandAngle"/>) of the
+        /// <paramref name="j"/>-th stone of a row of five laid across the top: the top first, then one place to either side
+        /// in turn (0, 1, n - 1, 2, n - 2), so a row that is not full stays in the middle. 0 when there are too few places
+        /// for it, or for a stone that is not one.</summary>
+        public static int BandPlace(int j, int n) {
+            if (j <= 0 || n <= 0) return 0;
+            int k = (j + 1) / 2;
+            if (2 * k >= n) return 0;   // the two sides would meet
+            return j % 2 == 1 ? k : n - k;
+        }
+
+        /// <summary>How many places round a forearm of <paramref name="radius"/> for stones <paramref name="pitch"/> apart
+        /// along the arc: as many as fit, at least a row's five and at most 360.</summary>
+        public static int BandPlaces(float radius, float pitch) {
+            if (!(radius > 0f) || !(pitch > 0f) || float.IsInfinity(radius) || float.IsInfinity(pitch)) return Group;
+            double fit = Math.Floor(2.0 * Math.PI * radius / pitch);
+            return fit < Group ? Group : fit > 360.0 ? 360 : (int)fit;
+        }
+
+        /// <summary>How many times its own size a row over a head is drawn from <paramref name="distance"/> m away: 1 up to
+        /// <paramref name="far"/> m, then growing with the distance (so its stones look no smaller than they do at
+        /// <paramref name="far"/>), never past <paramref name="most"/>. 1 with no far distance, a most of 1 or less, or a
+        /// number that is not one.</summary>
+        public static float FarScale(float distance, float far, float most) {
+            if (!(far > 0f) || !(most > 1f) || float.IsInfinity(far) || float.IsNaN(distance)) return 1f;
+            float s = distance / far;
+            return s <= 1f ? 1f : s > most ? most : s;
         }
     }
 }

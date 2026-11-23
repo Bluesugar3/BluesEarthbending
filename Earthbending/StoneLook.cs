@@ -101,6 +101,7 @@ namespace Earthbending {
 
         static void OnApplied(uint entity, byte evt, Vector3 at) {
             if (Main.IsServer) return;
+            if (evt == Wire.KnockedOut) { KnockedOut(at); return; }   // fight health: no stone, a player (entity 0)
             if (evt == Wire.Broke) {
                 try {
                     Play(breakEffect, breakEffectEntry, breakSound, breakSoundEntry, at);
@@ -147,6 +148,31 @@ namespace Earthbending {
                     if (!shakeFailed) { shakeFailed = true; MelonLogger.Warning($"[Earth] Looks: the hitstop shake failed (said once): {e}"); }
                 }
             }
+        }
+
+        // ---- fight health (FightLook.cs draws it; these two are all it needs of this file)
+        static bool knockedOutFailed;
+
+        // The server's Applied(KnockedOut): a fighter's fight health reached 0 at this place (their head). The Explode
+        // blast's effect and sound, as spec 3.3 of the fight health design asks.
+        static void KnockedOut(Vector3 at) {
+            try {
+                Play(explodeEffect, explodeEffectEntry, explodeSound, explodeSoundEntry, at);
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: a fighter was knocked out; the blast plays at {at}");
+            }
+            catch (Exception e) {
+                if (!knockedOutFailed) { knockedOutFailed = true; MelonLogger.Warning($"[Earth] Looks: the knock-out look failed (said once): {e}"); }
+            }
+        }
+
+        /// <summary>Games: the boulder's mesh and its own materials, as the stones wear them (shared with the game: never
+        /// change either). False when this game has none. The prefab is looked for ONCE per game, at the first call from
+        /// anywhere, so only call this once the game's prefabs are loaded (a body is in the world).</summary>
+        internal static bool Boulder(out Mesh? mesh, out Material[] materials) {
+            bool found = FindBoulder() && boulderMesh != null;
+            mesh = boulderMesh;
+            materials = boulderMaterials;
+            return found;
         }
 
         // The effect, then the sound (none: no sound), at a place.

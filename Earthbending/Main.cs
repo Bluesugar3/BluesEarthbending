@@ -35,6 +35,8 @@ namespace Earthbending {
     //   FightServer.cs the server: the one ring (the arena mod's, the console's, [EarthFight] Ring), who is on it, fight
     //                 health on every stone hit, the Fight and Ring messages; [EarthFight]
     //   Arena.cs      public: Arena.SetRing / ClearRing, for the arena mod to say where its ring is
+    //   FightLook.cs  games: fight health as small stones (a row over each fighter's head, rows of five on your own left
+    //                 forearm), a drawn test ring's dashes; [EarthLooks] Fight*
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone, StoneView.Live), the rise, break and
     //                 stomp looks
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback, Applied events, fight health and
@@ -78,6 +80,7 @@ namespace Earthbending {
                 Bend.Init();      // [EarthPose] timings, JumpSpeed, the haptic tick, poses.txt: the pose machine
                 PracticeGuide.Init(); // [EarthPose] Practice*: the practice guide, which hears of Bend's fired moves
                 StoneLook.Init(); // [EarthLooks] the rise and break looks, and the server's Applied events
+                FightLook.Init(); // [EarthLooks] Fight*: fight health's stones and the drawn ring, from the server's Fight and Ring
             }
             if (IsServer) {
                 Server.Init();    // [EarthStones] summons, caps and life; [EarthModifiers]; Summon and Modify claims; the quit
@@ -111,6 +114,7 @@ namespace Earthbending {
             // after the game moved the head and hands; each one bool test while its setting is off
             CaptureGuide.Tick();    // [EarthPose] Capture
             PracticeGuide.Tick();   // [EarthPose] Practice (waits while the capture is on)
+            FightLook.Frame();      // fight health's stones and the drawn ring; one bool test with no fighter and no ring
         }
 
         public override void OnApplicationQuit() {

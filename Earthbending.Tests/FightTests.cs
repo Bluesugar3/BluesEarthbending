@@ -15,6 +15,7 @@ internal static class FightTests {
         Fling();
         Landing();
         Ledger();
+        Pips();
     }
 
     static FightRing Ring() => new FightRing(new V3(0f, 10f, 0f), 10f, 16f, true);
@@ -266,5 +267,81 @@ internal static class FightTests {
             h.Fighters(f);
             return f.Count == 1 && f[0].Player == A && f[0].Points == 20 && !h.Fighting(B);
         })());
+    }
+
+    // What players see (spec 3.7): where each small stone of a fighter's row sits over the head, and on the forearm.
+    static void Pips() {
+        const float size = 0.035f, gap = 0.012f, groupGap = 0.03f, pitch = size + gap;
+        // every place mirrors its opposite in a row of whole groups (and in any row of up to one group)
+        foreach (int n in new[] { 1, 2, 3, 4, 5, 10, 15, 20 }) {
+            bool mirrored = true;
+            for (int i = 0; i < n; i++) mirrored &= Near(FightPips.RowOffset(i, n, size, gap, groupGap), -FightPips.RowOffset(n - 1 - i, n, size, gap, groupGap));
+            Check($"pips: a row of {n} mirrors itself", mirrored);
+        }
+        // The plan asked the same of a row of 7. With groups of five counted from one end no layout can give it: the one
+        // boundary of 7 lies between stones 4 and 5 and its mirror between 1 and 2 (2 + 4 pitches against 6 pitches and a
+        // group gap). What holds for every n: the row's two ends are as far from the middle, so the row is centred.
+        foreach (int n in new[] { 6, 7, 8, 9, 13, 19, 20 })
+            Check($"pips: a row of {n} is centred (its ends mirror)", Near(FightPips.RowOffset(0, n, size, gap, groupGap), -FightPips.RowOffset(n - 1, n, size, gap, groupGap)));
+        Check("pips: a row of 7 keeps its five together (it cannot mirror place by place)",
+            !Near(FightPips.RowOffset(2, 7, size, gap, groupGap), -FightPips.RowOffset(4, 7, size, gap, groupGap)));
+        Check("pips: one stone sits in the middle", FightPips.RowOffset(0, 1, size, gap, groupGap) == 0f);
+        bool steps = true;
+        foreach (int n in new[] { 7, 20 })
+            for (int i = 0; i + 1 < n; i++) {
+                float step = FightPips.RowOffset(i + 1, n, size, gap, groupGap) - FightPips.RowOffset(i, n, size, gap, groupGap);
+                steps &= Near(step, (i + 1) % FightPips.Group == 0 ? pitch + groupGap : pitch);
+            }
+        Check("pips: neighbours are size + gap apart, and a group gap more across a group of five", steps);
+        float width = FightPips.RowOffset(19, 20, size, gap, groupGap) - FightPips.RowOffset(0, 20, size, gap, groupGap) + size;
+        Check($"pips: a row of 20 is under 1.1 m wide ({width})", width < 1.1f && width > 0.9f);
+        Check("pips: the first stone is at the low end", FightPips.RowOffset(0, 20, size, gap, groupGap) < 0f && FightPips.RowOffset(19, 20, size, gap, groupGap) > 0f);
+        Check("pips: no stones, or a place that is not in the row, is 0", FightPips.RowOffset(0, 0, size, gap, groupGap) == 0f && FightPips.RowOffset(0, -3, size, gap, groupGap) == 0f
+            && FightPips.RowOffset(-1, 5, size, gap, groupGap) == 0f && FightPips.RowOffset(5, 5, size, gap, groupGap) == 0f);
+        Check("pips: the constants", FightPips.MaxShown == 40 && FightPips.Group == 5 && FightPips.PerLine == 20 && FightPips.PerLine % FightPips.Group == 0);
+
+        // more than a line's worth goes on in a second line above the first
+        Check("pips: 20 stones are one line", FightPips.Lines(20) == 1 && FightPips.Lines(1) == 1 && FightPips.Lines(0) == 0 && FightPips.Lines(-2) == 0);
+        Check("pips: 21 to 40 are two lines", FightPips.Lines(21) == 2 && FightPips.Lines(40) == 2);
+        Check("pips: stone 19 is on line 0, stone 20 on line 1", FightPips.LineOf(19) == 0 && FightPips.LineOf(20) == 1 && FightPips.LineOf(39) == 1 && FightPips.LineOf(-1) == 0);
+        Check("pips: the first line of 27 holds 20, the second 7", FightPips.InLine(0, 27) == 20 && FightPips.InLine(1, 27) == 7 && FightPips.InLine(2, 27) == 0
+            && FightPips.InLine(0, 12) == 12 && FightPips.InLine(1, 12) == 0 && FightPips.InLine(-1, 12) == 0 && FightPips.InLine(0, 0) == 0);
+
+        // round the forearm
+        Check("band: the first place is on top", FightPips.BandAngle(0, 20) == 0f);
+        bool even = true;
+        for (int i = 0; i < 20; i++) even &= Near(FightPips.BandAngle(i, 20), (float)(i * 2.0 * Math.PI / 20));
+        Check("band: 20 places go round in steps of 2 pi / 20", even);
+        Check("band: half-way round is pi", Near(FightPips.BandAngle(7, 14), (float)Math.PI));
+        Check("band: no places, or a place that is not one, is 0", FightPips.BandAngle(0, 0) == 0f && FightPips.BandAngle(3, 0) == 0f && FightPips.BandAngle(3, -4) == 0f
+            && FightPips.BandAngle(-1, 20) == 0f && FightPips.BandAngle(20, 20) == 0f);
+        // a row of five across the top: the middle first, then out to either side in turn
+        Check("band: a row fills from the top outward (0, 1, 13, 2, 12 of 14 places)", FightPips.BandPlace(0, 14) == 0 && FightPips.BandPlace(1, 14) == 1
+            && FightPips.BandPlace(2, 14) == 13 && FightPips.BandPlace(3, 14) == 2 && FightPips.BandPlace(4, 14) == 12);
+        bool distinct = true, near = true;
+        for (int n = FightPips.Group; n <= 30; n++) {
+            var seen = new HashSet<int>();
+            for (int j = 0; j < FightPips.Group; j++) {
+                int place = FightPips.BandPlace(j, n);
+                distinct &= place >= 0 && place < n && seen.Add(place);
+                near &= place <= 2 || place >= n - 2;   // never further round than two places from the top, on either side
+            }
+        }
+        Check("band: the five places of a row are five different ones", distinct);
+        Check("band: a row stays within two places of the top", near);
+        Check("band: too few places, or a stone that is not one, is place 0", FightPips.BandPlace(1, 0) == 0 && FightPips.BandPlace(2, -1) == 0 && FightPips.BandPlace(-1, 14) == 0
+            && FightPips.BandPlace(3, 1) == 0);
+        Check("band: places round a forearm of 0.07 m for stones 0.0295 m apart: 14", FightPips.BandPlaces(0.07f, 0.0295f) == 14);
+        Check("band: never fewer places than a row of five needs", FightPips.BandPlaces(0.01f, 0.05f) == FightPips.Group && FightPips.BandPlaces(0f, 0.03f) == FightPips.Group
+            && FightPips.BandPlaces(0.07f, 0f) == FightPips.Group && FightPips.BandPlaces(float.NaN, 0.03f) == FightPips.Group && FightPips.BandPlaces(0.07f, float.NaN) == FightPips.Group);
+        Check("band: never more places than 360", FightPips.BandPlaces(10f, 0.001f) == 360);
+
+        // far away the row grows, so its stones never look smaller than they do at the far distance
+        Check("far: within the far distance a row is its own size", FightPips.FarScale(3f, 6f, 2.5f) == 1f && FightPips.FarScale(6f, 6f, 2.5f) == 1f && FightPips.FarScale(0f, 6f, 2.5f) == 1f);
+        Check("far: twice the far distance, twice the size", Near(FightPips.FarScale(12f, 6f, 2.5f), 2f));
+        Check("far: never past the most", FightPips.FarScale(15f, 6f, 2.5f) == 2.5f && FightPips.FarScale(500f, 6f, 2.5f) == 2.5f && FightPips.FarScale(float.PositiveInfinity, 6f, 2.5f) == 2.5f);
+        Check("far: no far distance, or a most of 1 or less, never grows", FightPips.FarScale(50f, 0f, 2.5f) == 1f && FightPips.FarScale(50f, 6f, 1f) == 1f && FightPips.FarScale(50f, 6f, 0.5f) == 1f
+            && FightPips.FarScale(50f, -1f, 2.5f) == 1f);
+        Check("far: numbers that are not numbers never grow", FightPips.FarScale(float.NaN, 6f, 2.5f) == 1f && FightPips.FarScale(50f, float.NaN, 2.5f) == 1f && FightPips.FarScale(50f, 6f, float.NaN) == 1f);
     }
 }
