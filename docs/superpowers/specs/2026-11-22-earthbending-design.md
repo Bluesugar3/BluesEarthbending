@@ -165,7 +165,7 @@ Rules of the pose machine (all settings, `[Pose]`):
 - `MaxPerPlayer` 8 (spawning a ninth breaks that player's oldest), `MaxTotal` 64, `LifeSeconds` 60. A stone breaks below the world (y < -100 m) and when its owner leaves.
 - Every stone is `SaveMode.Ignore`, so nothing is ever saved. Server quit destroys them all.
 
-Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (synced). Sliding: `FreezePositionY | FreezeRotation`. Rising: kinematic, moved up by the server each tick. Floating: `useGravity = false`, zero velocity.
+Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (synced). Sliding: non-kinematic, `FreezeRotation` only, gravity on, a frictionless physic material on its collider while it slides, slowed by `[EarthModifiers] SlideDeceleration`; it follows slopes, and it becomes Free if it has touched no ground for 0.2 s (it slid off a drop). (Ruling 22: a frozen height jammed uphill and floated off drops.) Rising: kinematic, moved up by the server each tick. Floating: `useGravity = false`, zero velocity.
 
 ### 3.5 Modifiers: our numbers (all `[Modifiers]`, server; impulses in N·s on the masses above)
 
