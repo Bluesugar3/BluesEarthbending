@@ -19,6 +19,7 @@ internal static class Program {
         if (args.Length >= 1 && args[0] == "--capture-sample") return PoseTests.WriteCaptureSample(file); // a made-up capture CSV through PoseCapture, for fit_poses.py
         StoneTests.Run();
         PoseTests.Run();
+        MotionTests.Run();
 
         Console.WriteLine(failed == 0 ? $"ALL PASS ({total})" : $"FAILED {failed} of {total}");
         return failed;
