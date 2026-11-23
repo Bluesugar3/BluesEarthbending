@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using ATT.Saving;
 using Alta.Chunks;
 using Alta.Networking;
@@ -15,8 +14,9 @@ namespace Earthbending {
     // The templates sit under one inactive DontDestroyOnLoad holder, so they never simulate or render themselves, while the
     // copies the game makes of them (Instantiate, with no parent) come out active. SyncLib registers each one as
     // "Earth<Kind>" (its CustomPrefabId: never rename one after a server has used it) inside RegisterPrefabs only; it adds
-    // NetworkPrefab, NetworkEntity and NetworkRigidbody itself. The [Stones] settings (power, mass, size) replace StoneTable's
-    // numbers at start-up and on every reload, and the templates follow, so the next stone spawned has them.
+    // NetworkPrefab, NetworkEntity and NetworkRigidbody itself. The [EarthStones] settings (power and mass, server only) replace
+    // StoneTable's numbers at start-up and on every reload, and the templates' mass follows, so the next stone spawned has it.
+    // Sizes are not settings: every machine builds the colliders, so they are StoneTable's constants.
     internal static class Prefabs {
         static MelonMod? mod;
         static GameObject? holder;
@@ -25,22 +25,18 @@ namespace Earthbending {
         static readonly Dictionary<uint, StoneKind> kindByHash = new Dictionary<uint, StoneKind>();
         static readonly MelonPreferences_Entry<int>[] power = new MelonPreferences_Entry<int>[StoneTable.Count];
         static readonly MelonPreferences_Entry<float>[] mass = new MelonPreferences_Entry<float>[StoneTable.Count];
-        static readonly MelonPreferences_Entry<string>[] size = new MelonPreferences_Entry<string>[StoneTable.Count];
-
-        const float MinSize = 0.05f, MaxSize = 20f;
 
         internal static string Id(StoneKind k) => "Earth" + k;
 
         /// <summary>From Main.OnInitializeMelon (the only time SyncLib's event may be subscribed).</summary>
         internal static void Init(MelonMod owner) {
             mod = owner;
-            MelonPreferences_Category cat = Cfg.Category("Stones");
+            MelonPreferences_Category cat = Cfg.Category("EarthStones");
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
                 StoneStats d = StoneTable.Default(k);
                 power[i] = cat.CreateEntry(k + "Power", d.Power, description: $"Server. The {k}'s power for hits and clashes (spec 3.4; grounded and moving add to it).");
                 mass[i] = cat.CreateEntry(k + "Mass", d.Mass, description: $"Server. The {k}'s mass in kg.");
-                size[i] = cat.CreateEntry(k + "Size", SizeText(d.Size), description: $"The {k}'s collider in metres, \"x, y, z\" ({(k == StoneKind.Ball ? "the ball's diameter, on x" : "across, up, ahead")}). Every game builds the stone from its own value, so keep it the same on the server and every game.");
             }
             Apply();
             Cfg.Changed += Apply;
@@ -61,30 +57,14 @@ namespace Earthbending {
         static void Apply() {
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
-                StoneStats d = StoneTable.Default(k), s = d;
-                if (power[i].Value >= 0) s.Power = power[i].Value;
-                else MelonLogger.Warning($"[Earth] Settings: [Stones] {k}Power {power[i].Value} is below 0; using {d.Power}");
+                StoneStats d = StoneTable.Default(k);
+                int p = power[i].Value;
+                if (p < 0) { MelonLogger.Warning($"[Earth] Settings: [EarthStones] {k}Power {p} is below 0; using {d.Power}"); p = d.Power; }
                 float m = mass[i].Value;
-                if (m > 0f && !float.IsInfinity(m)) s.Mass = m;
-                else MelonLogger.Warning($"[Earth] Settings: [Stones] {k}Mass {m} is not a mass; using {d.Mass}");
-                if (TryParseSize(size[i].Value, out V3 v)) s.Size = k == StoneKind.Ball ? new V3(v.X, v.X, v.X) : v;
-                else MelonLogger.Warning($"[Earth] Settings: [Stones] {k}Size '{size[i].Value}' is not three sizes from {MinSize} to {MaxSize} m (\"x, y, z\"); using {SizeText(d.Size)}");
-                StoneTable.Set(k, s);
+                if (!(m > 0f) || float.IsInfinity(m)) { MelonLogger.Warning($"[Earth] Settings: [EarthStones] {k}Mass {m} is not a mass; using {d.Mass}"); m = d.Mass; }
+                StoneTable.Set(k, p, m);
             }
             Fit();
-        }
-
-        static string SizeText(V3 v) => string.Format(CultureInfo.InvariantCulture, "{0:0.###}, {1:0.###}, {2:0.###}", v.X, v.Y, v.Z);
-
-        static bool TryParseSize(string? text, out V3 v) {
-            v = V3.Zero;
-            string[] parts = (text ?? "").Split(',');
-            if (parts.Length != 3) return false;
-            var f = new float[3];
-            for (int i = 0; i < 3; i++)
-                if (!float.TryParse(parts[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out f[i]) || !(f[i] >= MinSize && f[i] <= MaxSize)) return false;
-            v = new V3(f[0], f[1], f[2]);
-            return true;
         }
 
         // ---------------------------------------------------------------- templates and registration
@@ -130,7 +110,7 @@ namespace Earthbending {
             Fit();
         }
 
-        // The templates' mass and collider from the table (only once they exist; stones already standing keep theirs).
+        // The templates' mass (a setting) and collider (a constant) from the table, once they exist; stones already standing keep theirs.
         static void Fit() {
             for (int i = 0; i < StoneTable.Count; i++) {
                 GameObject? t = templates[i];

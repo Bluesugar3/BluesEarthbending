@@ -14,7 +14,7 @@ namespace Earthbending {
     //   Stones.cs     Unity-free: StoneKind, V3, StoneTable (spec 3.4)
     //   StoneBox.cs   Unity-free: the chamfered stone block (a copy of the archery mod's Lectern.cs types)
     //   Ground.cs     the natural-ground test under a point
-    //   Prefabs.cs    the five stones as code-built SyncLib network prefabs, [Stones]; Server.Spawn (until Server.cs)
+    //   Prefabs.cs    the five stones as code-built SyncLib network prefabs, [EarthStones]; Server.Spawn (until Server.cs)
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
@@ -28,7 +28,7 @@ namespace Earthbending {
         public override void OnInitializeMelon() {
             Cfg.Init("Earthbending.cfg");
             Logs.Init();
-            Prefabs.Init(this);   // [Stones], and SyncLib's RegisterPrefabs (it may only be subscribed here)
+            Prefabs.Init(this);   // [EarthStones], and SyncLib's RegisterPrefabs (it may only be subscribed here)
             if (IsServer) Commands.Register();
             LoggerInstance.Msg($"[Earth] Blue's Earthbending v{Version} started ({(IsServer ? "server" : "client")})");
         }

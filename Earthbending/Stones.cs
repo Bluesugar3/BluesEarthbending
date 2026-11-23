@@ -49,8 +49,9 @@ namespace Earthbending {
         public StoneStats(int power, float mass, V3 size) { Power = power; Mass = mass; Size = size; }
     }
 
-    /// <summary>Spec 3.4's numbers per kind. The [Stones] settings (Prefabs.cs) replace them at start-up and on every
-    /// reload through <see cref="Set"/>; <see cref="Default"/> keeps the spec's values for the settings' defaults.</summary>
+    /// <summary>Spec 3.4's numbers per kind. The [EarthStones] settings (Prefabs.cs, server) replace Power and Mass at start-up
+    /// and on every reload through <see cref="Set"/>; <see cref="Default"/> keeps the spec's values for the settings' defaults.
+    /// Size is a constant: every machine builds the colliders, so they must be the same everywhere.</summary>
     internal static class StoneTable {
         public const int Count = 5;
 
@@ -71,6 +72,9 @@ namespace Earthbending {
 
         public static StoneStats Default(StoneKind k) => Valid(k) ? Defaults[(int)k] : default;
 
-        public static void Set(StoneKind k, StoneStats s) { if (Valid(k)) now[(int)k] = s; }
+        /// <summary>The kind's power and mass from the settings; its size stays the spec's.</summary>
+        public static void Set(StoneKind k, int power, float mass) {
+            if (Valid(k)) now[(int)k] = new StoneStats(power, mass, Defaults[(int)k].Size);
+        }
     }
 }

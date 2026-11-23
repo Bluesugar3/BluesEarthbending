@@ -44,9 +44,9 @@ namespace Earthbending {
                 if (forward.sqrMagnitude < 1e-4f) forward = Vector3.forward;
                 forward.Normalize();
                 Vector3 spot = head.position + forward * AheadMetres;
-                if (!Physics.Raycast(spot, Vector3.down, out RaycastHit hit, GroundBelowMetres, Ground.NaturalMask, QueryTriggerInteraction.Ignore))
+                if (!Physics.Raycast(spot, Vector3.down, out RaycastHit hit, GroundBelowMetres, Ground.SolidMask, QueryTriggerInteraction.Ignore))
                     return $"No ground within {GroundBelowMetres:0} m under the spot {AheadMetres} m in front of {name}: nothing spawned";
-                bool natural = hit.collider.attachedRigidbody == null;
+                bool natural = Ground.IsNatural(hit.collider);
                 Vector3 at = hit.point + Vector3.up * (StoneTable.Of(stone).Size.Y * 0.5f + Lift);
                 NetworkEntity? e = Server.Spawn(stone, at, Quaternion.LookRotation(forward, Vector3.up), p, null);
                 if (e == null) return $"The {stone} could not be spawned (see the log)";

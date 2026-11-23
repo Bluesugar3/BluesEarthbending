@@ -23,8 +23,8 @@ namespace Earthbending {
 
         /// <summary>The file's [section]. MelonLoader keeps ONE list of categories by name for every mod, and a category
         /// moves to whichever file the last caller gave it: a name another mod already uses would take that mod's settings
-        /// into this file. So a name some other mod made first is refused (the start-up stops with an error), and the
-        /// mod's own sections must not share a name with another mod's (the archery mod has [Log]: ours is [EarthLog]).</summary>
+        /// into this file. So every section of this mod starts with "Earth" ([EarthLog], [EarthStones], ...), and a name some
+        /// other mod made first is refused (the start-up stops with an error).</summary>
         internal static MelonPreferences_Category Category(string section) {
             if (path.Length == 0) throw new InvalidOperationException("[Earth] Settings: Cfg.Init must run before Cfg.Category");
             foreach (MelonPreferences_Category known in categories) if (known.Identifier == section) return known;
