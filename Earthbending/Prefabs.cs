@@ -22,7 +22,6 @@ namespace Earthbending {
         static GameObject? holder;
         static readonly GameObject?[] templates = new GameObject?[StoneTable.Count];
         static readonly NetworkPrefab?[] registered = new NetworkPrefab?[StoneTable.Count];
-        static readonly Dictionary<uint, StoneKind> kindByHash = new Dictionary<uint, StoneKind>();
         static readonly MelonPreferences_Entry<int>[] power = new MelonPreferences_Entry<int>[StoneTable.Count];
         static readonly MelonPreferences_Entry<float>[] mass = new MelonPreferences_Entry<float>[StoneTable.Count];
 
@@ -46,10 +45,12 @@ namespace Earthbending {
         /// <summary>The registered prefab, or null before registration or on a server without this mod.</summary>
         internal static NetworkPrefab? Of(StoneKind k) => StoneTable.Valid(k) ? registered[(int)k] : null;
 
-        /// <summary>Which stone an entity is, by its prefab's hash; null when it is not one.</summary>
+        /// <summary>Which stone an entity is, from its StoneView (the kind is a serialized field set on the template, so every
+        /// copy carries it); null when it has none. Never through <c>NetworkEntity.Prefab</c>: that field is filled by the
+        /// game's prefab-apply step, which may not have run on a component SyncLib adds at run time.</summary>
         internal static StoneKind? KindOf(NetworkEntity? e) {
-            NetworkPrefab? p = e != null ? e.Prefab : null;
-            return p != null && kindByHash.TryGetValue(p.Hash, out StoneKind k) ? k : (StoneKind?)null;
+            StoneView? v = e != null ? e.GetComponent<StoneView>() : null;
+            return v != null ? v.Kind : (StoneKind?)null;
         }
 
         // ---------------------------------------------------------------- settings
@@ -81,7 +82,6 @@ namespace Earthbending {
                 NetworkPrefab? p = mod.RegisterCustomPrefab(t, Id(k));   // null on a game whose server does not run this mod
                 if (p == null) continue;
                 registered[i] = p;
-                kindByHash[p.Hash] = k;
                 names.Add($"{Id(k)} {p.Hash}");
                 done++;
             }
@@ -104,7 +104,7 @@ namespace Earthbending {
                 if (k == StoneKind.Ball) t.AddComponent<SphereCollider>();
                 else t.AddComponent<BoxCollider>();
                 new GameObject("Model").transform.SetParent(t.transform, false);
-                t.AddComponent<StoneView>();
+                t.AddComponent<StoneView>().Kind = k;   // copied onto every Instantiate copy with the template's other serialized fields
                 templates[i] = t;
             }
             Fit();
@@ -135,9 +135,18 @@ namespace Earthbending {
             if (prefab == null) { MelonLogger.Warning($"[Earth] Spawn: refused, no registered prefab for {kind}"); return null; }
             LocationChunk chunk = LocationChunkHelper.GetBestContaining(pos);
             if (chunk == null) { MelonLogger.Warning($"[Earth] Spawn: refused, no chunk holds {pos} for the {kind}"); return null; }
-            NetworkEntity e = SpawnHelper.Spawn(prefab, SpawnData.Default, chunk, pos, rot,
-                x => { if (x != null && x.Prefab != null) x.Prefab.SaveMode = SaveMode.Ignore; });   // never in the world save
+            bool ignored = false;
+            NetworkEntity e = SpawnHelper.Spawn(prefab, SpawnData.Default, chunk, pos, rot, x => {
+                // never in the world save; the copy's own NetworkPrefab, not NetworkEntity.Prefab (see Prefabs.KindOf)
+                NetworkPrefab? np = x != null ? x.GetComponent<NetworkPrefab>() : null;
+                if (np != null) { np.SaveMode = SaveMode.Ignore; ignored = true; }
+            });
             if (e == null) { MelonLogger.Warning($"[Earth] Spawn: the game did not spawn the {kind} at {pos}"); return null; }
+            if (!ignored) {
+                MelonLogger.Warning($"[Earth] Spawn: the {kind} #{e.Identifier} has no NetworkPrefab to mark unsaved; destroyed");
+                e.SceneDestroy();
+                return null;
+            }
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Spawn: {kind} #{e.Identifier} at {pos} for {(owner?.UserInfo != null ? owner.UserInfo.Username : "nobody")}");
             done?.Invoke(e);
             return e;

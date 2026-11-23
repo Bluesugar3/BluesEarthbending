@@ -129,21 +129,18 @@ namespace Earthbending {
         }
     }
 
-    /// <summary>On every stone prefab (Prefabs.cs puts it on the templates; Instantiate copies it). On a game it dresses the copy
-    /// once it appears; on the headless server it does nothing (no renderers or effects there).</summary>
+    /// <summary>On every stone prefab (Prefabs.cs puts it on the templates and sets <see cref="Kind"/>; Instantiate copies both).
+    /// It says which stone this is (<c>Prefabs.KindOf</c>). On a game it dresses the copy once it appears; on the headless server
+    /// it does nothing (no renderers or effects there).</summary>
     internal sealed class StoneView : MonoBehaviour {
+        /// <summary>Public, so Unity serializes it and every copy of a template keeps its kind.</summary>
+        public StoneKind Kind;
+
         static bool warned;
 
         void Start() {
             if (Main.IsServer) return;
-            try {
-                StoneKind? kind = Prefabs.KindOf(GetComponent<NetworkEntity>());
-                if (kind == null) {
-                    if (!warned) { warned = true; MelonLogger.Warning($"[Earth] Looks: {name} is not a registered stone; left undressed"); }
-                    return;
-                }
-                StoneLook.Dress(gameObject, kind.Value);
-            }
+            try { StoneLook.Dress(gameObject, Kind); }
             catch (Exception e) {
                 if (!warned) { warned = true; MelonLogger.Warning($"[Earth] Looks: could not dress {name}: {e}"); }
             }
