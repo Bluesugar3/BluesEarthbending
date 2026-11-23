@@ -162,24 +162,48 @@ namespace Earthbending {
 
         /// <summary>The holder's hand on the server (their controller's transform) and their look (the head's forward), or why
         /// the hold ends: they left (not in the game's list, or no live connection), have no body or no controller there, died
-        /// or are downed.</summary>
+        /// or are downed (<see cref="LiveBody"/>).</summary>
         static bool HandOf(Grip g, out Transform hand, out Vector3 look, out string why) {
             hand = null!;
             look = Vector3.zero;
-            Player p = g.By;
-            Connection? c = p != null && Player.AllPlayers.Contains(p) ? p.ConnectionToRemotePlayer : null;
-            if (p == null || c == null || c.IsDisposed) { why = "its holder left"; return false; }
-            PlayerController pc = p.PlayerController;
-            if (pc == null) { why = "its holder has no body"; return false; }
-            if (!pc.IsAlive) { why = "its holder died"; return false; }
-            if (pc.IsDowned) { why = "its holder is downed"; return false; }
+            PlayerController? pc = LiveBody(g.By, out Gone gone);
+            if (pc == null) { why = GoneWhy(gone, false); return false; }
             Controller ctl = g.Hand == 0 ? pc.RightController : pc.LeftController;
-            if (ctl == null) { why = "its holder has no controller for that hand on the server"; return false; }
+            if (ctl == null) { why = GoneWhy(Gone.NoHand, false); return false; }
             hand = ctl.transform;
             Transform head = pc.Head;
             if (head != null) look = head.forward;
             why = "";
             return true;
+        }
+
+        /// <summary>Why a player's body no longer drives a stone on the server (Hold's holder, Task 14's flicker).</summary>
+        enum Gone : byte { None, Left, NoBody, Died, Downed, NoHand }
+
+        /// <summary>The player's body on the server, or null and why it is gone: they left (not in the game's list, or no
+        /// live connection), have no body there, died or are downed. Hold's and Flick's (StoneFlick.cs) shared check.</summary>
+        static PlayerController? LiveBody(Player p, out Gone gone) {
+            Connection? c = p != null && Player.AllPlayers.Contains(p) ? p.ConnectionToRemotePlayer : null;
+            if (p == null || c == null || c.IsDisposed) { gone = Gone.Left; return null; }
+            PlayerController pc = p.PlayerController;
+            if (pc == null) { gone = Gone.NoBody; return null; }
+            if (!pc.IsAlive) { gone = Gone.Died; return null; }
+            if (pc.IsDowned) { gone = Gone.Downed; return null; }
+            gone = Gone.None;
+            return pc;
+        }
+
+        /// <summary>A let-go's reason for <see cref="Gone"/>, the holder's or the <paramref name="flicker"/>'s (constant
+        /// strings: nothing is built per step).</summary>
+        static string GoneWhy(Gone g, bool flicker) {
+            switch (g) {
+                case Gone.Left: return flicker ? "its flicker left" : "its holder left";
+                case Gone.NoBody: return flicker ? "its flicker has no body" : "its holder has no body";
+                case Gone.Died: return flicker ? "its flicker died" : "its holder died";
+                case Gone.Downed: return flicker ? "its flicker is downed" : "its holder is downed";
+                case Gone.NoHand: return flicker ? "its flicker has no controller for a hand on the server" : "its holder has no controller for that hand on the server";
+                default: return "";
+            }
         }
 
         /// <summary>Lets go (spec 2.4): it keeps its velocity (the throw), held to [EarthModifiers] MaxStoneSpeed (ruling C10);

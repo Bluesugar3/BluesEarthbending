@@ -26,6 +26,273 @@ internal static class StoneTests {
         Modifiers();
         ParryAndExplode();
         Holds();
+        Flicks();
+    }
+
+    // Task 14: Flick (spec 2.3, 2.4, 3.5; rulings C13, C15, C16)
+    static void Flicks() {
+        // the brief's checks
+        Check("flick gains: 120 kg is (1, 0.1, 6)", Pd.FlickGains(120f) == (1f, 0.1f, 6f));
+        Check("flick gains: 350 kg is (1, 0.1, 8.5)", Pd.FlickGains(350f) == (1f, 0.1f, 8.5f));
+        V3 sum = V3.Zero;
+        Pd.Flick(new V3(1f, 2f, -1f), ref sum, V3.Zero, 150f, 0.25f, 1000f, 0.02f);
+        bool once = NearV(sum, new V3(0.25f, 0.5f, -0.25f));
+        Pd.Flick(new V3(-2f, 0f, 4f), ref sum, V3.Zero, 150f, 0.5f, 1000f, 0.02f);
+        Check("pd flick: the integral grows by error x dt", once && NearV(sum, new V3(-0.75f, 0.5f, 1.75f)));
+        Check("flick on still is refused", !StoneRules.CanApply(StoneState.Still, Modifier.Flick));
+        Check("flick on free is allowed", StoneRules.CanApply(StoneState.Free, Modifier.Flick));
+        (V3 forward, V3 up) upright = Pd.FlickTurn(new V3(0.1f, 1.2f, 0.4f), new V3(0.1f, 0.9f, 0.4f), new V3(0f, 0f, 1f));
+        Check("flick turn: B straight under A gives up (0, 1, 0), facing the look", NearV(upright.up, new V3(0f, 1f, 0f)) && NearV(upright.forward, new V3(0f, 0f, 1f)));
+        Check("flicked: stomp -> stomped (it drops)", StoneRules.After(StoneState.Flicked, Modifier.Stomp) == StoneState.Stomped);
+        Check("flicked: straight stays flicked, pushed as a loose stone", StoneRules.After(StoneState.Flicked, Modifier.Straight) == StoneState.Flicked
+            && StoneRules.CanApply(StoneState.Flicked, Modifier.Straight) && !StoneRules.IsGrounded(StoneState.Flicked));
+
+        // the defaults (the settings')
+        Check("defaults: flick x 1000, turn gain 8, turn damp 1", Near(Pd.DefaultFlickScale, 1000f) && Near(Pd.DefaultFlickTurnGain, 8f) && Near(Pd.DefaultFlickTurnDamp, 1f));
+
+        // ruling C15: FlickGains at every band edge (Hold's bands: up to 150, up to 300, past it)
+        Check("flick gains: 0, 100, 150 kg (and below 0) are (1, 0.1, 6)", Pd.FlickGains(0f) == (1f, 0.1f, 6f) && Pd.FlickGains(100f) == (1f, 0.1f, 6f)
+            && Pd.FlickGains(150f) == (1f, 0.1f, 6f) && Pd.FlickGains(-5f) == (1f, 0.1f, 6f));
+        Check("flick gains: just past 150 to 300 is (1, 0.1, 7)", Pd.FlickGains(150.01f) == (1f, 0.1f, 7f) && Pd.FlickGains(275f) == (1f, 0.1f, 7f) && Pd.FlickGains(300f) == (1f, 0.1f, 7f));
+        Check("flick gains: just past 300 is (1, 0.1, 8.5)", Pd.FlickGains(300.01f) == (1f, 0.1f, 8.5f) && Pd.FlickGains(400f) == (1f, 0.1f, 8.5f) && Pd.FlickGains(1e6f) == (1f, 0.1f, 8.5f));
+        Check("flick gains: a mass that is not a number is the heaviest band", Pd.FlickGains(float.NaN) == (1f, 0.1f, 8.5f) && Pd.FlickGains(float.PositiveInfinity) == (1f, 0.1f, 8.5f));
+        Check("flick gains: the five stones", Pd.FlickGains(StoneTable.Default(Disc).Mass) == (1f, 0.1f, 6f) && Pd.FlickGains(StoneTable.Default(Ball).Mass) == (1f, 0.1f, 6f)
+            && Pd.FlickGains(StoneTable.Default(Pillar).Mass) == (1f, 0.1f, 7f) && Pd.FlickGains(StoneTable.Default(Cube).Mass) == (1f, 0.1f, 7f) && Pd.FlickGains(StoneTable.Default(Wall).Mass) == (1f, 0.1f, 8.5f));
+
+        // ruling C13 (as Hold): scale x (p x error + i x integral - d x dStep x velocity), the integral first grown by error x dt
+        V3 i0 = V3.Zero;
+        Check("pd flick: error (1, 0, 0) from a zero integral: 1000 x (1 + 0.1 x 0.25)", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref i0, V3.Zero, 150f, 0.25f, 1000f, 0.02f), new V3(1025f, 0f, 0f))
+            && NearV(i0, new V3(0.25f, 0f, 0f)));
+        V3 i1 = V3.Zero;
+        Check("pd flick: dt 0 is p alone, and the integral stays", NearF(Pd.Flick(new V3(1f, -2f, 0.5f), ref i1, V3.Zero, 150f, 0f, 1000f, 0.02f), new V3(1000f, -2000f, 500f)) && NearV(i1, V3.Zero));
+        V3 i2 = new V3(2f, 0f, -4f);
+        Check("pd flick: the integral pulls on its own", NearF(Pd.Flick(V3.Zero, ref i2, V3.Zero, 150f, 0.02f, 1000f, 0.02f), new V3(200f, 0f, -400f)) && NearV(i2, new V3(2f, 0f, -4f)));
+        V3 iz = V3.Zero;
+        Check("pd flick: a 150 kg stone at 1 m/s is damped by 1000 x 6 x 0.02", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), 150f, 0.02f, 1000f, 0.02f), new V3(-120f, 0f, 0f)));
+        iz = V3.Zero;
+        Check("pd flick: 250 kg by 7, every axis", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 2f, -1f), 250f, 0.02f, 1000f, 0.02f), new V3(-140f, -280f, 140f)));
+        iz = V3.Zero;
+        Check("pd flick: 400 kg by 8.5", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), 400f, 0.02f, 1000f, 0.02f), new V3(-170f, 0f, 0f)));
+        iz = V3.Zero;
+        Check("pd flick: PdStepSeconds 1 is the per-second reading", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), 150f, 0.02f, 1000f, 1f), new V3(-6000f, 0f, 0f)));
+        iz = V3.Zero;
+        Check("pd flick: PdStepSeconds 0 does not damp", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref iz, new V3(5f, 5f, 5f), 150f, 0f, 1000f, 0f), new V3(1000f, 0f, 0f)));
+        V3 i3 = new V3(1f, 0f, -1f);
+        Check("pd flick: p, i and d together (350 kg)", NearF(Pd.Flick(new V3(0.5f, -0.2f, 1f), ref i3, new V3(2f, 0f, 0f), 350f, 0.5f, 1000f, 0.02f), new V3(285f, -210f, 950f))
+            && NearV(i3, new V3(1.25f, -0.1f, -0.5f)));
+        iz = V3.Zero;
+        Check("pd flick: the scale from the settings", NearF(Pd.Flick(new V3(1f, 1f, 0f), ref iz, V3.Zero, 150f, 0f, 500f, 0.02f), new V3(500f, 500f, 0f)));
+        // nothing that is not a number gets out, the force or the integral
+        V3 keep = new V3(1f, 1f, 1f);
+        Check("pd flick: an error that is not a number pulls nothing and leaves the integral",
+            NearV(Pd.Flick(new V3(float.NaN, 0f, 0f), ref keep, V3.Zero, 150f, 0.02f, 1000f, 0.02f), V3.Zero) && NearV(keep, new V3(1f, 1f, 1f))
+            && NearV(Pd.Flick(new V3(0f, float.PositiveInfinity, 0f), ref keep, new V3(1f, 0f, 0f), 150f, 0.02f, 1000f, 0.02f), V3.Zero) && NearV(keep, new V3(1f, 1f, 1f)));
+        iz = V3.Zero;
+        Check("pd flick: a velocity that is not a number counts as none", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref iz, new V3(float.NaN, 0f, 0f), 150f, 0f, 1000f, 0.02f), new V3(1000f, 0f, 0f)));
+        V3 bad = new V3(float.NaN, 3f, 0f);
+        Check("pd flick: an integral that is not a number starts again from zero", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref bad, V3.Zero, 150f, 0.25f, 1000f, 0.02f), new V3(1025f, 0f, 0f))
+            && NearV(bad, new V3(0.25f, 0f, 0f)));
+        bool dts = true;
+        foreach (float dt in new[] { float.NaN, -0.02f, float.PositiveInfinity }) {
+            V3 i = V3.Zero;
+            dts &= NearF(Pd.Flick(new V3(1f, 0f, 0f), ref i, V3.Zero, 150f, dt, 1000f, 0.02f), new V3(1000f, 0f, 0f)) && NearV(i, V3.Zero);
+        }
+        Check("pd flick: a dt that is not above 0 or not a number does not grow the integral", dts);
+        bool scales = true;
+        foreach (float sc in new[] { float.NaN, 0f, -1f, float.PositiveInfinity }) {
+            V3 i = new V3(1f, 0f, 0f);
+            scales &= NearV(Pd.Flick(new V3(1f, 1f, 1f), ref i, V3.Zero, 150f, 0.02f, sc, 0.02f), V3.Zero) && NearV(i, new V3(1f, 0f, 0f));
+        }
+        Check("pd flick: a scale not above 0 or not a number pulls nothing and leaves the integral", scales);
+        iz = V3.Zero;
+        Check("pd flick: a step that is not a number does not damp", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref iz, new V3(1f, 0f, 0f), 150f, 0f, 1000f, float.NaN), new V3(1000f, 0f, 0f)));
+        iz = V3.Zero;
+        Check("pd flick: a mass that is not a number damps as the heaviest", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), float.NaN, 0f, 1000f, 0.02f), new V3(-170f, 0f, 0f)));
+        V3 hugeI = new V3(3e38f, -3e38f, 3e38f);
+        V3 hugeF = Pd.Flick(new V3(3e38f, -3e38f, 3e38f), ref hugeI, new V3(-3e38f, 3e38f, 0f), 150f, 3e38f, 3e38f, 3e38f);
+        Check("pd flick: huge numbers stay finite, the force and the integral", FiniteV(hugeF) && FiniteV(hugeI));
+
+        // the target: the midpoint of the two hands plus the head's flat forward x HoldDistance
+        var a = new V3(0.1f, 1.2f, 0.4f);
+        var b = new V3(0.1f, 0.9f, 0.4f);
+        var mid = new V3(0.1f, 1.05f, 0.4f);
+        Check("flick target: between the hands, 1 m along the look", NearV(Pd.FlickTarget(a, b, new V3(0f, 0f, 1f), 1f), new V3(0.1f, 1.05f, 1.4f)));
+        Check("flick target: the look made flat and length 1", NearV(Pd.FlickTarget(a, b, new V3(0f, -3f, 4f), 1f), new V3(0.1f, 1.05f, 1.4f)));
+        Check("flick target: HoldDistance along another look", NearV(Pd.FlickTarget(a, b, new V3(1f, 0f, 0f), 2f), new V3(2.1f, 1.05f, 0.4f)));
+        Check("flick target: a distance of 0, below 0 or not a number is the midpoint", NearV(Pd.FlickTarget(a, b, new V3(0f, 0f, 1f), 0f), mid)
+            && NearV(Pd.FlickTarget(a, b, new V3(0f, 0f, 1f), -1f), mid) && NearV(Pd.FlickTarget(a, b, new V3(0f, 0f, 1f), float.NaN), mid));
+        Check("flick target: a look straight down or not a number is the midpoint", NearV(Pd.FlickTarget(a, b, new V3(0f, -1f, 0f), 1f), mid)
+            && NearV(Pd.FlickTarget(a, b, new V3(float.NaN, 0f, 1f), 1f), mid));
+
+        // the turn: up from B to A, forward the look made square to it
+        float r = (float)System.Math.Sqrt(0.5);
+        var z = new V3(0f, 0f, 1f);
+        Check("flick turn: upright, looking east", NearV(Pd.FlickTurn(a, b, new V3(1f, 0f, 0f)).forward, new V3(1f, 0f, 0f)) && NearV(Pd.FlickTurn(a, b, new V3(1f, 0f, 0f)).up, new V3(0f, 1f, 0f)));
+        Check("flick turn: a look that is not flat or not length 1", NearV(Pd.FlickTurn(a, b, new V3(0f, -3f, 4f)).forward, z));
+        (V3 forward, V3 up) side = Pd.FlickTurn(new V3(0.3f, 0.3f, 0f), V3.Zero, z);
+        Check("flick turn: the hands tilted 45 degrees to the side", NearV(side.up, new V3(r, r, 0f)) && NearV(side.forward, z));
+        (V3 forward, V3 up) ahead = Pd.FlickTurn(new V3(0f, 0.3f, 0.3f), V3.Zero, z);
+        Check("flick turn: tilted 45 degrees forward faces down and ahead", NearV(ahead.up, new V3(0f, r, r)) && NearV(ahead.forward, new V3(0f, -r, r)));
+        (V3 forward, V3 up) back = Pd.FlickTurn(new V3(0f, 0.3f, -0.3f), V3.Zero, z);
+        Check("flick turn: tilted 45 degrees back faces up and ahead", NearV(back.up, new V3(0f, r, -r)) && NearV(back.forward, new V3(0f, r, r)));
+        (V3 forward, V3 up) flipped = Pd.FlickTurn(b, a, z);
+        Check("flick turn: A under B turns it upside down, still facing the look", NearV(flipped.up, new V3(0f, -1f, 0f)) && NearV(flipped.forward, z));
+        bool square = true;
+        uint seed = 12345u;
+        for (int k = 0; k < 200; k++) {
+            V3 ha = Rand(ref seed), hb = Rand(ref seed), look = Rand(ref seed);
+            (V3 forward, V3 up) t = Pd.FlickTurn(ha, hb, look);
+            square &= Near2(t.forward.Length, 1f, 1e-4f) && Near2(t.up.Length, 1f, 1e-4f) && System.Math.Abs(V3.Dot(t.forward, t.up)) < 1e-4f;
+        }
+        Check("flick turn: forward and up are always length 1 and square to each other", square);
+        // the fallback: up (nearly) along the look, where the look made square has no length; it takes the way the forward
+        // goes as the hands tilt there from upright: down when A is ahead of B, up when A is behind
+        (V3 forward, V3 up) pointing = Pd.FlickTurn(new V3(0f, 0f, 0.3f), V3.Zero, z);
+        Check("flick turn: A straight ahead of B faces down", NearV(pointing.up, z) && NearV(pointing.forward, new V3(0f, -1f, 0f)));
+        (V3 forward, V3 up) behind = Pd.FlickTurn(new V3(0f, 0f, -0.3f), V3.Zero, z);
+        Check("flick turn: A straight behind B faces up", NearV(behind.up, new V3(0f, 0f, -1f)) && NearV(behind.forward, new V3(0f, 1f, 0f)));
+        (V3 forward, V3 up) nearly = Pd.FlickTurn(new V3(0f, 0.05f, 1f), V3.Zero, z);
+        Check("flick turn: nearly along the look, square and length 1", nearly.forward.Y < -0.99f && System.Math.Abs(V3.Dot(nearly.forward, nearly.up)) < 1e-4f && Near2(nearly.forward.Length, 1f, 1e-4f));
+        (V3 forward, V3 up) sideways = Pd.FlickTurn(new V3(0.02f, 0f, 1f), V3.Zero, z);
+        Check("flick turn: nearly along the look from the side, square and length 1", System.Math.Abs(V3.Dot(sideways.forward, sideways.up)) < 1e-4f && Near2(sideways.forward.Length, 1f, 1e-4f));
+        bool smooth = true;
+        V3 prevF = Pd.FlickTurn(Tilt(60), V3.Zero, z).forward;
+        for (int deg = 61; deg <= 95; deg++) {
+            V3 f = Pd.FlickTurn(Tilt(deg), V3.Zero, z).forward;
+            smooth &= V3.Dot(f, prevF) > (float)System.Math.Cos(3.0 * System.Math.PI / 180.0);
+            prevF = f;
+        }
+        Check("flick turn: tilting the hands forward from 60 to 95 degrees turns it smoothly (through the fallback)", smooth);
+        Check("flick turn: past the fallback it faces the look again", Pd.FlickTurn(Tilt(120), V3.Zero, z).forward.Z > 0.49f);
+        Check("flick turn: hands at one place, or not a number, stand it upright", NearV(Pd.FlickTurn(a, a, z).up, new V3(0f, 1f, 0f)) && NearV(Pd.FlickTurn(a, a, z).forward, z)
+            && NearV(Pd.FlickTurn(new V3(float.NaN, 0f, 0f), b, z).up, new V3(0f, 1f, 0f)));
+        Check("flick turn: no flat look faces +z", NearV(Pd.FlickTurn(a, b, new V3(0f, -1f, 0f)).forward, z) && NearV(Pd.FlickTurn(a, b, new V3(float.NaN, 0f, 0f)).forward, z));
+
+        // the rotation from the stone's turn to the wanted one, as axis x angle in radians, the short way
+        float s45 = (float)System.Math.Sin(System.Math.PI / 4.0), s135 = (float)System.Math.Sin(3.0 * System.Math.PI / 4.0), c135 = (float)System.Math.Cos(3.0 * System.Math.PI / 4.0);
+        float halfPi = (float)(System.Math.PI / 2.0);
+        Check("turn vector: none for no turn", NearV(Pd.TurnVector(0f, 0f, 0f, 1f), V3.Zero) && NearV(Pd.TurnVector(0f, 0f, 0f, -1f), V3.Zero));
+        Check("turn vector: 90 degrees about y", NearV(Pd.TurnVector(0f, s45, 0f, s45), new V3(0f, halfPi, 0f)));
+        Check("turn vector: 270 degrees about y is 90 the other way", NearV(Pd.TurnVector(0f, s135, 0f, c135), new V3(0f, -halfPi, 0f)));
+        Check("turn vector: the same turn written negated", NearV(Pd.TurnVector(0f, -s45, 0f, -s45), new V3(0f, halfPi, 0f)));
+        Check("turn vector: 180 degrees about x", NearV(Pd.TurnVector(1f, 0f, 0f, 0f), new V3((float)System.Math.PI, 0f, 0f)));
+        Check("turn vector: a quaternion not of length 1", NearV(Pd.TurnVector(0f, 2f * s45, 0f, 2f * s45), new V3(0f, halfPi, 0f)));
+        Check("turn vector: not a number is none", NearV(Pd.TurnVector(float.NaN, 0f, 0f, 1f), V3.Zero) && NearV(Pd.TurnVector(0f, 0f, float.PositiveInfinity, 1f), V3.Zero));
+        Check("turn vector: huge numbers stay finite", FiniteV(Pd.TurnVector(3e38f, -3e38f, 3e38f, 1f)));
+
+        // the turn's torque (an acceleration, ForceMode.Acceleration): FlickTurnGain x the turn - FlickTurnDamp x the spin
+        Check("flick torque: gain x turn", NearV(Pd.FlickTorque(new V3(0f, 1f, 0f), V3.Zero, 8f, 1f), new V3(0f, 8f, 0f)));
+        Check("flick torque: damp x spin", NearV(Pd.FlickTorque(V3.Zero, new V3(0f, 2f, -1f), 8f, 1f), new V3(0f, -2f, 1f)));
+        Check("flick torque: both", NearF(Pd.FlickTorque(new V3(halfPi, 0f, 0f), new V3(1f, 0f, 0f), 8f, 1f), new V3(8f * halfPi - 1f, 0f, 0f)));
+        Check("flick torque: from the settings", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 3f, 2f), new V3(1f, 0f, 0f)));
+        Check("flick torque: a turn that is not a number only damps", NearV(Pd.FlickTorque(new V3(float.NaN, 0f, 0f), new V3(1f, 0f, 0f), 8f, 1f), new V3(-1f, 0f, 0f)));
+        Check("flick torque: a spin that is not a number counts as none", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(0f, float.NaN, 0f), 8f, 1f), new V3(8f, 0f, 0f)));
+        Check("flick torque: a gain or damp below 0 or not a number is 0", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), float.NaN, -1f), V3.Zero)
+            && NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), -8f, float.PositiveInfinity), V3.Zero));
+        Check("flick torque: huge numbers stay finite", FiniteV(Pd.FlickTorque(new V3(3e38f, 3e38f, 3e38f), new V3(-3e38f, -3e38f, -3e38f), 3e38f, 3e38f)));
+
+        // models, stepped as PhysX steps a body (semi-implicit Euler) at the defaults: the pull on every stone settles on a
+        // still target and follows a moving one at the server's 15-50 Hz without running away; the turn settles. The pull is
+        // slow and lightly damped at these gains (a Ball swings with a period of about 2.4 s, a Wall 4 s; a Wall 1 m off is
+        // still about 0.2 m off after 10 s), so the windows are long
+        bool settles = true, follows = true, turns = true;
+        foreach (float hz in new[] { 15f, 30f, 45f, 50f }) {
+            foreach (StoneKind k in new[] { Disc, Ball, Pillar, Cube, Wall }) {
+                float end = Flicked(StoneTable.Default(k).Mass, hz, _ => 0.0, -1.0, 40.0, out float worst);
+                settles &= end < 0.01f && worst <= 1f + 1e-4f;
+            }
+            float trail = Flicked(150f, hz, Ramp(2.0, 1.0), 0.0, 40.0, out float sweepWorst);
+            follows &= trail < 0.01f && sweepWorst < 1.2f;   // it trails a 2 m/s sweep by up to about 1 m
+            turns &= Turned(hz, 3.0, 20.0) < 0.01f && Turned(hz, 4.0, 20.0) < 0.01f && Turned(hz, -2.0, 20.0) < 0.01f;
+        }
+        Check("model: every flicked stone 1 m off a still target settles within 1 cm in 40 s, never further than it started (15-50 Hz)", settles);
+        Check("model: a flicked Ball follows a 2 m sweep of the hands in 1 s, never 1.2 m behind, and settles after it (15-50 Hz)", follows);
+        Check("model: a stone turned 3 rad, 4 rad (the short way) or -2 rad off settles on the wanted turn (15-50 Hz)", turns);
+        float pdTrail = 6f * Pd.DefaultPdStepSeconds * 1f;   // a PD alone (no i) trails a 1 m/s target by d x dStep / p
+        float iTrail = Flicked(150f, 45f, t => t, 0.0, 40.0, out _);
+        Check("model: the integral takes up the trail behind a steadily moving hand", iTrail < pdTrail * 0.5f);
+
+        // ruling C15: Flick in every state: loose ones (Free, Floating, Held, Flicked) are Flicked; grounded ones refused
+        StoneState[] after = { StoneState.Rising, StoneState.Still, StoneState.Sliding, StoneState.Flicked, StoneState.Stomped, StoneState.Flicked, StoneState.Flicked, StoneState.Flicked };
+        bool[] can = { false, false, false, true, false, true, true, true };
+        for (int i = 0; i < AllStates.Length; i++)
+            Check($"flick on {AllStates[i]}: {(can[i] ? after[i].ToString() : "refused")}", StoneRules.CanApply(AllStates[i], Modifier.Flick) == can[i] && StoneRules.After(AllStates[i], Modifier.Flick) == after[i]);
+        // the Flicked row: Stomp drops it (Stomped); Straight, Kick and Uppercut push it and it stays; Parry and Hold are
+        // refused; Explode marks it; Flick again (by anyone) takes it over, still Flicked
+        StoneState[] row = { StoneState.Flicked, StoneState.Flicked, StoneState.Stomped, StoneState.Flicked, StoneState.Flicked, StoneState.Flicked, StoneState.Flicked, StoneState.Flicked };
+        bool[] takes = { true, true, true, true, false, false, true, true };
+        for (int m = 0; m < ModifyCheck.ModifierCount; m++)
+            Check($"flicked: {(Modifier)m} {(takes[m] ? "-> " + row[m] : "refused")}", StoneRules.CanApply(StoneState.Flicked, (Modifier)m) == takes[m] && StoneRules.After(StoneState.Flicked, (Modifier)m) == row[m]);
+        Check("flicked: kick and uppercut push it as a loose stone", NearV(StoneRules.Push(Modifier.Kick, StoneRules.IsGrounded(StoneState.Flicked), z).impulse, new V3(0f, 1500f, 0f))
+            && NearV(StoneRules.Push(Modifier.Uppercut, StoneRules.IsGrounded(StoneState.Flicked), z).impulse, new V3(0f, 900f, 900f)));
+        Check("flicked: stomp pushes it down as a loose stone", NearV(StoneRules.Push(Modifier.Stomp, StoneRules.IsGrounded(StoneState.Flicked), z).impulse, new V3(0f, -1500f, 0f)));
+        Check("flicked is loose: not grounded, not kinematic, discrete, no landing", !StoneRules.IsGrounded(StoneState.Flicked) && !StoneRules.Kinematic(StoneState.Flicked)
+            && !StoneRules.Continuous(StoneState.Flicked) && StoneRules.Landed(StoneState.Flicked) == StoneState.Flicked);
+        Check("flicked: a stone summoned where it is leaves it be", StoneRules.SummonUnder(StoneState.Flicked) == (StoneState.Flicked, 0f));
+        Check("flicked: a ball's power is not grounded", StoneRules.Power(Ball, StoneState.Flicked, 0f, 3f) == 1);
+        Check("flick pushes nothing", StoneRules.Impulse(Modifier.Flick, false) == (0f, 0f, 0f) && StoneRules.Impulse(Modifier.Flick, true) == (0f, 0f, 0f));
+        // Task 11's CARRY: the server refuses Flick on a grounded stone (NotAllowed)
+        var boxMin = new V3(-0.5f, -1.6f, 1.5f);
+        var boxMax = new V3(0.5f, -0.6f, 2.5f);
+        foreach (StoneState s in new[] { StoneState.Still, StoneState.Sliding, StoneState.Stomped, StoneState.Rising })
+            Check($"modify: flick on a {s} stone is not allowed", ModifyCheck.Decide(Mod(Modifier.Flick, 9u, V3.Zero), true, s, boxMin, boxMax, V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NotAllowed);
+        foreach (StoneState s in new[] { StoneState.Free, StoneState.Floating, StoneState.Held, StoneState.Flicked })
+            Check($"modify: flick on a {s} stone is allowed", ModifyCheck.Decide(Mod(Modifier.Flick, 9u, V3.Zero), true, s, boxMin, boxMax, V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("modify: parry and hold on a flicked stone are not allowed", ModifyCheck.Decide(Mod(Modifier.Parry, 9u, V3.Zero), true, StoneState.Flicked, boxMin, boxMax, V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NotAllowed
+            && ModifyCheck.Decide(Mod(Modifier.Hold, 9u, V3.Zero), true, StoneState.Flicked, boxMin, boxMax, V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NotAllowed);
+        Check("modify: a byte past the modifiers is never applied", !StoneRules.CanApply(StoneState.Free, (Modifier)8) && !StoneRules.CanApply(StoneState.Flicked, (Modifier)200));
+    }
+
+    static bool NearF(V3 a, V3 b) => Near2(a.X, b.X, 1e-3f) && Near2(a.Y, b.Y, 1e-3f) && Near2(a.Z, b.Z, 1e-3f);
+
+    // A pair of hands tilted `deg` degrees forward from upright (A above B at 0, A ahead of B at 90), seen from B.
+    static V3 Tilt(int deg) {
+        double t = deg * System.Math.PI / 180.0;
+        return new V3(0f, (float)System.Math.Cos(t), (float)System.Math.Sin(t));
+    }
+
+    // A made-up place in a 4 m box round the origin (a fixed sequence: the same every run).
+    static V3 Rand(ref uint seed) {
+        float Next(ref uint s) {
+            s = s * 1664525u + 1013904223u;
+            return (s >> 8) / (float)(1 << 24) * 4f - 2f;
+        }
+        return new V3(Next(ref seed), Next(ref seed), Next(ref seed));
+    }
+
+    // A flicked stone of this mass along x, pulled by Pd.Flick at the defaults (FlickScale, PdStepSeconds; the integral from
+    // zero as a flick begins) toward `target(t)`, starting at rest at x0, stepped as PhysX steps a body (semi-implicit Euler:
+    // the velocity first, then the place) every 1/hz s for `seconds`: how far it is from the target at the end, and `worst`
+    // its furthest. NaN when it runs away.
+    static float Flicked(float mass, float hz, System.Func<double, double> target, double x0, double seconds, out float worst) {
+        double x = x0, v = 0.0, dt = 1.0 / hz, t = 0.0;
+        V3 integral = V3.Zero;
+        worst = 0f;
+        for (; t < seconds; t += dt) {
+            var error = new V3((float)(target(t) - x), 0f, 0f);
+            worst = System.Math.Max(worst, System.Math.Abs(error.X));
+            V3 f = Pd.Flick(error, ref integral, new V3((float)v, 0f, 0f), mass, (float)dt, Pd.DefaultFlickScale, Pd.DefaultPdStepSeconds);
+            v += f.X / mass * dt;
+            x += v * dt;
+            if (double.IsNaN(x) || System.Math.Abs(x) > 1e6) { worst = float.NaN; return float.NaN; }
+        }
+        return (float)System.Math.Abs(target(t) - x);
+    }
+
+    // A flicked stone's turn about x, `wanted` radians from where it starts at rest, driven each 1/hz s step by
+    // Pd.FlickTorque (the defaults: an acceleration, so its inertia does not count) on the short way to it (Pd.TurnVector):
+    // how far off the wanted turn it is after `seconds`, in radians (the short way). NaN when it runs away.
+    static float Turned(float hz, double wanted, double seconds) {
+        double angle = 0.0, spin = 0.0, dt = 1.0 / hz;
+        for (double t = 0.0; t < seconds; t += dt) {
+            double off = (wanted - angle) * 0.5;
+            V3 turn = Pd.TurnVector((float)System.Math.Sin(off), 0f, 0f, (float)System.Math.Cos(off));
+            V3 torque = Pd.FlickTorque(turn, new V3((float)spin, 0f, 0f), Pd.DefaultFlickTurnGain, Pd.DefaultFlickTurnDamp);
+            spin += torque.X * dt;
+            angle += spin * dt;
+            if (double.IsNaN(angle) || System.Math.Abs(angle) > 1e6) return float.NaN;
+        }
+        return (float)System.Math.Abs(System.Math.IEEERemainder(wanted - angle, 2.0 * System.Math.PI));   // the short way, worked out here
     }
 
     // Task 13: Hold (spec 2.3, 2.4, 3.2, 3.5; rulings C13, C14, C16)
@@ -161,18 +428,14 @@ internal static class StoneTests {
         Check("held: stomp -> stomped", StoneRules.After(StoneState.Held, Modifier.Stomp) == StoneState.Stomped);
         Check("held: parry -> floating", StoneRules.After(StoneState.Held, Modifier.Parry) == StoneState.Floating);
         bool heldTakes = true;
-        foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut, Modifier.Parry, Modifier.Hold, Modifier.Explode })
+        foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut, Modifier.Parry, Modifier.Hold, Modifier.Flick, Modifier.Explode })
             heldTakes &= StoneRules.CanApply(StoneState.Held, m);
-        Check("held: every modifier but Flick applies", heldTakes && !StoneRules.CanApply(StoneState.Held, Modifier.Flick));
+        Check("held: every modifier applies (Flick takes it out of the hand: Task 14)", heldTakes && StoneRules.After(StoneState.Held, Modifier.Flick) == StoneState.Flicked);
         // a held sliding stone: Straight keeps it sliding (held); Stomp does nothing to it (held); Kick, Uppercut, Parry change it
         Check("held sliding: straight and stomp keep it sliding", StoneRules.After(StoneState.Sliding, Modifier.Straight) == StoneState.Sliding && StoneRules.After(StoneState.Sliding, Modifier.Stomp) == StoneState.Sliding);
         Check("held sliding: kick, uppercut, parry change it", StoneRules.After(StoneState.Sliding, Modifier.Kick) == StoneState.Free
             && StoneRules.After(StoneState.Sliding, Modifier.Uppercut) == StoneState.Free && StoneRules.After(StoneState.Sliding, Modifier.Parry) == StoneState.Floating);
         Check("held is loose: not grounded, not kinematic, discrete", !StoneRules.IsGrounded(StoneState.Held) && !StoneRules.Kinematic(StoneState.Held) && !StoneRules.Continuous(StoneState.Held));
-        // Flick is Task 14's: still refused everywhere
-        bool flickNone = true;
-        foreach (StoneState s in AllStates) flickNone &= !StoneRules.CanApply(s, Modifier.Flick);
-        Check("flick not yet", flickNone);
     }
 
     static bool FiniteV(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
@@ -247,12 +510,12 @@ internal static class StoneTests {
         Check("defaults: double straight 0.4 s (ruling C26)", Near(StoneRules.DefaultDoubleStraightSeconds, 0.4f));
 
         // Parry: Floating from Free, Still, Sliding, Stomped, and Rising once it has risen (C6); Floating again restarts it;
-        // Flicked is Task 14's (unchanged here); Held is Task 13's (Holds: it lets go and floats)
+        // Flicked refuses it (Task 14, ruling C15: Flicks); Held is Task 13's (Holds: it lets go and floats)
         Check("parry on sliding -> floating", StoneRules.After(StoneState.Sliding, Modifier.Parry) == StoneState.Floating);
         Check("parry on stomped -> floating", StoneRules.After(StoneState.Stomped, Modifier.Parry) == StoneState.Floating);
         Check("parry on rising -> floating once risen", StoneRules.After(StoneState.Rising, Modifier.Parry) == StoneState.Floating);
         Check("parry on floating -> floating", StoneRules.After(StoneState.Floating, Modifier.Parry) == StoneState.Floating);
-        Check("parry on flicked: unchanged", StoneRules.After(StoneState.Flicked, Modifier.Parry) == StoneState.Flicked);
+        Check("parry on flicked: refused, unchanged", StoneRules.After(StoneState.Flicked, Modifier.Parry) == StoneState.Flicked && !StoneRules.CanApply(StoneState.Flicked, Modifier.Parry));
         // the Floating row: Straight keeps it floating with the push (its speed then ends the float), Kick and Uppercut set it
         // loose, Stomp stomps it, Explode only marks it
         Check("floating: straight stays floating", StoneRules.After(StoneState.Floating, Modifier.Straight) == StoneState.Floating);
@@ -266,13 +529,14 @@ internal static class StoneTests {
         foreach (StoneState s in AllStates) marks &= StoneRules.After(s, Modifier.Explode) == s;
         Check("explode leaves every state", marks);
 
-        // Parry and Explode apply in every state (Hold is Task 13's: Holds; Flick is still Task 14's)
+        // Parry applies in every state but Flicked (ruling C15), Explode in every state (Hold is Task 13's: Holds; Flick
+        // Task 14's: Flicks)
         bool parryAll = true, explodeAll = true;
         foreach (StoneState s in AllStates) {
-            parryAll &= StoneRules.CanApply(s, Modifier.Parry);
+            parryAll &= StoneRules.CanApply(s, Modifier.Parry) == (s != StoneState.Flicked);
             explodeAll &= StoneRules.CanApply(s, Modifier.Explode);
         }
-        Check("parry applies in every state", parryAll);
+        Check("parry applies in every state but Flicked", parryAll);
         Check("explode applies in every state", explodeAll);
         Check("modify: explode on a still stone is allowed", ModifyCheck.Decide(Mod(Modifier.Explode, 9u, V3.Zero), true, StoneState.Still, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
             V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
@@ -368,13 +632,12 @@ internal static class StoneTests {
         Check("kick on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Kick) == StoneState.Free);
         Check("uppercut on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Uppercut) == StoneState.Free);
         Check("stomp on rising -> still once risen", StoneRules.After(StoneState.Rising, Modifier.Stomp) == StoneState.Still);
-        // Flicked is Task 14's: unchanged here (Floating's row is Task 12's: ParryAndExplode; Held's Task 13's: Holds)
-        bool later = true;
-        foreach (Modifier m in new[] { Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
-            later &= StoneRules.After(StoneState.Flicked, m) == StoneState.Flicked;
-        Check("flicked unchanged by kick, stomp, uppercut", later);
+        // Flicked's row is Task 14's (Flicks: Stomp drops it; Kick and Uppercut push it and it stays in the hands); Floating's
+        // is Task 12's (ParryAndExplode); Held's Task 13's (Holds)
+        Check("flicked: kick and uppercut keep it flicked", StoneRules.After(StoneState.Flicked, Modifier.Kick) == StoneState.Flicked
+            && StoneRules.After(StoneState.Flicked, Modifier.Uppercut) == StoneState.Flicked);
 
-        // they apply in every state (Hold: Holds; Flick is Task 14's)
+        // they apply in every state (Hold: Holds; Flick: Flicks)
         bool every = true;
         foreach (StoneState s in AllStates)
             foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })

@@ -16,6 +16,8 @@ using System.Globalization;
 // explosion reaches what (ExplodeShare), the way it knocks a player (BlastDir) and the double Straight (DoubleStraight);
 // StoneBody.cs and Hits.Explode run them. Task 13: Hold in After and CanApply, when a held stone is let go (StoneRules.HoldLetGo,
 // HoldAgain) and the hold's pull (Pd: the gains by weight, the PD force, the target ahead of the hand); StoneHold.cs runs them.
+// Task 14: Flick in After and CanApply, and the flick's pull and turn (Pd: FlickGains, the PID force, the target between the
+// hands, the turn from the hands, the turn still to go and its torque); StoneFlick.cs runs them.
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -155,15 +157,19 @@ namespace Earthbending {
         /// just arrived (a Ball, loose once up, is Free by then). Straight: a Still stone slides; every other state stays (Free
         /// flies, Sliding slides on, Stomped falls on, Floating floats on with the push, whose speed then ends the float, Held
         /// stays held, Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still, Sliding, Stomped), a Floating
-        /// and a Held one are set loose, Free; Free stays Free. Stomp: a Free, Floating or Held stone is Stomped; a grounded
-        /// one stays as it is. Parry (Task 12): Free, Still, Sliding, Stomped, Floating (its time starts over) and Held float,
-        /// Floating. Hold (Task 13, ruling C14): a grounded Still or Sliding stone slides, held (Sliding); a Free, Floating or
-        /// Held one is Held; Stomped and Flicked stay (Hold is refused there: <see cref="CanApply"/>). A held stone whose state
-        /// a modifier changes is let go (StoneHold.cs): Straight and Explode keep it held. Flicked stays for every modifier
-        /// (Task 14 gives its row). Explode only marks the stone (StoneBody.Exploding): every state stays; so does it for a
-        /// modifier this build does not apply.</summary>
+        /// and a Held one are set loose, Free; Free stays Free; a Flicked one is pushed and stays in the hands. Stomp: a Free,
+        /// Floating, Held or Flicked stone is Stomped (a flicked one drops: spec 2.4, "dropped only by Stomp or breaking"); a
+        /// grounded one stays as it is. Parry (Task 12): Free, Still, Sliding, Stomped, Floating (its time starts over) and
+        /// Held float, Floating; Flicked stays (refused: <see cref="CanApply"/>). Hold (Task 13, ruling C14): a grounded Still
+        /// or Sliding stone slides, held (Sliding); a Free, Floating or Held one is Held; Stomped and Flicked stay (Hold is
+        /// refused there). A held stone whose state a modifier changes is let go (StoneHold.cs): Straight and Explode keep it
+        /// held. Flick (Task 14, ruling C15): a loose stone (Free, Floating, Held, Flicked) is Flicked (a hold or a float
+        /// ends; a flicked one goes to the newest flicker); a grounded one (Rising, Still, Sliding, Stomped) stays (refused).
+        /// Explode only marks the stone (StoneBody.Exploding): every state stays; so does it for a modifier this build does
+        /// not apply.</summary>
         public static StoneState After(StoneState s, Modifier m) {
             if (m == Modifier.Hold) return HoldOn(s == StoneState.Rising ? StoneState.Still : s);
+            if (m == Modifier.Flick) return CanFlick(s) ? StoneState.Flicked : s;
             if (m > Modifier.Parry) return s;
             if (s == StoneState.Rising) s = StoneState.Still;
             bool loose = s == StoneState.Free || s == StoneState.Floating || s == StoneState.Held;
@@ -173,9 +179,9 @@ namespace Earthbending {
                     return s == StoneState.Still ? StoneState.Sliding : s;
                 case Modifier.Kick:
                 case Modifier.Uppercut:
-                    return anchored || loose ? StoneState.Free : s;
+                    return anchored || loose ? StoneState.Free : s;   // Flicked: pushed, it stays in the hands
                 case Modifier.Stomp:
-                    return loose ? StoneState.Stomped : s;
+                    return loose || s == StoneState.Flicked ? StoneState.Stomped : s;
                 default:   // Parry
                     return anchored || loose ? StoneState.Floating : s;
             }
@@ -196,12 +202,32 @@ namespace Earthbending {
             }
         }
 
-        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight, Kick, Stomp,
-        /// Uppercut, Parry and Explode to a stone in any state (Parry on Flicked does nothing yet: After), and Hold (Task 13,
-        /// ruling C14) in every state but Stomped (it lands first) and Flicked (Task 14's: dropped only by Stomp or a break);
-        /// a Rising stone takes it once it has risen (ruling C6). Flick is refused (Task 14 adds its own).</summary>
-        public static bool CanApply(StoneState s, Modifier m) =>
-            m <= Modifier.Parry || m == Modifier.Explode || (m == Modifier.Hold && s != StoneState.Stomped && s != StoneState.Flicked);
+        /// <summary>Whether a modifier may be applied to a stone in this state. Straight, Kick, Stomp, Uppercut and Explode
+        /// apply in any state; Parry in any but Flicked (ruling C15: a flicked stone is dropped only by Stomp or a break);
+        /// Hold (Task 13, ruling C14) in every state but Stomped (it lands first) and Flicked; Flick (Task 14, ruling C15, spec
+        /// 3.5: "grounded cannot be flicked") only on a stone that is not grounded: Free, Floating, Held, Flicked. A Rising
+        /// stone takes a modifier once it has risen (ruling C6). A byte that is not a modifier never applies.</summary>
+        public static bool CanApply(StoneState s, Modifier m) {
+            switch (m) {
+                case Modifier.Straight:
+                case Modifier.Kick:
+                case Modifier.Stomp:
+                case Modifier.Uppercut:
+                case Modifier.Explode:
+                    return true;
+                case Modifier.Parry:
+                    return s != StoneState.Flicked;
+                case Modifier.Hold:
+                    return s != StoneState.Stomped && s != StoneState.Flicked;
+                case Modifier.Flick:
+                    return CanFlick(s);
+                default:
+                    return false;
+            }
+        }
+
+        // ruling C15: only a stone that is not grounded is flicked (Free, Floating, Held, Flicked)
+        static bool CanFlick(StoneState s) => !IsGrounded(s);
 
         /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once its flat speed is under this while it touches
         /// ground, in m/s.</summary>
@@ -507,7 +533,8 @@ namespace Earthbending {
     }
 
     /// <summary>Task 13 (spec 2.4, rulings C13, C14): the PD controller that pulls a held stone toward its target ahead of the
-    /// holding hand. Unity-free: StoneHold.cs reads the server's copy of the hand and adds the force each physics step.</summary>
+    /// holding hand. Unity-free: StoneHold.cs reads the server's copy of the hand and adds the force each physics step. Task 14
+    /// (rulings C13, C15): Flick's PID toward the point ahead of the two hands, and its turn; StoneFlick.cs runs them.</summary>
     internal static class Pd {
         /// <summary>[EarthModifiers] HoldDistance (m), HoldFreeScale, HoldGroundScale, HoldLetGoSpeed (m/s), HoldArmMetres (m)
         /// and PdStepSeconds (s) defaults (spec 2.4; ruling C13 for the step; ruling C28: let go at 5 m/s, not RUMBLE's 8,
@@ -571,6 +598,107 @@ namespace Earthbending {
             V3 way = new V3(f.X, 0f, f.Z);
             if (!(way.Length >= UprightFlat)) way = Finite(headForward) ? new V3(headForward.X, 0f, headForward.Z) : V3.Zero;
             return hand + way.Normalized * distance;
+        }
+
+        // ---------------------------------------------------------------- Task 14: Flick
+
+        /// <summary>[EarthModifiers] FlickScale (N per metre off), FlickTurnGain (rad/s² per radian off) and FlickTurnDamp
+        /// (rad/s² per rad/s of spin) defaults (spec 2.4: the PID's output x 1000; the brief's turn numbers).</summary>
+        public const float DefaultFlickScale = 1000f, DefaultFlickTurnGain = 8f, DefaultFlickTurnDamp = 1f;
+
+        /// <summary><see cref="FlickTurn"/>'s fallback: the look made square to up shorter than this (up within about 6
+        /// degrees of the look, or of straight back along it) has too little way left to face along.</summary>
+        public const float TurnFallback = 0.1f;
+
+        /// <summary>Ruling C15 (spec 2.4): Flick's PID gains by the stone's mass in kg, in Hold's bands: p 1, i 0.1, d 6 up to
+        /// 150, 7 up to 300, 8.5 past it. A mass that is not a number is the heaviest band.</summary>
+        public static (float p, float i, float d) FlickGains(float mass) {
+            if (mass <= 150f) return (1f, 0.1f, 6f);
+            if (mass <= 300f) return (1f, 0.1f, 7f);
+            return (1f, 0.1f, 8.5f);
+        }
+
+        /// <summary>Ruling C13 (as <see cref="Hold"/>) and C15: the flick's force in N. First <paramref name="integral"/> (the
+        /// flick's own, zero as it begins) grows by <paramref name="error"/> (target minus the stone's centre, m) x
+        /// <paramref name="dt"/> (the physics step, s); then the force is scale x (p x error + i x integral - d x
+        /// <paramref name="dStep"/> x <paramref name="velocity"/>), the gains from <see cref="FlickGains"/>, the scale
+        /// <paramref name="scale"/> ([EarthModifiers] FlickScale), dStep [EarthModifiers] PdStepSeconds as in Hold. The caller
+        /// cancels gravity. Nothing that is not a number gets out, the force or the integral: an error that is not one pulls
+        /// nothing and leaves the integral; an integral that is not one starts again from zero; a velocity that is not one
+        /// counts as none; a dt not above 0 (or not finite) does not grow the integral; a scale not above 0 (or not finite)
+        /// pulls nothing and leaves the integral; a step not 0 or more (or not finite) does not damp. Worked in doubles, and
+        /// both held to the range of a float.</summary>
+        public static V3 Flick(V3 error, ref V3 integral, V3 velocity, float mass, float dt, float scale, float dStep) {
+            if (!Finite(integral)) integral = V3.Zero;
+            if (!Finite(error) || !(scale > 0f) || float.IsInfinity(scale)) return V3.Zero;
+            if (!Finite(velocity)) velocity = V3.Zero;
+            if (dt > 0f && !float.IsInfinity(dt))
+                integral = new V3(InRange(integral.X + (double)error.X * dt), InRange(integral.Y + (double)error.Y * dt), InRange(integral.Z + (double)error.Z * dt));
+            double step = dStep >= 0f && !float.IsInfinity(dStep) ? dStep : 0.0;
+            (float p, float i, float d) g = FlickGains(mass);
+            double damp = g.d * step;
+            return new V3(InRange(scale * (g.p * (double)error.X + g.i * (double)integral.X - damp * velocity.X)),
+                InRange(scale * (g.p * (double)error.Y + g.i * (double)integral.Y - damp * velocity.Y)),
+                InRange(scale * (g.p * (double)error.Z + g.i * (double)integral.Z - damp * velocity.Z)));
+        }
+
+        /// <summary>Where a flicked stone is pulled to: the midpoint of the two hands plus <paramref name="distance"/> m
+        /// ([EarthModifiers] HoldDistance) along <paramref name="headForward"/> (the flicker's look) made flat and length 1.
+        /// The midpoint itself when the look has no flat way (straight up or down, or not a number) or the distance is not
+        /// above 0 (or not finite).</summary>
+        public static V3 FlickTarget(V3 handA, V3 handB, V3 headForward, float distance) {
+            V3 mid = (handA + handB) * 0.5f;
+            if (!(distance > 0f) || float.IsInfinity(distance) || !Finite(headForward)) return mid;
+            return mid + new V3(headForward.X, 0f, headForward.Z).Normalized * distance;
+        }
+
+        /// <summary>Ruling C15: the turn a flicked stone is turned to, as its forward and up (both length 1, square to each
+        /// other; Unity's LookRotation(forward, up)). Up is from <paramref name="handB"/> to <paramref name="handA"/> (the
+        /// pose's A hand above its B: upright); straight up when the hands are at one place or not a number. Forward is
+        /// <paramref name="flatForward"/> (the flicker's look; made flat and length 1 here, +Z when it has no flat way) made
+        /// square to up, so the stone faces the look whatever the hands' tilt. When up is (nearly) along the look or straight
+        /// back along it (<see cref="TurnFallback"/>), that leaves no way to face along; then forward is straight down made
+        /// square to up when A is ahead of B, straight up when behind: the way the forward goes as the hands tilt there from
+        /// upright, so tilting through it turns the stone smoothly.</summary>
+        public static (V3 forward, V3 up) FlickTurn(V3 handA, V3 handB, V3 flatForward) {
+            V3 up = Finite(handA) && Finite(handB) ? (handA - handB).Normalized : V3.Zero;
+            if (up.Length < 0.5f) up = new V3(0f, 1f, 0f);
+            V3 look = Finite(flatForward) ? new V3(flatForward.X, 0f, flatForward.Z).Normalized : V3.Zero;
+            if (look.Length < 0.5f) look = new V3(0f, 0f, 1f);
+            float along = V3.Dot(look, up);
+            V3 forward = look - up * along;
+            if (forward.Length < TurnFallback) {
+                var vertical = new V3(0f, along > 0f ? -1f : 1f, 0f);
+                forward = vertical - up * V3.Dot(vertical, up);
+            }
+            return (forward.Normalized, up);
+        }
+
+        /// <summary>The turn of the quaternion (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>,
+        /// <paramref name="w"/>) (Unity's order; any length) as its axis x its angle in radians, the short way (at most pi):
+        /// the wanted turn times the inverse of the stone's is the turn still to go. None for no turn, or anything that is not
+        /// a number.</summary>
+        public static V3 TurnVector(float x, float y, float z, float w) {
+            if (float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z) || float.IsNaN(w) || float.IsInfinity(w))
+                return V3.Zero;
+            double qx = x, qy = y, qz = z, qw = w;
+            if (qw < 0.0) { qx = -qx; qy = -qy; qz = -qz; qw = -qw; }   // q and -q are the same turn; w >= 0 is the short way
+            double s = Math.Sqrt(qx * qx + qy * qy + qz * qz);
+            if (!(s > 1e-12)) return V3.Zero;
+            double k = 2.0 * Math.Atan2(s, qw) / s;
+            return new V3(InRange(qx * k), InRange(qy * k), InRange(qz * k));
+        }
+
+        /// <summary>The flick's turn (ruling C15): <paramref name="gain"/> ([EarthModifiers] FlickTurnGain) x
+        /// <paramref name="turn"/> (<see cref="TurnVector"/>: the turn still to go) - <paramref name="damp"/> (FlickTurnDamp) x
+        /// <paramref name="angularVelocity"/> (rad/s), an angular acceleration in rad/s² (Unity's ForceMode.Acceleration: the
+        /// same on every stone, whatever its inertia). A turn that is not a number turns nothing, a spin that is not one counts
+        /// as none, a gain or damp below 0 (or not finite) is 0. Worked in doubles, held to the range of a float.</summary>
+        public static V3 FlickTorque(V3 turn, V3 angularVelocity, float gain, float damp) {
+            if (!Finite(turn)) turn = V3.Zero;
+            if (!Finite(angularVelocity)) angularVelocity = V3.Zero;
+            double kg = gain >= 0f && !float.IsInfinity(gain) ? gain : 0.0, kd = damp >= 0f && !float.IsInfinity(damp) ? damp : 0.0;
+            return new V3(InRange(kg * turn.X - kd * angularVelocity.X), InRange(kg * turn.Y - kd * angularVelocity.Y), InRange(kg * turn.Z - kd * angularVelocity.Z));
         }
 
         static float InRange(double v) => v > float.MaxValue ? float.MaxValue : v < -float.MaxValue ? -float.MaxValue : (float)v;

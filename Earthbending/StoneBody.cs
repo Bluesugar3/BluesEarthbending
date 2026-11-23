@@ -36,8 +36,10 @@ namespace Earthbending {
     /// even while it rises; the games play the mark look once), and a marked stone that breaks blasts round it (Hits.Explode)
     /// unless it is the server's quit or `earth clear`. A Straight claim within [EarthModifiers] DoubleStraightSeconds of the
     /// last one on it bursts it at once (rulings C8, C26; by anyone): marked, and broken. <see cref="Blast"/> is another stone's blast
-    /// reaching this one. Task 13: Hold (StoneHold.cs, the rest of this class): the stone follows the holder's hand on the
-    /// server, a held slide (Sliding) or loose with no gravity (Held), until it is thrown or let go.</summary>
+    /// reaching this one. Task 13: Hold (StoneHold.cs, a part of this class): the stone follows the holder's hand on the
+    /// server, a held slide (Sliding) or loose with no gravity (Held), until it is thrown or let go. Task 14: Flick
+    /// (StoneFlick.cs, another part): a loose stone hangs between the flicker's two hands with no gravity (Flicked) and turns
+    /// as they turn them, until Stomp drops it or it breaks.</summary>
     /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
     /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
     internal sealed partial class StoneBody : MonoBehaviour {
@@ -129,6 +131,7 @@ namespace Earthbending {
             else if (State == StoneState.Floating) Hover();
             if (pushLater != null) PushLater();
             if (grip != null) DriveHold();   // Task 13: the pull toward the holder's hand, or the let-go (never throws)
+            if (flick != null) DriveFlick();   // Task 14: the pull and the turn toward the flicker's hands (never throws)
             LastVelocity = Velocity;
             bool moved = body != null && !body.isKinematic;
             Velocity = moved ? body!.velocity : Vector3.zero;
@@ -406,7 +409,9 @@ namespace Earthbending {
         /// takes Straight's StraightFree and floats on (its speed then ends the float), Kick's and Uppercut's loose numbers
         /// (set loose first: gravity back) and Stomp's. Hold (Task 13): StoneHold.TakeHold, no push. A held stone (Held, or a
         /// held slide) that a modifier puts in another state is let go first (Kick, Uppercut, Stomp, Parry); Straight and
-        /// Explode keep it held. One Debug line.</summary>
+        /// Explode keep it held. Flick (Task 14): StoneFlick.TakeFlick, no push. A Flicked stone takes Straight's StraightFree,
+        /// Kick's and Uppercut's loose numbers and stays in the hands; Stomp drops it (Stomped: gravity back); Parry and Hold
+        /// never reach it (StoneRules.CanApply). One Debug line.</summary>
         void Do(Modifier m, Player by, int hand, Vector3 flatForward) {
             if (broken || !StoneRules.CanApply(State, m)) return;
             if (body == null) {
@@ -415,7 +420,9 @@ namespace Earthbending {
             }
             StoneState was = State, next = StoneRules.After(was, m);
             if (m == Modifier.Hold) { TakeHold(by, hand, was, next); return; }
+            if (m == Modifier.Flick) { TakeFlick(by, hand, flatForward, was); return; }
             if (grip != null && next != was) EndHold(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");
+            if (flick != null && next != was) EndFlick(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");   // Stomp drops it
             if (m == Modifier.Parry) {
                 if (next == StoneState.Floating) Float(was);
                 else if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Parry on {Kind} #{Id} of {OwnerName}: {was}, nothing to do yet");
@@ -566,6 +573,7 @@ namespace Earthbending {
             if (broken) return;
             broken = true;
             EndHold("it broke");   // Task 13
+            EndFlick("it broke");   // Task 14
             Server.Forget(this);
             // the entity goes at the end of the frame, and a slow server runs several physics steps in one frame: a broken
             // stone must not stop a clash's winner again in the next one (CarryOn), nor go on shoving what it hit
@@ -599,6 +607,7 @@ namespace Earthbending {
         void OnDestroy() {
             broken = true;
             EndGrip();   // Task 13: its hand no longer holds it
+            EndFlicker();   // Task 14: its flicker no longer flicks it
             Server.Forget(this);
         }
 

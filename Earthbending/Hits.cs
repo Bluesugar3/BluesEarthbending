@@ -25,8 +25,8 @@ namespace Earthbending {
     //     the headless server's player colliders are not known to be where the players are (ruling 24). Only a stone that
     //     comes toward the player hits them (StoneRules.Approaching, this step's velocity or the last one's, so a bounce off
     //     the player's own collider in between still counts): one that slides away from a player touching it, as its owner
-    //     who just pushed it, does not. Its owner CAN be hit by it otherwise (ruling 25); the player holding it (Task 13) never
-    //     is (ruling C16). With HurtPlayers off, stones ignore players entirely: no damage, no knockback, no break
+    //     who just pushed it, does not. Its owner CAN be hit by it otherwise (ruling 25); the player holding it (Task 13) or
+    //     flicking it (Task 14) never is (ruling C16). With HurtPlayers off, stones ignore players entirely: no damage, no knockback, no break
     //     (StoneRules.HitsPlayer; the capsule test does not even run).
     //   - The hit: DamagePerPower x power (Blunt) and CripplePerPower x power, one plain ImpactHit (no tool, so never the
     //     game's PvP gate) through the health object's DetectImpact, as Explosive.Trigger does; the game's own multipliers,
@@ -192,7 +192,8 @@ namespace Earthbending {
 
         /// <summary>Server, from StoneBody.FixedUpdate (before the physics step, after the stone's own update): a moving stone
         /// (its own speed, this step's or the last one's, at least MinHitSpeed; never Rising) against every player's capsule
-        /// but its holder's (ruling C16); nothing at all with HurtPlayers off (StoneRules.HitsPlayer decides). Never throws.</summary>
+        /// but its holder's and its flicker's (ruling C16); nothing at all with HurtPlayers off (StoneRules.HitsPlayer decides).
+        /// Never throws.</summary>
         internal static void TestPlayers(StoneBody stone) {
             try {
                 if (stone == null || stone.Broken || !HurtPlayers) return;   // HurtPlayers off: stones ignore players entirely
@@ -201,10 +202,11 @@ namespace Earthbending {
                 Collider? shape = stone.Shape;
                 if (shape == null) return;
                 ReadPlayers();
-                Player? holder = stone.Holder;   // ruling C16: a stone never hits the player who holds it
+                Player? holder = stone.Holder, flicker = stone.FlickedBy;   // ruling C16: a stone never hits the player who holds or flicks it
                 for (int i = 0; i < victims.Count && !stone.Broken; i++) {
                     Victim v = victims[i];
                     if (holder != null && ReferenceEquals(v.Player, holder)) continue;
+                    if (flicker != null && ReferenceEquals(v.Player, flicker)) continue;
                     if (!Touches(shape, v.Head, v.Feet, out Vector3 onPlayer, out Vector3 onStone, out Vector3 centre)) continue;
                     Vector3 toward = onPlayer - onStone;
                     if (toward.sqrMagnitude < 1e-8f) toward = onPlayer - centre;   // the head's line runs through the stone
