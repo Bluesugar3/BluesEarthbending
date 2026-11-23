@@ -9,9 +9,15 @@ namespace Earthbending {
     /// spawned copy on the server only; games never have one. It knows the stone's kind, owner, state and age. While Rising it
     /// moves the kinematic rigidbody from the start to the end over the rise time (Rigidbody.MovePosition each physics step, and
     /// WakeUp, because NetworkRigidbody sends a body's place only while it is awake: ruling 21; NetworkRigidbody carries the
-    /// place and the kinematic flag to the games), then it is Still. <see cref="Apply"/> takes a modifier the server checked
-    /// (Task 7: Straight; one taken while Rising waits for the rise to end, since a rising stone cannot move sideways, spec
-    /// 2.3). A Sliding stone (spec 2.3, 3.4, ruling 22) is not kinematic, has gravity, only its turn frozen
+    /// place and the kinematic flag to the games), then it is Still (the Ball loose: StoneRules.Risen). <see cref="Apply"/>
+    /// takes a modifier the server checked (Task 7: Straight; Task 11: Kick, Stomp, Uppercut). One taken while Rising waits
+    /// until the rise has ended (ruling C6: a rising stone is half in the ground), then applies in the next physics step as if
+    /// it had just arrived; a later one replaces it. Every modifier's push sets the rigidbody's velocity to
+    /// StoneRules.Pushed (its velocity + impulse / mass, held to [EarthModifiers] MaxStoneSpeed: ruling C10); Uppercut on a
+    /// grounded stone adds its spin. Kick and Uppercut set a grounded stone loose first. A Stomped stone (spec 2.3, ruling C7)
+    /// moves only up and down (its x, z and turn frozen) until any contact whose normal points at most 60 degrees from up:
+    /// there it stands Still and the games within 80 m get Applied(Stomp) under its middle (the slam). A Sliding stone (spec
+    /// 2.3, 3.4, ruling 22) is not kinematic, has gravity, only its turn frozen
     /// (FreezeRotation), and while it slides its collider wears a frictionless material, so it follows slopes and the ground
     /// does not stop it: [EarthModifiers] SlideDeceleration slows it while it touches ground. Each physics step
     /// (StoneRules.Slide) it stands Still again (kinematic, no velocity, its own material back) once its flat speed is under
@@ -22,6 +28,8 @@ namespace Earthbending {
     /// Task 9 (rulings C1, C2, C4): <see cref="Launch"/> pushes a summoned Disc (spawned loose) at once and again after a
     /// delay, and a Ball once it has risen (then it is Free, not Still); <see cref="LiftOff"/> sets a standing stone loose and
     /// throws it up when another is summoned where it stands. <see cref="Break"/> is the one way a stone is ended on purpose.</summary>
+    /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
+    /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
     internal sealed class StoneBody : MonoBehaviour {
         internal StoneKind Kind;
         /// <summary>The owner's account (Server.AccountOf); 0 for a stone nobody owns.</summary>
@@ -32,14 +40,14 @@ namespace Earthbending {
         internal double Born;
         internal uint Id;
         internal NetworkEntity? Entity;
-        /// <summary>When the last Straight was applied to it (Time.unscaledTimeAsDouble; minus infinity: never). Task 12's double
-        /// Straight reads it.</summary>
+        /// <summary>When the last Straight claim on it was accepted, held while it rose or not (Time.unscaledTimeAsDouble; minus
+        /// infinity: never). Task 12's double Straight reads it (ruling C8).</summary>
         internal double LastStraightAt = double.NegativeInfinity;
 
         Rigidbody? body;
         Collider? shape;
         PhysicMaterial? ownMaterial;   // the collider's material before the slide put the frictionless one on
-        Vector3? queued;   // a Straight taken while Rising
+        (Modifier m, Player by, int hand, Vector3 flatForward)? queued;   // ruling C6: a modifier taken while Rising
         (Vector3 first, float delay, Vector3 second)? launchHeld;   // Task 9: a launch taken while Rising (the Ball's), fired as it ends
         Vector3? pushLater;   // Task 9: a launch's second push (the Disc's), waiting pushIn more seconds of physics steps
         float pushIn;
@@ -49,7 +57,7 @@ namespace Earthbending {
         bool touchedGround;  // a ground contact in the last physics step (set by the collision callbacks, read by Slide)
         double groundAt;     // Time.fixedTimeAsDouble of the last ground contact, or of the push
         bool broken;
-        static bool sendFailed, destroyFailed, noBodyWarned;
+        static bool sendFailed, landSendFailed, destroyFailed, noBodyWarned;
         static PhysicMaterial? slideMaterial;
 
         /// <summary>It broke, or was destroyed: it takes no more modifiers, and hits and clashes no more.</summary>
@@ -93,6 +101,10 @@ namespace Earthbending {
         void FixedUpdate() {
             if (broken) return;
             if (State == StoneState.Rising) Rise();
+            else if (queued is { } q) {   // ruling C6: the step after the rise ended, so a launch fired then has landed
+                queued = null;
+                Do(q.m, q.by, q.hand, q.flatForward);
+            }
             else if (State == StoneState.Sliding) Slide();
             if (pushLater != null) PushLater();
             LastVelocity = Velocity;
@@ -124,25 +136,22 @@ namespace Earthbending {
             }
             else transform.position = at;
             if (t < 1f) return;
-            // ruling C1: a kind with a launch (the Ball) is loose once up, and launched; every other stands still
+            // ruling C1: the kind decides how it ends (StoneRules.Risen): the Ball is loose once up, and launched when its
+            // launch has a push (BallLaunchSpeed 0: it just lies there); every other kind stands still. A modifier it took while
+            // rising applies in the next physics step (FixedUpdate), after this step has moved it here and landed the launch.
             (Vector3 first, float delay, Vector3 second)? launch = launchHeld;
             launchHeld = null;
-            State = launch != null ? StoneState.Free : StoneState.Still;
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} has risen to {end} and {(launch != null ? "is loose" : "stands still")}{(queued != null ? "; the Straight it took while rising pushes it now" : "")}");
-            if (launch == null && queued == null) return;
-            if (body != null) body.position = end;   // where the last MovePosition takes it, before it stops being kinematic
-            if (launch is { } l) {
+            State = StoneRules.Risen(Kind);
+            bool loose = State == StoneState.Free;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} has risen to {end} and {(loose ? "is loose" : "stands still")}{(queued is { } q ? $"; the {q.m} it took while rising applies in the next step" : "")}");
+            if (!loose) return;
+            if (body != null) {
+                body.position = end;   // where the last MovePosition takes it, before it stops being kinematic
                 Loosen();
-                if (body != null) {
-                    body.velocity = Vector3.zero;   // the launch alone sets its speed, whatever the kinematic rise left in it
-                    body.angularVelocity = Vector3.zero;
-                }
-                Fire(l.first, l.delay, l.second);
+                body.velocity = Vector3.zero;   // the launch alone sets its speed, whatever the kinematic rise left in it
+                body.angularVelocity = Vector3.zero;
             }
-            if (queued is Vector3 dir) {
-                queued = null;
-                Straight(dir);
-            }
+            if (launch is { } l) Fire(l.first, l.delay, l.second);
         }
 
         /// <summary>Server, from Server.Summon right after the spawn (ruling C2): the kind's launch, world impulses in N s
@@ -182,19 +191,20 @@ namespace Earthbending {
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} gets its launch's second push, {push} N s, at {transform.position}");
         }
 
-        /// <summary>Server (ruling C4): another stone is summoned where this one stands. When StoneRules.SummonUnder gives a
-        /// lift (Still, Sliding, Stomped) it is loose (<see cref="Loosen"/>) and thrown up at that speed, a velocity change; true
-        /// then. False, and nothing changes, in any other state, broken, or with a lift of 0.</summary>
+        /// <summary>Server (ruling C4): another stone is summoned where this one stands. When StoneRules.SummonUnder sets it
+        /// loose (Still, Sliding, Stomped) it is loose (<see cref="Loosen"/>, Free) and thrown up at the rule's lift, a velocity
+        /// change (a lift of 0: loose, not thrown; Task 9's CARRY); true then. False, and nothing changes, in any other state
+        /// (the rule leaves it as it is) or broken.</summary>
         internal bool LiftOff() {
             if (broken || body == null) return false;
             (StoneState next, float lift) = StoneRules.SummonUnder(State);
-            if (!(lift > 0f)) return false;
+            if (next == State) return false;
             StoneState was = State;
             Loosen();
             State = next;
             body.WakeUp();
-            body.AddForce(Vector3.up * lift, ForceMode.VelocityChange);
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} was {was} at {transform.position}; a stone summoned where it stands lifts it off at {lift:0.##} m/s up ({next})");
+            if (lift > 0f) body.AddForce(Vector3.up * lift, ForceMode.VelocityChange);
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} was {was} at {transform.position}; a stone summoned where it stands {(lift > 0f ? $"lifts it off at {lift:0.##} m/s up" : "sets it loose ([EarthStones] SummonUnderLift 0: not thrown)")} ({next})");
             return true;
         }
 
@@ -229,9 +239,13 @@ namespace Earthbending {
         void OnCollisionEnter(Collision c) {
             Touched(c);
             Hits.OnContact(this, c);   // Task 8: a creature is hit, another stone clashes (ruling 24); never throws
+            Land(c);   // after the hit or clash: a stone that broke there does not land, nor on a stone it broke
         }
 
-        void OnCollisionStay(Collision c) => Touched(c);
+        void OnCollisionStay(Collision c) {
+            Touched(c);
+            Land(c);   // a stone stomped while it already lay on the ground lands in the next step
+        }
 
         // Only a sliding stone looks; one up-facing contact point is enough.
         void Touched(Collision c) {
@@ -244,14 +258,46 @@ namespace Earthbending {
             }
         }
 
-        /// <summary>Back to Still where it is: no velocity, kinematic, the slide's constraint and material off.</summary>
-        void Anchor(float speed) {
+        // Ruling C7: a Stomped stone lands on any up-facing contact (the ground, a floor, another stone's top): Still where it
+        // is (StoneRules.Landed), and the games within 80 m get Applied(Stomp) under its middle at the contact's height, where
+        // they play the slam. A collider a clash disabled in this same contact (StoneBody.Break) holds nothing up.
+        void Land(Collision c) {
+            if (State != StoneState.Stomped || broken || body == null || c == null) return;
+            Collider other = c.collider;
+            if (other == null || !other.enabled) return;
+            for (int i = 0; i < c.contactCount; i++) {
+                ContactPoint p = c.GetContact(i);
+                if (!StoneRules.IsGroundContact(p.normal.y)) continue;
+                Vector3 centre = body.position;
+                var at = new Vector3(centre.x, p.point.y, centre.z);
+                float speed = Velocity.magnitude;   // before this step: how fast it came down
+                Stand();
+                State = StoneRules.Landed(State);
+                int games = 0;
+                try { games = Net.SendApplied(Id, (byte)Modifier.Stomp, at); }
+                catch (Exception e) {
+                    if (!landSendFailed) { landSendFailed = true; MelonLogger.Warning($"[Earth] Stones: telling the games a stomped stone landed failed (said once): {e.Message}"); }
+                }
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} landed from its Stomp at {at} on '{other.name}' ({speed:0.##} m/s before the step) and stands still; the slam goes to {games} game(s)");
+                return;
+            }
+        }
+
+        /// <summary>Still's physics where it is: no velocity or spin, kinematic, nothing frozen, the slide's material off. The
+        /// caller sets the state.</summary>
+        void Stand() {
             if (body == null) return;
             body.velocity = Vector3.zero;
             body.angularVelocity = Vector3.zero;
             body.isKinematic = true;
             body.constraints = RigidbodyConstraints.None;
             EndSlideMaterial();
+        }
+
+        /// <summary>Back to Still where it is: no velocity, kinematic, the slide's constraint and material off.</summary>
+        void Anchor(float speed) {
+            if (body == null) return;
+            Stand();
             State = StoneState.Still;
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} stopped sliding at {transform.position} ({speed:0.###} m/s) and stands still");
         }
@@ -283,33 +329,57 @@ namespace Earthbending {
             if (shape != null && slideMaterial != null && shape.sharedMaterial == slideMaterial) shape.sharedMaterial = ownMaterial;
         }
 
-        /// <summary>A Straight taken while Rising waits here (its flat direction) until the rise ends.</summary>
-        internal bool StraightQueued => queued != null;
+        /// <summary>The modifier taken while Rising that waits for the rise to end (ruling C6), or null.</summary>
+        internal Modifier? Queued => queued?.m;
 
         /// <summary>Server: applies a modifier the server checked (ModifyCheck) for <paramref name="by"/>, whose pose's A hand is
         /// <paramref name="hand"/> (0 right, 1 left), pushed along <paramref name="flatForward"/> (the claimed yaw's flat
-        /// direction, length 1). A modifier this build does not apply (StoneRules.CanApply) does nothing.</summary>
+        /// direction, length 1). A modifier this build does not apply (StoneRules.CanApply) does nothing. A Straight stamps
+        /// <see cref="LastStraightAt"/> now, held or not (ruling C8). On a Rising stone every modifier is held until the rise
+        /// has ended (ruling C6), then applied as if it had just arrived; a later claim replaces a held one (also in the one
+        /// physics step between the rise's end and the held one's turn).</summary>
         internal void Apply(Modifier m, Player by, int hand, Vector3 flatForward) {
             if (broken || !StoneRules.CanApply(State, m)) return;
             if (pushLater != null) {   // ruling C1: a modifier before the Disc's second push cancels it
                 pushLater = null;
                 if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} came before its launch's second push, which is dropped");
             }
-            if (m != Modifier.Straight) return;
-            LastStraightAt = Time.unscaledTimeAsDouble;
-            if (State == StoneState.Rising) queued = flatForward;   // spec 2.3: a rising stone cannot move sideways; it slides once up
-            else Straight(flatForward);
+            if (m == Modifier.Straight) LastStraightAt = Time.unscaledTimeAsDouble;
+            if (queued is { } old && Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} replaces the {old.m} it took while rising");
+            queued = null;
+            if (State == StoneState.Rising) queued = (m, by, hand, flatForward);   // spec 2.3: a rising stone is half in the ground
+            else Do(m, by, hand, flatForward);
         }
 
-        // Straight (spec 3.5): StraightGrounded on an anchored stone, which slides along the ground; StraightFree on any other,
-        // which keeps its state (a free one flies). Never on a Rising stone: Apply queues it until the rise ends (Rise).
-        void Straight(Vector3 flatForward) {
+        /// <summary>A checked modifier on a stone that is not Rising (spec 3.5): its state (StoneRules.After) and its push, set as
+        /// the rigidbody's velocity (StoneRules.Pushed: the velocity it had, zero while kinematic, + the impulse over its
+        /// mass, held to [EarthModifiers] MaxStoneSpeed, ruling C10). Straight: StraightGrounded along the yaw on a grounded
+        /// stone, StraightFree on any other; a Still one slides (ruling 22's set-up). Kick and Uppercut (StoneRules.Push): a
+        /// grounded stone is set loose first (Free), and a grounded Uppercut adds its spin. Stomp on a loose stone: it moves only
+        /// up and down from now on (x, z and its turn frozen, its sideways speed and spin gone) and is pushed down until it
+        /// lands (<see cref="Land"/>); on a grounded one nothing happens. A Stomped stone takes only the up and down part of any
+        /// push. One Debug line.</summary>
+        void Do(Modifier m, Player by, int hand, Vector3 flatForward) {
+            if (broken || !StoneRules.CanApply(State, m)) return;
             if (body == null) {
                 if (!noBodyWarned) { noBodyWarned = true; MelonLogger.Warning($"[Earth] Modifiers: {Kind} #{Id} has no Rigidbody to push (said once)"); }
                 return;
             }
-            StoneState was = State, next = StoneRules.After(was, Modifier.Straight);
-            float impulse = StoneRules.IsGrounded(was) ? Server.StraightGrounded : Server.StraightFree;
+            StoneState was = State, next = StoneRules.After(was, m);
+            bool grounded = StoneRules.IsGrounded(was);
+            Vector3 impulse, spin = Vector3.zero;
+            if (m == Modifier.Straight) impulse = flatForward * (grounded ? Server.StraightGrounded : Server.StraightFree);
+            else {
+                (V3 i, V3 s) = StoneRules.Push(m, grounded, V(flatForward));
+                impulse = U(i);
+                spin = U(s);
+            }
+            if (next == was && impulse == Vector3.zero && spin == Vector3.zero) {   // Stomp on a grounded stone (spec 3.5: it stays grounded)
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: {m} on {Kind} #{Id} of {OwnerName}: {was}, nothing to push");
+                return;
+            }
+            Vector3 before = body.isKinematic ? Vector3.zero : body.velocity;
+            Vector3 beforeSpin = body.isKinematic ? Vector3.zero : body.angularVelocity;
             if (next == StoneState.Sliding) {
                 body.isKinematic = false;
                 body.useGravity = true;
@@ -319,9 +389,27 @@ namespace Earthbending {
                 touchedGround = false;
                 groundAt = Time.fixedTimeAsDouble;   // it stood on the ground at the push
             }
+            else if (next == StoneState.Free && was != StoneState.Free) Loosen();   // Kick, Uppercut: set loose first
+            else if (next == StoneState.Stomped) {   // ruling C7: only up and down from now on
+                body.isKinematic = false;
+                body.useGravity = true;
+                body.constraints = RigidbodyConstraints.FreezePositionX | RigidbodyConstraints.FreezePositionZ | RigidbodyConstraints.FreezeRotation;
+                EndSlideMaterial();
+                before = new Vector3(0f, before.y, 0f);
+                impulse = new Vector3(0f, impulse.y, 0f);
+                spin = Vector3.zero;
+                beforeSpin = Vector3.zero;
+            }
             State = next;
+            if (body.isKinematic) return;   // a state this build leaves kinematic (none today) takes no push
+            Vector3 after = U(StoneRules.Pushed(V(before), V(impulse), body.mass, Server.MaxStoneSpeed));
             body.WakeUp();
-            body.AddForce(flatForward * impulse, ForceMode.Impulse);
+            body.velocity = after;
+            body.angularVelocity = beforeSpin + spin;
+            if (Logs.Debug) {
+                float uncapped = (before + impulse / Mathf.Max(body.mass, 1e-6f)).magnitude;
+                MelonLogger.Msg($"[Earth] Modifiers: {m} on {Kind} #{Id} of {OwnerName}: {was} -> {next}, {impulse} N s on {body.mass:0.#} kg; velocity {before} -> {after} m/s{(uncapped > after.magnitude + 1e-3f ? $" (held to [EarthModifiers] MaxStoneSpeed {Server.MaxStoneSpeed:0.##})" : "")}{(spin != Vector3.zero ? $", spin {spin} rad/s" : "")}");
+            }
         }
 
         /// <summary>Server: the stone breaks. It stops colliding at once and holds still where it is; the games within 80 m get
@@ -354,5 +442,8 @@ namespace Earthbending {
             broken = true;
             Server.Forget(this);
         }
+
+        static V3 V(Vector3 v) => new V3(v.x, v.y, v.z);
+        static Vector3 U(V3 v) => new Vector3(v.X, v.Y, v.Z);
     }
 }

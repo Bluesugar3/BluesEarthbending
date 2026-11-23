@@ -10,7 +10,8 @@ using System.Globalization;
 // how many may stand (Caps) and which kinds are on (StoneKinds); Server.cs and StoneBody.cs run them. Task 8: a stone's power,
 // clashes, damage, knockback and hitstun (StoneRules), the players' capsule against a stone (Contact) and who was hit by what
 // (HitLedger); Hits.cs runs them. Task 9: the Disc's and the Ball's launch (SpawnPlan.Launch) and what a stone standing where
-// another is summoned does (StoneRules.SummonUnder).
+// another is summoned does (StoneRules.SummonUnder). Task 11: Kick, Stomp and Uppercut (StoneRules.After, CanApply, Impulse,
+// Push, Landed), every modifier's capped push (StoneRules.Pushed) and the state a stone is in once risen (StoneRules.Risen).
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -145,18 +146,30 @@ namespace Earthbending {
 
         // ---------------------------------------------------------------- Task 7: the modifiers' states
 
-        /// <summary>The state a modifier leaves a stone in. Straight (spec 2.3, 3.5): an anchored stone (Still, or Rising once it
-        /// has risen: StoneBody holds the push until then) slides;
-        /// every other state stays (Free flies, Sliding slides on, Flicked stays in the hands). A modifier this build does not
-        /// apply leaves the state as it is.</summary>
+        /// <summary>The state a modifier leaves a stone in (spec 2.3, 3.5). A Rising stone counts as the Still one it becomes:
+        /// StoneBody holds every modifier taken while it rises until the rise ends (ruling C6), then applies it as if it had
+        /// just arrived (a Ball, loose once up, is Free by then). Straight: a Still stone slides; every other state stays (Free
+        /// flies, Sliding slides on, Stomped falls on, Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still,
+        /// Sliding, Stomped) is set loose, Free; Free stays Free. Stomp: a Free stone is Stomped; a grounded one stays as it
+        /// is. Floating, Held and Flicked stay for Kick, Stomp and Uppercut (Tasks 12-14 give theirs). A modifier this build
+        /// does not apply leaves the state as it is.</summary>
         public static StoneState After(StoneState s, Modifier m) {
-            if (m == Modifier.Straight) return s == StoneState.Rising || s == StoneState.Still ? StoneState.Sliding : s;
-            return s;
+            if (m > Modifier.Uppercut) return s;
+            if (s == StoneState.Rising) s = StoneState.Still;
+            switch (m) {
+                case Modifier.Straight:
+                    return s == StoneState.Still ? StoneState.Sliding : s;
+                case Modifier.Kick:
+                case Modifier.Uppercut:
+                    return s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped || s == StoneState.Free ? StoneState.Free : s;
+                default:   // Stomp
+                    return s == StoneState.Free ? StoneState.Stomped : s;
+            }
         }
 
-        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight only, to a stone in
-        /// any state; every other modifier is refused (later tasks add theirs).</summary>
-        public static bool CanApply(StoneState s, Modifier m) => m == Modifier.Straight;
+        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight, Kick, Stomp and
+        /// Uppercut, to a stone in any state; Parry, Hold, Flick and Explode are refused (later tasks add theirs).</summary>
+        public static bool CanApply(StoneState s, Modifier m) => m <= Modifier.Uppercut;
 
         /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once its flat speed is under this while it touches
         /// ground, in m/s.</summary>
@@ -290,6 +303,94 @@ namespace Earthbending {
         static float Flat(V3 v) => (float)Math.Sqrt(v.X * v.X + v.Z * v.Z);
 
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+
+        // ---------------------------------------------------------------- Task 11: Kick, Stomp, Uppercut, and every push
+
+        public const float DefaultKickUp = 1500f, DefaultStompDown = 1500f, DefaultUppercutFree = 900f, DefaultUppercutGrounded = 1300f, DefaultUppercutSpin = 5f;
+        /// <summary>Ruling C10: <c>[EarthModifiers] MaxStoneSpeed</c>'s default, and the cap <see cref="Pushed"/> holds to when
+        /// it is given one that is not above 0 or not a number, in m/s.</summary>
+        public const float DefaultMaxStoneSpeed = 20f;
+
+        /// <summary>[EarthModifiers] KickUp: Kick's push straight up, in N s.</summary>
+        public static float KickUp { get; private set; } = DefaultKickUp;
+        /// <summary>[EarthModifiers] StompDown: Stomp's push straight down on a loose stone, in N s.</summary>
+        public static float StompDown { get; private set; } = DefaultStompDown;
+        /// <summary>[EarthModifiers] UppercutFree: Uppercut's push on a loose stone, as much forward along the yaw as up, in N s.</summary>
+        public static float UppercutFree { get; private set; } = DefaultUppercutFree;
+        /// <summary>[EarthModifiers] UppercutGrounded: Uppercut's push on a grounded stone, as much forward as up, in N s.</summary>
+        public static float UppercutGrounded { get; private set; } = DefaultUppercutGrounded;
+        /// <summary>[EarthModifiers] UppercutSpin: Uppercut's spin on a grounded stone, in rad/s (its top goes forward).</summary>
+        public static float UppercutSpin { get; private set; } = DefaultUppercutSpin;
+
+        /// <summary>Kick's, Stomp's and Uppercut's numbers from the settings (Server.cs).</summary>
+        public static void SetImpulses(float kickUp, float stompDown, float uppercutFree, float uppercutGrounded, float uppercutSpin) {
+            KickUp = kickUp;
+            StompDown = stompDown;
+            UppercutFree = uppercutFree;
+            UppercutGrounded = uppercutGrounded;
+            UppercutSpin = uppercutSpin;
+        }
+
+        /// <summary>Ruling C5 (spec 3.5): a modifier's push on a stone that is <paramref name="grounded"/> (<see cref="IsGrounded"/>)
+        /// or not. <c>forward</c> is along the claimed flat yaw and <c>up</c> straight up (negative: down), both in N s;
+        /// <c>spin</c> is in rad/s about the yaw's flat right axis, positive when the stone's top goes forward. Kick:
+        /// <see cref="KickUp"/> up either way. Uppercut: <see cref="UppercutFree"/> forward and as much up on a loose stone;
+        /// <see cref="UppercutGrounded"/> each way and <see cref="UppercutSpin"/> on a grounded one. Stomp:
+        /// <see cref="StompDown"/> down on a loose stone; none on a grounded one (it stays grounded). Every other modifier none
+        /// here (Straight's numbers are Server.StraightGrounded and StraightFree).</summary>
+        public static (float forward, float up, float spin) Impulse(Modifier m, bool grounded) {
+            switch (m) {
+                case Modifier.Kick: return (0f, KickUp, 0f);
+                case Modifier.Stomp: return grounded ? (0f, 0f, 0f) : (0f, -StompDown, 0f);
+                case Modifier.Uppercut: return grounded ? (UppercutGrounded, UppercutGrounded, UppercutSpin) : (UppercutFree, UppercutFree, 0f);
+                default: return (0f, 0f, 0f);
+            }
+        }
+
+        /// <summary><see cref="Impulse"/> in world terms: the impulse (N s) and the angular velocity to add (rad/s), along
+        /// <paramref name="flatForward"/> (the claimed yaw's direction; made flat and length 1 here, none when it has no
+        /// direction or is not a number) and about its <see cref="Right"/>.</summary>
+        public static (V3 impulse, V3 spin) Push(Modifier m, bool grounded, V3 flatForward) {
+            (float forward, float up, float spin) i = Impulse(m, grounded);
+            V3 f = new V3(flatForward.X, 0f, flatForward.Z).Normalized;
+            return (f * i.forward + new V3(0f, i.up, 0f), Right(f) * i.spin);
+        }
+
+        /// <summary>The flat right of a flat forward of length 1 (up x forward in Unity's axes: yaw 0's right is +X, yaw 90's
+        /// is -Z). An angular velocity along it turns the stone's top forward.</summary>
+        public static V3 Right(V3 flatForward) => new V3(flatForward.Z, 0f, -flatForward.X);
+
+        /// <summary>Ruling C10: a stone's velocity after a modifier's push, for every modifier (Straight too):
+        /// <paramref name="velocity"/> + <paramref name="impulse"/> / <paramref name="mass"/>, its length held to
+        /// <paramref name="cap"/> m/s (the way kept). Safe with anything: a velocity that is not a number counts as none, an
+        /// impulse that is not a number or a mass that is not above 0 (or not finite) pushes nothing, a cap that is not above
+        /// 0 (or not finite) is <see cref="DefaultMaxStoneSpeed"/>. Worked in doubles, so it never overflows.</summary>
+        public static V3 Pushed(V3 velocity, V3 impulse, float mass, float cap) {
+            double c = cap > 0f && !float.IsInfinity(cap) ? cap : DefaultMaxStoneSpeed;
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (Finite(velocity)) { x = velocity.X; y = velocity.Y; z = velocity.Z; }
+            if (Finite(impulse) && mass > 0f && !float.IsInfinity(mass)) {
+                x += impulse.X / (double)mass;
+                y += impulse.Y / (double)mass;
+                z += impulse.Z / (double)mass;
+            }
+            double len = Math.Sqrt(x * x + y * y + z * z);
+            if (len > c) {
+                double s = c / len;
+                x *= s;
+                y *= s;
+                z *= s;
+            }
+            return new V3((float)x, (float)y, (float)z);
+        }
+
+        /// <summary>Spec 2.3 (ruling C7): a Stomped stone that touches ground stands Still; every other state is not a landing.</summary>
+        public static StoneState Landed(StoneState s) => s == StoneState.Stomped ? StoneState.Still : s;
+
+        /// <summary>Ruling C1 (and Task 9's CARRY): the state a stone is in once its rise ends, by its kind alone: the Ball is
+        /// loose (Free; launched when its launch has a push, SpawnPlan.Launch), and so is the Disc (it never rises: it appears
+        /// loose); the Pillar, Cube and Wall stand Still.</summary>
+        public static StoneState Risen(StoneKind k) => k == StoneKind.Ball || k == StoneKind.Disc ? StoneState.Free : StoneState.Still;
     }
 
     /// <summary>What one physics step of a slide ends in (<see cref="StoneRules.Slide"/>): it slides on, it stands Still, or

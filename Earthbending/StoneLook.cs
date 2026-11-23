@@ -14,42 +14,48 @@ namespace Earthbending {
     // The rise and the break (Task 6, [EarthLooks], per game): a stone that appears (StoneView.Start) plays RiseEffect and
     // RiseSound at its top, which a summoned stone has at ground level as it appears (SpawnPlan: it starts lowered by its own
     // height), so the dirt sprays where it comes out (a game that joins later sees the spray at an old stone's top: accepted);
-    // the server's Applied(Broke) plays BreakEffect and BreakSound where the stone broke. Each is the game's own pooled effect
-    // or sound set, by name (several names split by ; are tried in order, the first loaded one is used). One that is not
-    // loaded is one warning and nothing is played; it is looked for again every 10 s without a warning.
+    // the server's Applied(Broke) plays BreakEffect and BreakSound where the stone broke, and (Task 11) its Applied(Stomp), a
+    // stomped stone landing, plays StompEffect and StompSound where it landed. Each is the game's own pooled effect or sound
+    // set, by name (several names split by ; are tried in order, the first loaded one is used). One that is not loaded is one
+    // warning and nothing is played; it is looked for again every 10 s without a warning.
     internal static class StoneLook {
         const string BoulderPrefab = "Stone Boulder 01";
         const float BlockBevel = 0.05f;
         const string DefaultRiseEffect = "Digging Dirt Spray Effect;Digging Dirt Smoke Puff Effect", DefaultRiseSound = "Digging DirtFall Sound Set";
         const string DefaultBreakEffect = "Destroyed Rock", DefaultBreakSound = "Rock Destroyed Sounds;Boulder Breaking Sounds";
+        const string DefaultStompEffect = "Turabada Ground Slam Effect", DefaultStompSound = "Heavy Turabada Step Sounds";
 
-        static bool searched, warnedModel, riseFailed, breakFailed;
+        static bool searched, warnedModel, riseFailed, breakFailed, stompFailed;
         static Mesh? boulderMesh;
         static Material[] boulderMaterials = new Material[0];
         static UvRect boulderUv = new UvRect(0f, 0f, 1f, 1f);
         static readonly Dictionary<Vector3, Mesh> blocks = new Dictionary<Vector3, Mesh>();
 
-        static MelonPreferences_Entry<string>? riseEffectEntry, riseSoundEntry, breakEffectEntry, breakSoundEntry;
+        static MelonPreferences_Entry<string>? riseEffectEntry, riseSoundEntry, breakEffectEntry, breakSoundEntry, stompEffectEntry, stompSoundEntry;
         static readonly LookAsset<PooledObjectDefinition> riseEffect = new LookAsset<PooledObjectDefinition>("RiseEffect", "effect", EffectNamed);
         static readonly LookAsset<PooledObjectDefinition> breakEffect = new LookAsset<PooledObjectDefinition>("BreakEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> stompEffect = new LookAsset<PooledObjectDefinition>("StompEffect", "effect", EffectNamed);
         static readonly LookAsset<SoundEffectSet> riseSound = new LookAsset<SoundEffectSet>("RiseSound", "sound set", SoundNamed);
         static readonly LookAsset<SoundEffectSet> breakSound = new LookAsset<SoundEffectSet>("BreakSound", "sound set", SoundNamed);
+        static readonly LookAsset<SoundEffectSet> stompSound = new LookAsset<SoundEffectSet>("StompSound", "sound set", SoundNamed);
 
         // a pooled effect is named as its definition or as its prefab; a sound set as itself
         static bool EffectNamed(PooledObjectDefinition d, string n) => d.name == n || (d.Prefab != null && d.Prefab.name == n);
         static bool SoundNamed(SoundEffectSet s, string n) => s.name == n;
 
-        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise and break settings, and the server's Applied
-        /// events.</summary>
+        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise, break and stomp settings, and the server's
+        /// Applied events.</summary>
         internal static void Init() {
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
             riseEffectEntry = looks.CreateEntry("RiseEffect", DefaultRiseEffect, description: "Per game. The game's pooled effect played where a stone comes out of the ground (its name; several names split by ; are tried in order, the first loaded one is used; empty: none).");
             riseSoundEntry = looks.CreateEntry("RiseSound", DefaultRiseSound, description: "Per game. The game's sound set played where a stone comes out of the ground (names as RiseEffect).");
             breakEffectEntry = looks.CreateEntry("BreakEffect", DefaultBreakEffect, description: "Per game. The game's pooled effect played where a stone breaks (names as RiseEffect).");
             breakSoundEntry = looks.CreateEntry("BreakSound", DefaultBreakSound, description: "Per game. The game's sound set played where a stone breaks (names as RiseEffect).");
-            // a Net whose static initialiser failed (Main says so) throws on every touch: no break looks, the rest still starts
+            stompEffectEntry = looks.CreateEntry("StompEffect", DefaultStompEffect, description: "Per game. The game's pooled effect played where a stomped stone lands (names as RiseEffect).");
+            stompSoundEntry = looks.CreateEntry("StompSound", DefaultStompSound, description: "Per game. The game's sound set played where a stomped stone lands (names as RiseEffect).");
+            // a Net whose static initialiser failed (Main says so) throws on every touch: no break or stomp looks, the rest still starts
             try { Net.AppliedReceived += OnApplied; }
-            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break looks (message 19 is not set up: {e.GetType().Name})"); }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break or stomp looks (message 19 is not set up: {e.GetType().Name})"); }
         }
 
         /// <summary>Games: a stone appeared; the dirt and the sound at its top.</summary>
@@ -66,13 +72,24 @@ namespace Earthbending {
         }
 
         static void OnApplied(uint entity, byte evt, Vector3 at) {
-            if (Main.IsServer || evt != Wire.Broke) return;
-            try {
-                Play(breakEffect, breakEffectEntry, breakSound, breakSoundEntry, at);
-                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} broke; its break plays at {at}");
+            if (Main.IsServer) return;
+            if (evt == Wire.Broke) {
+                try {
+                    Play(breakEffect, breakEffectEntry, breakSound, breakSoundEntry, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} broke; its break plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!breakFailed) { breakFailed = true; MelonLogger.Warning($"[Earth] Looks: the break look failed (said once): {e}"); }
+                }
             }
-            catch (Exception e) {
-                if (!breakFailed) { breakFailed = true; MelonLogger.Warning($"[Earth] Looks: the break look failed (said once): {e}"); }
+            else if (evt == (byte)Modifier.Stomp) {   // a stomped stone landed there (ruling C7), not where the pose was struck
+                try {
+                    Play(stompEffect, stompEffectEntry, stompSound, stompSoundEntry, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} landed from a Stomp; its slam plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!stompFailed) { stompFailed = true; MelonLogger.Warning($"[Earth] Looks: the stomp look failed (said once): {e}"); }
+                }
             }
         }
 

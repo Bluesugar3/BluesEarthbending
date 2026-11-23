@@ -23,6 +23,121 @@ internal static class StoneTests {
         Straights();
         HitRules();
         OtherStones();
+        Modifiers();
+    }
+
+    static readonly StoneState[] AllStates = {
+        StoneState.Rising, StoneState.Still, StoneState.Sliding, StoneState.Free, StoneState.Stomped, StoneState.Floating, StoneState.Held, StoneState.Flicked,
+    };
+
+    // Task 11: Kick, Stomp, Uppercut (spec 2.3, 3.5; rulings C5, C6, C7, C10 and Task 9's two CARRY minors)
+    static void Modifiers() {
+        // the brief's checks: the states
+        Check("kick on still -> free", StoneRules.After(StoneState.Still, Modifier.Kick) == StoneState.Free);
+        Check("kick on free -> free", StoneRules.After(StoneState.Free, Modifier.Kick) == StoneState.Free);
+        Check("stomp on free -> stomped", StoneRules.After(StoneState.Free, Modifier.Stomp) == StoneState.Stomped);
+        Check("stomp on still -> still", StoneRules.After(StoneState.Still, Modifier.Stomp) == StoneState.Still);
+        Check("uppercut on still -> free", StoneRules.After(StoneState.Still, Modifier.Uppercut) == StoneState.Free);
+        Check("a stomped stone lands still", StoneRules.Landed(StoneState.Stomped) == StoneState.Still);
+        Check("only a stomped stone lands", StoneRules.Landed(StoneState.Free) == StoneState.Free && StoneRules.Landed(StoneState.Sliding) == StoneState.Sliding
+            && StoneRules.Landed(StoneState.Still) == StoneState.Still && StoneRules.Landed(StoneState.Rising) == StoneState.Rising);
+
+        // Kick and Uppercut free every grounded stone; Stomp leaves a grounded one as it is
+        Check("kick on sliding -> free", StoneRules.After(StoneState.Sliding, Modifier.Kick) == StoneState.Free);
+        Check("kick on stomped -> free", StoneRules.After(StoneState.Stomped, Modifier.Kick) == StoneState.Free);
+        Check("uppercut on sliding -> free", StoneRules.After(StoneState.Sliding, Modifier.Uppercut) == StoneState.Free);
+        Check("uppercut on stomped -> free", StoneRules.After(StoneState.Stomped, Modifier.Uppercut) == StoneState.Free);
+        Check("uppercut on free -> free", StoneRules.After(StoneState.Free, Modifier.Uppercut) == StoneState.Free);
+        Check("stomp on sliding slides on", StoneRules.After(StoneState.Sliding, Modifier.Stomp) == StoneState.Sliding);
+        Check("stomp on stomped stays stomped", StoneRules.After(StoneState.Stomped, Modifier.Stomp) == StoneState.Stomped);
+        // ruling C6: a modifier taken while Rising waits for the rise; After is what it does to the risen (Still) stone
+        Check("kick on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Kick) == StoneState.Free);
+        Check("uppercut on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Uppercut) == StoneState.Free);
+        Check("stomp on rising -> still once risen", StoneRules.After(StoneState.Rising, Modifier.Stomp) == StoneState.Still);
+        // Floating, Held and Flicked are Tasks 12-14's: unchanged here
+        bool later = true;
+        foreach (StoneState s in new[] { StoneState.Floating, StoneState.Held, StoneState.Flicked })
+            foreach (Modifier m in new[] { Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
+                later &= StoneRules.After(s, m) == s;
+        Check("floating, held, flicked unchanged by kick, stomp, uppercut", later);
+
+        // they apply in every state; Parry, Hold, Flick and Explode are later tasks'
+        bool every = true;
+        foreach (StoneState s in AllStates)
+            foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
+                every &= StoneRules.CanApply(s, m);
+        Check("straight, kick, stomp, uppercut apply in every state", every);
+        Check("parry, hold, explode not yet", !StoneRules.CanApply(StoneState.Free, Modifier.Parry) && !StoneRules.CanApply(StoneState.Free, Modifier.Hold)
+            && !StoneRules.CanApply(StoneState.Still, Modifier.Explode));
+        Check("modify: kick on a still stone is allowed", ModifyCheck.Decide(Mod(Modifier.Kick, 9u, V3.Zero), true, StoneState.Still, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
+            V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+
+        // ruling C5: the impulses (forward along the yaw N s, up N s, spin rad/s about the flat right axis)
+        Check("impulse: kick 1500 up, free", StoneRules.Impulse(Modifier.Kick, false) == (0f, 1500f, 0f));
+        Check("impulse: kick 1500 up, grounded", StoneRules.Impulse(Modifier.Kick, true) == (0f, 1500f, 0f));
+        Check("impulse: uppercut free 900 + 900", StoneRules.Impulse(Modifier.Uppercut, false) == (900f, 900f, 0f));
+        Check("impulse: uppercut grounded 1300 + 1300, spin 5", StoneRules.Impulse(Modifier.Uppercut, true) == (1300f, 1300f, 5f));
+        Check("impulse: stomp free 1500 down", StoneRules.Impulse(Modifier.Stomp, false) == (0f, -1500f, 0f));
+        Check("impulse: stomp grounded none (it stays grounded)", StoneRules.Impulse(Modifier.Stomp, true) == (0f, 0f, 0f));
+        Check("impulse: straight and the rest are not here", StoneRules.Impulse(Modifier.Straight, true) == (0f, 0f, 0f)
+            && StoneRules.Impulse(Modifier.Parry, false) == (0f, 0f, 0f) && StoneRules.Impulse((Modifier)9, false) == (0f, 0f, 0f));
+        StoneRules.SetImpulses(1000f, 2000f, 500f, 700f, 3f);
+        Check("impulse: from the settings", StoneRules.Impulse(Modifier.Kick, true) == (0f, 1000f, 0f) && StoneRules.Impulse(Modifier.Stomp, false) == (0f, -2000f, 0f)
+            && StoneRules.Impulse(Modifier.Uppercut, false) == (500f, 500f, 0f) && StoneRules.Impulse(Modifier.Uppercut, true) == (700f, 700f, 3f));
+        StoneRules.SetImpulses(StoneRules.DefaultKickUp, StoneRules.DefaultStompDown, StoneRules.DefaultUppercutFree, StoneRules.DefaultUppercutGrounded, StoneRules.DefaultUppercutSpin);
+        Check("impulse: defaults back", StoneRules.Impulse(Modifier.Uppercut, true) == (1300f, 1300f, 5f) && StoneRules.Impulse(Modifier.Kick, false) == (0f, 1500f, 0f));
+
+        // the push in world terms: forward along the claimed flat yaw, the spin about its flat right axis (the top goes forward)
+        Check("right of yaw 0 is +x", NearV(StoneRules.Right(SpawnPlan.Forward(0f)), new V3(1f, 0f, 0f)));
+        Check("right of yaw 90 is -z", NearV(StoneRules.Right(SpawnPlan.Forward(90f)), new V3(0f, 0f, -1f)));
+        var up0 = StoneRules.Push(Modifier.Uppercut, true, SpawnPlan.Forward(0f));
+        Check("push: grounded uppercut along yaw 0", NearV(up0.impulse, new V3(0f, 1300f, 1300f)) && NearV(up0.spin, new V3(5f, 0f, 0f)));
+        var up90 = StoneRules.Push(Modifier.Uppercut, true, SpawnPlan.Forward(90f));
+        Check("push: grounded uppercut along yaw 90", NearV(up90.impulse, new V3(1300f, 1300f, 0f)) && NearV(up90.spin, new V3(0f, 0f, -5f)));
+        var upFree = StoneRules.Push(Modifier.Uppercut, false, SpawnPlan.Forward(180f));
+        Check("push: free uppercut along yaw 180, no spin", NearV(upFree.impulse, new V3(0f, 900f, -900f)) && NearV(upFree.spin, V3.Zero));
+        Check("push: kick straight up whatever the yaw", NearV(StoneRules.Push(Modifier.Kick, false, SpawnPlan.Forward(37f)).impulse, new V3(0f, 1500f, 0f)));
+        Check("push: stomp straight down", NearV(StoneRules.Push(Modifier.Stomp, false, SpawnPlan.Forward(37f)).impulse, new V3(0f, -1500f, 0f))
+            && NearV(StoneRules.Push(Modifier.Stomp, true, SpawnPlan.Forward(37f)).impulse, V3.Zero));
+        Check("push: a forward that is not flat or not length 1", NearV(StoneRules.Push(Modifier.Uppercut, false, new V3(0f, 5f, 2f)).impulse, new V3(0f, 900f, 900f)));
+        Check("push: a forward that is not a number pushes only up", NearV(StoneRules.Push(Modifier.Uppercut, true, new V3(float.NaN, 0f, 1f)).impulse, new V3(0f, 1300f, 0f))
+            && NearV(StoneRules.Push(Modifier.Uppercut, true, new V3(float.NaN, 0f, 1f)).spin, V3.Zero));
+
+        // ruling C10: every modifier's push is velocity + impulse / mass, held to MaxStoneSpeed
+        Check("pushed: a kick on a still 150 kg ball", NearV(StoneRules.Pushed(V3.Zero, new V3(0f, 1500f, 0f), 150f, 20f), new V3(0f, 10f, 0f)));
+        Check("pushed: adds to its velocity", NearV(StoneRules.Pushed(new V3(3f, 0f, 0f), new V3(0f, 1500f, 0f), 300f, 20f), new V3(3f, 5f, 0f)));
+        Check("pushed: held to the cap", NearV(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, 20f), new V3(0f, 0f, 20f)));
+        Check("pushed: a second straight on a flying stone stops at the cap", NearV(StoneRules.Pushed(new V3(0f, 0f, 15f), new V3(0f, 0f, 1800f), 150f, 20f), new V3(0f, 0f, 20f)));
+        V3 slanted = StoneRules.Pushed(new V3(10f, 0f, 0f), new V3(0f, 3000f, 0f), 100f, 20f);
+        Check("pushed: the cap keeps the way", Near(slanted.Length, 20f) && Near(slanted.Y / slanted.X, 3f));
+        Check("pushed: at the cap is not cut", NearV(StoneRules.Pushed(new V3(0f, 12f, 0f), new V3(0f, 0f, 1600f), 100f, 20f), new V3(0f, 12f, 16f)));
+        Check("pushed: a mass that is not above 0 pushes nothing", NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), 0f, 20f), new V3(1f, 2f, 3f))
+            && NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), -5f, 20f), new V3(1f, 2f, 3f)));
+        Check("pushed: a mass that is not a number pushes nothing", NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), float.NaN, 20f), new V3(1f, 2f, 3f))
+            && NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), float.PositiveInfinity, 20f), new V3(1f, 2f, 3f)));
+        Check("pushed: a cap that is not above 0 is the default 20", Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, 0f).Length, StoneRules.DefaultMaxStoneSpeed)
+            && Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, -3f).Length, 20f));
+        Check("pushed: a cap that is not a number is the default 20", Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, float.NaN).Length, 20f)
+            && Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, float.PositiveInfinity).Length, 20f));
+        Check("pushed: a velocity that is not a number counts as none", NearV(StoneRules.Pushed(new V3(float.NaN, 0f, 0f), new V3(0f, 1500f, 0f), 150f, 20f), new V3(0f, 10f, 0f))
+            && NearV(StoneRules.Pushed(new V3(0f, float.PositiveInfinity, 0f), V3.Zero, 150f, 20f), V3.Zero));
+        Check("pushed: an impulse that is not a number pushes nothing", NearV(StoneRules.Pushed(new V3(1f, 0f, 0f), new V3(float.NaN, 1f, 1f), 150f, 20f), new V3(1f, 0f, 0f))
+            && NearV(StoneRules.Pushed(new V3(1f, 0f, 0f), new V3(0f, float.NegativeInfinity, 0f), 150f, 20f), new V3(1f, 0f, 0f)));
+        V3 huge = StoneRules.Pushed(new V3(3e38f, -3e38f, 3e38f), new V3(3e38f, 3e38f, -3e38f), 1e-38f, 20f);
+        Check("pushed: huge numbers stay finite and capped", !float.IsNaN(huge.X) && !float.IsInfinity(huge.Y) && Near(huge.Length, 20f));
+        Check("pushed: default cap 20 m/s", Near(StoneRules.DefaultMaxStoneSpeed, 20f));
+
+        // Task 9's CARRY (a): the Ball is loose once it has risen, whatever its launch; the Pillar, Cube and Wall stand still
+        Check("risen: the ball is loose", StoneRules.Risen(Ball) == StoneState.Free);
+        Check("risen: pillar, cube, wall stand still", StoneRules.Risen(Pillar) == StoneState.Still && StoneRules.Risen(Cube) == StoneState.Still && StoneRules.Risen(Wall) == StoneState.Still);
+        Check("risen: the disc is loose (it never rises)", StoneRules.Risen(Disc) == StoneState.Free);
+        SpawnPlan.SetLaunch(SpawnPlan.DefaultDiscLift, SpawnPlan.DefaultDiscPush, SpawnPlan.DefaultDiscPushDelay, SpawnPlan.DefaultDiscHeight, 0f, 0f);
+        Check("risen: the ball is loose with BallLaunchSpeed 0", StoneRules.Risen(Ball) == StoneState.Free && IsZero(SpawnPlan.Launch(Ball)));
+        // Task 9's CARRY (b): SummonUnderLift 0 still sets a standing stone loose (no throw)
+        Check("summon under: lift 0 still frees", StoneRules.SummonUnder(StoneState.Still) == (StoneState.Free, 0f) && StoneRules.SummonUnder(StoneState.Stomped) == (StoneState.Free, 0f));
+        SpawnPlan.SetLaunch(SpawnPlan.DefaultDiscLift, SpawnPlan.DefaultDiscPush, SpawnPlan.DefaultDiscPushDelay, SpawnPlan.DefaultDiscHeight,
+            SpawnPlan.DefaultBallLaunchSpeed, SpawnPlan.DefaultSummonUnderLift);
+        Check("risen: launch defaults back", Near(SpawnPlan.Launch(Ball).first.Y, 750f) && Near(StoneRules.SummonUnder(StoneState.Still).lift, 4f));
     }
 
     static bool NearV(V3 a, V3 b) => Near(a.X, b.X) && Near(a.Y, b.Y) && Near(a.Z, b.Z);
