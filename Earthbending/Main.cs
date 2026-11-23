@@ -62,7 +62,7 @@ namespace Earthbending {
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings as directions (run it with python -I)
     //   Commands.cs   the server's `earth` console module (`earth ring`: fight health's test ring)
     public class Main : MelonMod {
-        public const string Version = "1.1.0";
+        public const string Version = "1.1.1";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;

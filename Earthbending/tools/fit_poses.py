@@ -34,7 +34,7 @@ PX, NX, PY, NY, PZ, NZ = (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.
 STOMP_PALM, STOMP_FINGERS = (0.0, -0.71, -0.71), (0.0, -0.71, 0.71)
 
 SPEC = [
-    ("Base",     ((0.20, -0.55, 0.30), PY, PZ),                   ((-0.20, -0.55, 0.30), PY, PZ)),
+    ("Base",     ((0.24, -0.57, 0.22), PY, PZ),                   ((-0.24, -0.57, 0.22), PY, PZ)),
     ("Disc",     ((0.05, -0.30, 0.45), NX, PZ),                   ((-0.05, -0.30, 0.28), NZ, PX)),
     ("Ball",     ((0.15, -0.30, 0.22), NX, PZ),                   ((-0.10, -0.30, 0.45), PX, PZ)),
     ("Pillar",   ((0.20, -0.55, 0.30), NX, PZ),                   ((-0.20, -0.05, 0.25), PX, PY)),
@@ -47,7 +47,7 @@ SPEC = [
     ("Parry",    ((0.20, -0.25, 0.42), PZ, PY),                   ((-0.20, -0.25, 0.42), PZ, PY)),
     ("Hold",     ((0.05, -0.25, 0.42), PZ, PY),                   ((0.05, -0.40, 0.38), PY, PZ)),
     ("Flick",    ((0.10, -0.25, 0.42), PX, PZ),                   ((0.10, -0.48, 0.38), PX, PZ)),
-    ("Explode",  ((0.06, -0.50, 0.28), NZ, NX),                   ((-0.06, -0.50, 0.28), NZ, PX)),
+    ("Explode",  ((0.08, -0.38, 0.18), NZ, NX),                   ((-0.08, -0.38, 0.18), NZ, PX)),
     ("Jump",     ((0.20, -0.72, 0.20), PY, PZ),                   ((-0.20, 0.05, 0.10), PX, PY)),
     ("Dash",     ((0.20, -0.72, 0.20), PY, PZ),                   ((-0.10, -0.30, 0.45), PX, PZ)),
 ]
@@ -55,7 +55,7 @@ NAMES = [s[0] for s in SPEC]
 
 # the default tolerances of spec 3.3 (PoseLibrary.DefaultTolX/Y/Z, DefaultPalmDeg, DefaultFingerDeg): each hand's place is a
 # zone, an ellipsoid with these half-sizes sideways, up/down and in reach (metres), and the directions are cones (degrees)
-ZONE, PALM_DEG, FINGER_DEG = (0.25, 0.20, 0.30), 60.0, 60.0
+ZONE, PALM_DEG, FINGER_DEG = (0.30, 0.24, 0.33), 65.0, 65.0   # Ruling 45 (were 0.25 0.20 0.30, 60, 60)
 
 AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
 HANDS = ("right", "left")
@@ -641,8 +641,8 @@ def selftest(out_dir):
                     and near_v(tuple(poses[name][1][3 * i:3 * i + 3]), result["poses"][k]["left"][part], 9e-4)
                     for k, name in enumerate(NAMES) for i, part in enumerate(("pos", "palm", "fingers")))
         check("poses.txt: the numbers are the fit's to 3 decimals", exact)
-        check("poses.txt: default tolerances 0.25 0.2 0.3 60 60", all(p[2] == list(ZONE) + [PALM_DEG, FINGER_DEG] for p in poses.values())
-              and all(l.endswith("| 0.25 0.2 0.3 60 60") for l in lines if l.split("#")[0].strip()))
+        check("poses.txt: default tolerances 0.3 0.24 0.33 65 65", all(p[2] == list(ZONE) + [PALM_DEG, FINGER_DEG] for p in poses.values())
+              and all(l.endswith("| 0.3 0.24 0.33 65 65") for l in lines if l.split("#")[0].strip()))
         check("poses.txt: directions length 1", all(abs(length(tuple(p[h][3 * i:3 * i + 3])) - 1.0) < 2e-3 for p in poses.values() for h in (0, 1) for i in (1, 2)))
         print("selftest: wrote " + path)
 
@@ -720,8 +720,8 @@ For each hand it fits the palm and the fingers as directions in the controller's
 direction, not only +x -x +y -y +z -z): each pose's design direction taken into that snapshot's controller space,
 averaged over the 16 poses and made length 1, the fingers then made square to the palm. It prints each direction's
 mean and worst angle to the spec's over the poses, and the nearest signed axis for reference. It writes poses.txt
-from the measured places and the fitted directions (spec 3.3's tolerances: each place a zone of 0.25 m sideways,
-0.20 m up/down and 0.30 m in reach; the palm and fingers within 60 degrees) and prints the four settings
+from the measured places and the fitted directions (spec 3.3's tolerances: each place a zone of 0.30 m sideways,
+0.24 m up/down and 0.33 m in reach; the palm and fingers within 65 degrees) and prints the four settings
 PalmAxisRight, FingerAxisRight, PalmAxisLeft and FingerAxisLeft as three numbers with 2 decimals.
 
 poses.txt goes to <UserData folder>\\Earthbending\\poses.txt with --out, else beside the capture. An older poses.txt

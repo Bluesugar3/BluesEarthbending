@@ -122,11 +122,11 @@ Frame: the origin is the head (camera) position. +Z is the head's forward flatte
 
 Hand axes (Ruling 36): a controller's palm and finger directions are any direction in the controller's own space, not only its six axes (`[EarthPose] PalmAxisRight` and the others take `-y` or `0,-0.93,0.36`). The owner's controllers hold the fingers about 21 degrees from the controller's -y, tilted toward +z, on both hands. `fit_poses.py` fits these directions from a capture: the mean of each pose's design direction taken into the controller's space, with the fingers made square to the palm. Each hand is: position `p`, palm normal `n` (out of the palm) and finger direction `f`. The table gives A as the right hand. The mirror (A is the left hand) flips x of `p`, `n` and `f`. `-` means the axis is not checked.
 
-**Flow, not hold (the owner, 2026-11-22, after the first capture):** "it's less about going to the exact pose and holding it than moving fluidly from one to the other", with "a little bit more tolerance", "not exactly fixed points", and no pose "far out from my body". So each hand's place is a roomy ZONE, an ellipsoid round `p` with half-sizes sideways 0.25, up/down 0.20 and reach (forward/back) 0.30 m, and the directions allow 60 degrees (palm) and 60 degrees (fingers). No pose needs a straight arm: "arm out" is about half reach (0.42-0.45 m ahead of the head). The table is the second design; `poses.txt` from a natural capture (the guide's words only, no markers) re-centres each zone on the player's own pose.
+**Flow, not hold (the owner, 2026-11-22, after the first capture):** "it's less about going to the exact pose and holding it than moving fluidly from one to the other", with "a little bit more tolerance", "not exactly fixed points", and no pose "far out from my body". So each hand's place is a roomy ZONE, an ellipsoid round `p` with half-sizes sideways 0.30, up/down 0.24 and reach (forward/back) 0.33 m, and the directions allow 65 degrees (palm) and 65 degrees (fingers) (Ruling 45; were 0.25 / 0.20 / 0.30 m and 60 / 60 degrees). No pose needs a straight arm: "arm out" is about half reach (0.42-0.45 m ahead of the head). The table is the second design; `poses.txt` from a natural capture (the guide's words only, no markers) re-centres each zone on the player's own pose.
 
 | Pose | A p | A n | A f | B p | B n | B f |
 |---|---|---|---|---|---|---|
-| Base | (0.20, -0.55, 0.30) | +Y | +Z | (-0.20, -0.55, 0.30) | +Y | +Z |
+| Base | (0.24, -0.57, 0.22) | +Y | +Z | (-0.24, -0.57, 0.22) | +Y | +Z |
 | Disc | (0.05, -0.30, 0.45) | -X | +Z | (-0.05, -0.30, 0.28) | -Z | +X |
 | Ball | (0.15, -0.30, 0.22) | -X | +Z | (-0.10, -0.30, 0.45) | +X | +Z |
 | Pillar | (0.20, -0.55, 0.30) | -X | +Z | (-0.20, -0.05, 0.25) | +X | +Y |
@@ -139,7 +139,7 @@ Hand axes (Ruling 36): a controller's palm and finger directions are any directi
 | Parry | (0.20, -0.25, 0.42) | +Z | +Y | (-0.20, -0.25, 0.42) | +Z | +Y |
 | Hold | (0.05, -0.25, 0.42) | +Z | +Y | (0.05, -0.40, 0.38) | +Y | +Z |
 | Flick | (0.10, -0.25, 0.42) | +X | +Z | (0.10, -0.48, 0.38) | +X | +Z |
-| Explode | (0.06, -0.50, 0.28) | -Z | -X | (-0.06, -0.50, 0.28) | -Z | +X |
+| Explode | (0.08, -0.38, 0.18) | -Z | -X | (-0.08, -0.38, 0.18) | -Z | +X |
 | Jump | (0.20, -0.72, 0.20) | +Y | +Z | (-0.20, 0.05, 0.10) | +X | +Y |
 | Dash | (0.20, -0.72, 0.20) | +Y | +Z | (-0.10, -0.30, 0.45) | +X | +Z |
 
@@ -229,7 +229,7 @@ The client picks the modifier's target (what the player sees); the server re-che
 - There is no rock-grinding loop sound and no terrain deformation. The rise is the stone moving up plus the dirt spray.
 - Never copy ripped game files into the mod. Meshes and materials are found by name at runtime and shared, never changed.
 
-### 3.10 After the play-test of 1.0.0 (2026-11-23): Rulings 37 to 44
+### 3.10 After the play-test of 1.0.0 (2026-11-23): Rulings 37 to 45
 
 The owner: "Assets look weird", "janky and slow", "holds the object a little bit too close", "the areas to hit to activate a thing is too tolerant", "trying to throw a disk is too hard". The practice guide gave 3 of 15 first time. Where these rulings differ from 3.3 to 3.7 above, they win.
 
@@ -241,6 +241,7 @@ The owner: "Assets look weird", "janky and slow", "holds the object a little bit
 - **Ruling 42 (a little faster).** `PushScale` 1.25 on every modifier's push and every launch; `MaxStoneSpeed` 25; Pillar and Cube rise in 0.25 s, the Wall in 0.32 s. The pushes themselves are RUMBLE's numbers.
 - **Ruling 43 (the throw is the hand's swing).** A held stone is thrown by the holding hand's speed relative to the holder's head (the server's copies), never by its own speed: above `HoldLetGoSpeed` 3.5 m/s for `HoldSwingSeconds` 0.10, let go at the swing's peak (or `HoldSwingMaxSeconds` 0.2 later), taking the head's velocity + the swing's highest velocity x `HoldThrowScale` 1.5. One jump of the hand's copy counts for at most 3 times the next largest step, so a late packet or a snap turn throws nothing. A swing back toward the holder throws nothing, and a stone does not hit the player who held it for 0.5 s after any let-go. Straight, Kick, Uppercut and Stomp let a held stone go, then push it.
 - **Ruling 44 (fight health).** `2026-11-23-earthbending-fight-health-design.md`: on a ring a stone takes its power off 20 points of fight health; the hit that reaches 0 flings the player out (the fling replaces their velocity, their game drops friction until they land, the landing's fall damage is dropped); outside a ring a stone takes power / 20 of real maximum health. This replaces `DamagePerPower` for players (3.7); creatures keep it.
+- **Ruling 45 (1.1.1: the zones fitted from the 1.1.0 practice trace).** The owner: "Make the hitboxes for the moves bigger and more tolerant." Fitted by `--replay` on `pose-trace-20261123-143729.csv` (15 practice steps): the half-sizes 0.30 sideways, 0.24 up/down, 0.33 reach (were 0.25 / 0.20 / 0.30), both cones 65 degrees (were 60), Base re-centred to (+-0.24, -0.57, 0.22) (was (+-0.20, -0.55, 0.30): the owner's base sat 0.1-0.2 m nearer the body and missed the arming score for 1.5 s in the Disc step) and Explode to (+-0.08, -0.38, 0.18) (was (+-0.06, -0.50, 0.28): its best score in the run, 0.88, was all place). `MoveDeepScore` 0.6 and `StructureDeepScore` 0.5 stay, and so do Ruling 37's arrival rules. On the trace every step's move still fires, in 63.2 s in all (64.3 before), with 8 other moves fired before them (9 before) and none new outside the steps; the Disc step arms 1.6 s sooner. Wider was worse: 70-degree palms fired Stomp as the hands were lowered after Uppercut, 70-degree fingers let a hand moving from Base toward Ball fire Ball and then Straight (the I-2 test), and deeper fire scores (0.65-0.75, structures 0.6) fired 2 to 4 more wrong moves. Most of the slow steps were not the zones: the owner was making another pose (Hold: 9.5 s in a pose that is Kick's), was in hitstun while in Dash (a pose matched while stunned is used up until the hands leave it), or had not reached the pose yet (Jump).
 
 ## 4. Unknowns, each closed by a task
 1. Does SyncLib 1.1.1-custom accept a prefab built in code, with no AssetBundle? (Task 1; fallback: a bundle built in `C:\ATTUnity\ExportedProject\Assets\Mods\Earthbending\` with only colliders and a rigidbody.)

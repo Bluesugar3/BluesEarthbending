@@ -169,8 +169,13 @@ namespace Earthbending {
     /// sideways, up/down and in reach, then the two cones; <c>#</c> starts a comment, numbers in the invariant culture). The
     /// tail of a file from before 0.4.2, <c>posTol palmDeg fingerDeg</c>, still reads: <c>posTol</c> is all three half-sizes.</summary>
     internal static class PoseLibrary {
-        // spec 3.3, "flow, not hold": roomy zones and wide cones, so a pose fires as the hands pass through it
-        public const float DefaultTolX = 0.25f, DefaultTolY = 0.20f, DefaultTolZ = 0.30f, DefaultPalmDeg = 60f, DefaultFingerDeg = 60f;
+        // spec 3.3, "flow, not hold": roomy zones and wide cones, so a pose fires as the hands pass through it. Ruling 45
+        // (1.1.1, fitted from the owner's 1.1.0 practice trace): 0.30 / 0.24 / 0.33 m and 65 / 65 degrees (were 0.25 / 0.20 /
+        // 0.30 and 60 / 60). Wider was worse on that trace or the path tests: a 70-degree palm fired Stomp as the owner
+        // lowered his hands after Uppercut, a 70-degree finger cone let a hand moving from Base toward Ball fire Ball and then
+        // Straight (their A fingers are 90 degrees apart), and a deeper fire score (MoveDeepScore 0.65-0.75,
+        // StructureDeepScore 0.6) fired more wrong moves in the practice steps
+        public const float DefaultTolX = 0.30f, DefaultTolY = 0.24f, DefaultTolZ = 0.33f, DefaultPalmDeg = 65f, DefaultFingerDeg = 65f;
 
         static readonly V3 PX = new V3(1f, 0f, 0f), NX = new V3(-1f, 0f, 0f), PY = new V3(0f, 1f, 0f), NY = new V3(0f, -1f, 0f),
             PZ = new V3(0f, 0f, 1f), NZ = new V3(0f, 0f, -1f);
@@ -180,9 +185,12 @@ namespace Earthbending {
         static readonly V3 StompPalm = new V3(0f, -0.71f, -0.71f);
 
         // the spec 3.3 table, second design (2026-11-22, after the first capture): near the body, no straight arm ("arm out"
-        // is about half reach, 0.42-0.45 m ahead of the head); a natural capture's poses.txt re-centres each zone
+        // is about half reach, 0.42-0.45 m ahead of the head); a natural capture's poses.txt re-centres each zone. Ruling 45
+        // re-centred two on where the owner's hands went in the 1.1.0 practice: Base nearer the body and wider (was
+        // (0.20, -0.55, 0.30): the owner's base sat 0.1-0.2 m closer and missed the arming score for seconds) and Explode
+        // higher and nearer (was (0.06, -0.50, 0.28): its best score in the run was 0.88, all of it the place)
         static readonly PoseSpec[] Table = {
-            P(Move.Base,     new V3(0.20f, -0.55f, 0.30f), PY, PZ, new V3(-0.20f, -0.55f, 0.30f), PY, PZ),
+            P(Move.Base,     new V3(0.24f, -0.57f, 0.22f), PY, PZ, new V3(-0.24f, -0.57f, 0.22f), PY, PZ),
             P(Move.Disc,     new V3(0.05f, -0.30f, 0.45f), NX, PZ, new V3(-0.05f, -0.30f, 0.28f), NZ, PX),
             P(Move.Ball,     new V3(0.15f, -0.30f, 0.22f), NX, PZ, new V3(-0.10f, -0.30f, 0.45f), PX, PZ),
             P(Move.Pillar,   new V3(0.20f, -0.55f, 0.30f), NX, PZ, new V3(-0.20f, -0.05f, 0.25f), PX, PY),
@@ -195,7 +203,7 @@ namespace Earthbending {
             P(Move.Parry,    new V3(0.20f, -0.25f, 0.42f), PZ, PY, new V3(-0.20f, -0.25f, 0.42f), PZ, PY),
             P(Move.Hold,     new V3(0.05f, -0.25f, 0.42f), PZ, PY, new V3(0.05f, -0.40f, 0.38f), PY, PZ),
             P(Move.Flick,    new V3(0.10f, -0.25f, 0.42f), PX, PZ, new V3(0.10f, -0.48f, 0.38f), PX, PZ),
-            P(Move.Explode,  new V3(0.06f, -0.50f, 0.28f), NZ, NX, new V3(-0.06f, -0.50f, 0.28f), NZ, PX),
+            P(Move.Explode,  new V3(0.08f, -0.38f, 0.18f), NZ, NX, new V3(-0.08f, -0.38f, 0.18f), NZ, PX),
             P(Move.Jump,     new V3(0.20f, -0.72f, 0.20f), PY, PZ, new V3(-0.20f, 0.05f, 0.10f), PX, PY),
             P(Move.Dash,     new V3(0.20f, -0.72f, 0.20f), PY, PZ, new V3(-0.10f, -0.30f, 0.45f), PX, PZ),
         };

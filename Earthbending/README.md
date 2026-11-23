@@ -45,6 +45,7 @@ Places are metres from your eyes for a 1.75 m player, times `[EarthPose] BodySca
    y  0.00  eye level                Wall
    y -0.05  face                     Cube, Pillar's B hand
    y -0.25  shoulder                 Straight, Parry, Hold, Flick
+   y -0.38  upper belly              Explode
    y -0.55  a little above the waist Base, Stomp
    y -0.65  belly button             Kick's B hand
    y -0.72  hip                      Jump and Dash's A hand
@@ -52,7 +53,7 @@ Places are metres from your eyes for a 1.75 m player, times `[EarthPose] BodySca
 
 | Pose | A (right): x, y, z / palm / fingers | B (left): x, y, z / palm / fingers |
 |---|---|---|
-| Base | 0.20, -0.55, 0.30 / up / ahead | -0.20, -0.55, 0.30 / up / ahead |
+| Base | 0.24, -0.57, 0.22 / up / ahead | -0.24, -0.57, 0.22 / up / ahead |
 | Disc | 0.05, -0.30, 0.45 / left / ahead | -0.05, -0.30, 0.28 / back / right |
 | Ball | 0.15, -0.30, 0.22 / left / ahead | -0.10, -0.30, 0.45 / right / ahead |
 | Pillar | 0.20, -0.55, 0.30 / left / ahead | -0.20, -0.05, 0.25 / right / up |
@@ -65,13 +66,13 @@ Places are metres from your eyes for a 1.75 m player, times `[EarthPose] BodySca
 | Parry | 0.20, -0.25, 0.42 / ahead / up | -0.20, -0.25, 0.42 / ahead / up |
 | Hold | 0.05, -0.25, 0.42 / ahead / up | 0.05, -0.40, 0.38 / up / ahead |
 | Flick | 0.10, -0.25, 0.42 / right / ahead | 0.10, -0.48, 0.38 / right / ahead |
-| Explode | 0.06, -0.50, 0.28 / back / left | -0.06, -0.50, 0.28 / back / right |
+| Explode | 0.08, -0.38, 0.18 / back / left | -0.08, -0.38, 0.18 / back / right |
 | Jump | 0.20, -0.72, 0.20 / up / ahead | -0.20, 0.05, 0.10 / right / up |
 | Dash | 0.20, -0.72, 0.20 / up / ahead | -0.10, -0.30, 0.45 / right / ahead |
 
 "Back" means toward you; down-back and down-ahead are 45° between the two. Mirrored, swap left and right and the sign of x.
 
-- **Zones:** a hand counts within 0.25 m to either side, 0.20 m up or down and 0.30 m forward or back of its place, with the palm and the fingers each within 60° of their way.
+- **Zones:** a hand counts within 0.30 m to either side, 0.24 m up or down and 0.33 m forward or back of its place, with the palm and the fingers each within 65° of their way (1.1.1, fitted from the owner's practice; were 0.25, 0.20, 0.30 m and 60°).
 - **Your own poses:** `UserData\Earthbending\poses.txt` replaces any pose it lists. To make one: `[EarthPose] Capture = true` and `[EarthLooks] GuideMarkers = false`, strike the 16 poses in the table's order with A on the right hand (hold each still 0.6 s, arms down between them; both hands buzz twice per pose), switch Capture off, then run `python -I Earthbending/tools/fit_poses.py <the pose-capture-....csv in UserData\Earthbending>` (Python 3, this repository). It writes `poses.txt` beside the capture and prints the four hand-axis settings for `[EarthPose]`.
 
 ### Rules
@@ -149,7 +150,7 @@ It loaded if `MelonLoader\Latest.log` has `[Earth] Blue's Earthbending v... star
 
 - **Never on a Quest server.** Quest has no SyncLib, so a server running it locks Quest players out. Run it as a separate PC server.
 - **A game without the mod** is turned away at the join by SyncLib (missing prefabs).
-- **If no pose fires**, the default hand axes (fingers along the controller's +z) do not fit your controllers: on the owner's, the fingers sit about 21° off -y toward +z, beyond the 60° a pose allows. Run the capture (see Your own poses) and put the four axis settings `fit_poses.py` prints (`PalmAxisRight`, `FingerAxisRight`, `PalmAxisLeft`, `FingerAxisLeft`) in that game's `[EarthPose]`.
+- **If no pose fires**, the default hand axes (fingers along the controller's +z) do not fit your controllers: on the owner's, the fingers sit about 21° off -y toward +z, beyond the 65° a pose allows. Run the capture (see Your own poses) and put the four axis settings `fit_poses.py` prints (`PalmAxisRight`, `FingerAxisRight`, `PalmAxisLeft`, `FingerAxisLeft`) in that game's `[EarthPose]`.
 - **Stones hurt players everywhere, town included, whatever the server's PvP setting** (the game's spawn invincibility still applies). On a public server set `[EarthDamage] HurtPlayers = false`.
 
 ## Settings

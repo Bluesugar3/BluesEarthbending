@@ -157,10 +157,10 @@ internal static class PoseTests {
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
         Check("defaults: the sixteen poses in the table's order", defaults.Length == 16 && defaults.Select(s => (int)s.Move).SequenceEqual(Enumerable.Range((int)Move.Base, 16)));
-        Check("defaults: zones 0.25 sideways, 0.20 up/down, 0.30 reach, palm 60 and fingers 60 degrees, on both hands",
-            defaults.All(s => new[] { s.A, s.B }.All(h => h.TolX == 0.25f && h.TolY == 0.20f && h.TolZ == 0.30f && h.PalmDeg == 60f && h.FingerDeg == 60f)));
+        Check("defaults: zones 0.30 sideways, 0.24 up/down, 0.33 reach, palm 65 and fingers 65 degrees, on both hands (Ruling 45)",
+            defaults.All(s => new[] { s.A, s.B }.All(h => h.TolX == 0.30f && h.TolY == 0.24f && h.TolZ == 0.33f && h.PalmDeg == 65f && h.FingerDeg == 65f)));
         Check("defaults: no pose needs a straight arm (no hand more than 0.45 m ahead of the head)", defaults.All(s => s.A.Pos.Z <= 0.45f && s.B.Pos.Z <= 0.45f));
-        Check("a mirrored hand keeps its zone", new[] { Spec(Move.Disc).A.Mirrored() }.All(h => h.TolX == 0.25f && h.TolY == 0.20f && h.TolZ == 0.30f && h.PalmDeg == 60f && h.FingerDeg == 60f && h.Pos.X == -0.05f));
+        Check("a mirrored hand keeps its zone", new[] { Spec(Move.Disc).A.Mirrored() }.All(h => h.TolX == 0.30f && h.TolY == 0.24f && h.TolZ == 0.33f && h.PalmDeg == 65f && h.FingerDeg == 65f && h.Pos.X == -0.05f));
         Check("defaults: stomp checks its palms, down and back", NearV(Spec(Move.Stomp).A.Palm, new V3(0f, -0.71f, -0.71f)) && NearV(Spec(Move.Stomp).B.Palm, new V3(0f, -0.71f, -0.71f))
             && Near(V3.Dot(Spec(Move.Stomp).A.Palm, Spec(Move.Stomp).A.Fingers), 0f));
         bool apart = true;
@@ -184,21 +184,21 @@ internal static class PoseTests {
         Check("mirrored straight is straight, left is A", PoseMatch.Match(Spec(Move.Straight), At(Move.Straight, true).r, At(Move.Straight, true).l, out bool rA, out _) && !rA);
         Check("straight as written, right is A", PoseMatch.Match(Spec(Move.Straight), R(Move.Straight), L(Move.Straight), out bool rA2, out _) && rA2);
         Check("palm 70 off fails", !PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 70f), L(Move.Parry), out _, out _));
-        Check("palm 50 off still matches", PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 50f), L(Move.Parry), out _, out float sPalm) && Near(sPalm, 50f / 60f));
-        Check("fingers 70 off fails, 50 off still matches", !PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 70f)), L(Move.Parry), out _, out _)
-            && PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 50f)), L(Move.Parry), out _, out float sFingers) && Near(sFingers, 50f / 60f));
+        Check("palm 60 off still matches", PoseMatch.Match(Spec(Move.Parry), Turned(R(Move.Parry), 60f), L(Move.Parry), out _, out float sPalm) && Near(sPalm, 60f / 65f));
+        Check("fingers 70 off fails, 60 off still matches", !PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 70f)), L(Move.Parry), out _, out _)
+            && PoseMatch.Match(Spec(Move.Parry), new HandSample(R(Move.Parry).Pos, R(Move.Parry).Palm, Rot(R(Move.Parry).Fingers, R(Move.Parry).Palm, 60f)), L(Move.Parry), out _, out float sFingers) && Near(sFingers, 60f / 65f));
 
-        // the zones: an ellipsoid round each hand's place, 0.25 m sideways, 0.20 m up/down, 0.30 m in reach
+        // the zones: an ellipsoid round each hand's place, 0.30 m sideways, 0.24 m up/down, 0.33 m in reach (Ruling 45)
         PoseSpec cube = Spec(Move.Cube);
         bool CubeWith(V3 by, out float sc) => PoseMatch.Match(cube, Moved(R(Move.Cube), by), L(Move.Cube), out _, out sc);
-        Check("zone: 0.24 m to the side matches, 0.26 m does not", CubeWith(new V3(0.24f, 0f, 0f), out float sSide) && Near(sSide, 0.24f / 0.25f) && !CubeWith(new V3(0.26f, 0f, 0f), out _));
-        Check("zone: 0.29 m in reach matches, 0.31 m does not", CubeWith(new V3(0f, 0f, 0.29f), out float sReach) && Near(sReach, 0.29f / 0.30f) && !CubeWith(new V3(0f, 0f, 0.31f), out _)
-            && CubeWith(new V3(0f, 0f, -0.29f), out _) && !CubeWith(new V3(0f, 0f, -0.31f), out _));
-        Check("zone: 0.19 m up matches, 0.21 m does not", CubeWith(new V3(0f, 0.19f, 0f), out _) && !CubeWith(new V3(0f, 0.21f, 0f), out _) && !CubeWith(new V3(0f, -0.21f, 0f), out _));
-        Check("zone: an ellipsoid: 0.2 m to the side and 0.15 m up each match alone, together they do not (0.8^2 + 0.75^2 > 1)",
-            CubeWith(new V3(0.2f, 0f, 0f), out _) && CubeWith(new V3(0f, 0.15f, 0f), out _) && !CubeWith(new V3(0.2f, 0.15f, 0f), out float sBoth)
+        Check("zone: 0.29 m to the side matches, 0.31 m does not", CubeWith(new V3(0.29f, 0f, 0f), out float sSide) && Near(sSide, 0.29f / 0.30f) && !CubeWith(new V3(0.31f, 0f, 0f), out _));
+        Check("zone: 0.32 m in reach matches, 0.34 m does not", CubeWith(new V3(0f, 0f, 0.32f), out float sReach) && Near(sReach, 0.32f / 0.33f) && !CubeWith(new V3(0f, 0f, 0.34f), out _)
+            && CubeWith(new V3(0f, 0f, -0.32f), out _) && !CubeWith(new V3(0f, 0f, -0.34f), out _));
+        Check("zone: 0.23 m up matches, 0.25 m does not", CubeWith(new V3(0f, 0.23f, 0f), out _) && !CubeWith(new V3(0f, 0.25f, 0f), out _) && !CubeWith(new V3(0f, -0.25f, 0f), out _));
+        Check("zone: an ellipsoid: 0.24 m to the side and 0.18 m up each match alone, together they do not (0.8^2 + 0.75^2 > 1)",
+            CubeWith(new V3(0.24f, 0f, 0f), out _) && CubeWith(new V3(0f, 0.18f, 0f), out _) && !CubeWith(new V3(0.24f, 0.18f, 0f), out float sBoth)
             && Near(sBoth, (float)Math.Sqrt(0.8 * 0.8 + 0.75 * 0.75)));
-        Check("zone: the place's score is the ellipsoid distance, 1 at the edge", Near(PoseMatch.Zone(cube.A, new V3(0.125f, 0.1f, 0.15f)), (float)Math.Sqrt(0.75)) && PoseMatch.Zone(cube.A, V3.Zero) == 0f);
+        Check("zone: the place's score is the ellipsoid distance, 1 at the edge", Near(PoseMatch.Zone(cube.A, new V3(0.15f, 0.12f, 0.165f)), (float)Math.Sqrt(0.75)) && PoseMatch.Zone(cube.A, V3.Zero) == 0f);
         HandSpec flat = cube.A, broken = cube.A;
         flat.TolY = 0f;
         broken.TolZ = float.NaN;
@@ -332,12 +332,12 @@ internal static class PoseTests {
             PoseSpec[] one = PoseLibrary.Parse(PoseLibrary.Format(new[] { s }), out List<string> e1);
             return e1.Count == 0 && one.Length == 1 && one[0].Move == s.Move && Equal(one[0].A, s.A) && Equal(one[0].B, s.B);
         }));
-        Check("format: the tail is the zone's three half-sizes, then the palm's and the fingers' cones", wallLine.EndsWith("| 0.25 0.2 0.3 60 60"));
+        Check("format: the tail is the zone's three half-sizes, then the palm's and the fingers' cones", wallLine.EndsWith("| 0.3 0.24 0.33 65 65"));
         Check("parse: a bad line is skipped and named", some.Length == 1 && some[0].Move == Move.Wall && Equal(some[0].A, Spec(Move.Wall).A)
             && errors.Count == 7 && errors[0].Contains("line 4") && errors[1].Contains("line 5") && errors[2].Contains("line 6") && errors[3].Contains("line 7") && errors[4].Contains("line 8")
             && errors[5].Contains("line 9") && errors[6].Contains("line 10"));
-        PoseSpec[] twice = PoseLibrary.Parse(new[] { wallLine, Tail(wallLine, "0.3 0.3 0.3 40 45") }, out List<string> twiceErrors);
-        Check("parse: a repeated pose keeps the first and names the repeat", twice.Length == 1 && twice[0].A.TolX == 0.25f && twiceErrors.Count == 1 && twiceErrors[0].Contains("line 2"));
+        PoseSpec[] twice = PoseLibrary.Parse(new[] { wallLine, Tail(wallLine, "0.35 0.3 0.3 40 45") }, out List<string> twiceErrors);
+        Check("parse: a repeated pose keeps the first and names the repeat", twice.Length == 1 && twice[0].A.TolX == 0.30f && twiceErrors.Count == 1 && twiceErrors[0].Contains("line 2"));
         Check("parse: names in any case, numbers with a dot", PoseLibrary.Parse(new[] { "wALL | 0.2 0.1 0.3  0 1 0  0 0 1 | -0.2 0.1 0.3  0 1 0  0 0 1 | 0.25 0.2 0.3 60 60" }, out _).Length == 1);
 
         // the old tail (posTol palmDeg fingerDeg: one round tolerance) still reads, as all three half-sizes; it is written back
@@ -629,9 +629,9 @@ internal static class PoseTests {
 
         // I-1: two at one rest, both in their outer part (0.71 and 0.75): the better one fires alone
         PoseSpec kick = Spec(Move.Kick);
-        var far = new PoseSpec(Move.Straight, new HandSpec(kick.A.Pos + new V3(0.365f, 0f, 0f), kick.A.Palm, kick.A.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f),
-            new HandSpec(kick.B.Pos + new V3(0.365f, 0f, 0f), kick.B.Palm, kick.B.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f));
-        var outer = (Moved(R(Move.Kick), new V3(0.1775f, 0f, 0f)), Moved(L(Move.Kick), new V3(0.1775f, 0f, 0f)));
+        float tx = kick.A.TolX;   // the offsets in the zone's own width (they were written for 0.25 m: 0.365 and 0.1775)
+        var far = new PoseSpec(Move.Straight, Twin(kick.A, new V3(1.46f * tx, 0f, 0f)), Twin(kick.B, new V3(1.46f * tx, 0f, 0f)));
+        var outer = (Moved(R(Move.Kick), new V3(0.71f * tx, 0f, 0f)), Moved(L(Move.Kick), new V3(0.71f * tx, 0f, 0f)));
         PoseMatch.Match(kick, outer.Item1, outer.Item2, out _, out float o1);
         PoseMatch.Match(far, outer.Item1, outer.Item2, out _, out float o2);
         List<PathFire> outerFires = Feed(new PoseMachine(new[] { kick, far }, pv), PathHolds(1.0, (RestHands, 0.2), (outer, 1.0)));
@@ -669,7 +669,7 @@ internal static class PoseTests {
         // I-3: Base arms on arrival: a line through its centre at 2.5 m/s without stopping arms (deep); a brush of its edge
         // (0.96 at best) arms nothing
         var (br, bl) = At(Move.Base);
-        V3 back = new V3(0f, 0f, -0.45f), ahead = new V3(0f, 0f, 0.45f), edge = new V3(0f, 0.192f, 0f);
+        V3 back = new V3(0f, 0f, -0.45f), ahead = new V3(0f, 0f, 0.45f), edge = new V3(0f, 0.96f * Spec(Move.Base).A.TolY, 0f);
         (HandSample, HandSample) BaseOff(V3 by) => (Moved(br, by), Moved(bl, by));
         bool ArmedAfter(List<PathFrame> path, out float best) {
             var m = M();
@@ -727,9 +727,10 @@ internal static class PoseTests {
             + (fixedNow.Count > 0 ? "; now passing: " + string.Join("; ", fixedNow) : ""), unexpected.Count == 0 && fixedNow.Count == 0);
 
         // a brush: a hand that crosses only the outer part of a zone (score 0.8 at best) without stopping fires nothing; a
-        // hand that stops there fires once it has rested StructureStillSeconds
+        // hand that stops there fires once it has rested StructureStillSeconds (a frame sooner at 0.5 m/s: its last step is under
+        // StructureStillMetres, so the hands count as still from the frame before the stop)
         PoseSpec kick = Spec(Move.Kick);
-        V3 side = new V3(0.2f, 0f, 0f), back = new V3(0f, 0f, -0.4f), ahead = new V3(0f, 0f, 0.4f);
+        V3 side = new V3(0.8f * kick.A.TolX, 0f, 0f), back = new V3(0f, 0f, -0.4f), ahead = new V3(0f, 0f, 0.4f);
         var (kr, kl) = At(Move.Kick);
         (HandSample, HandSample) Off(V3 by) => (Moved(kr, by), Moved(kl, by));
         foreach (double speed in new[] { 0.5, 1.0, 2.5 }) {
@@ -741,7 +742,7 @@ internal static class PoseTests {
             double stoppedAt = stop[stop.Count - (int)Math.Round(PathHold / Dt)].T;
             List<PathFire> rested = Feed(new PoseMachine(new[] { kick }, PoseValues.Default), stop);
             Check($"brush: stopping in Kick's outer part at {speed} m/s fires it once, StructureStillSeconds after the stop",
-                rested.Count == 1 && rested[0].Move == Move.Kick && rested[0].At >= stoppedAt + pv.StructureStillSeconds - 1e-6 && rested[0].At <= stoppedAt + pv.StructureStillSeconds + 3 * Dt);
+                rested.Count == 1 && rested[0].Move == Move.Kick && rested[0].At >= stoppedAt + pv.StructureStillSeconds - Dt - 1e-6 && rested[0].At <= stoppedAt + pv.StructureStillSeconds + 3 * Dt);
         }
         // with all sixteen poses, the same brush fires nothing either
         Check("brush: crossing Kick's outer part with every pose running fires nothing", Feed(M(), PathFrames(1.0, Off(side + back), Off(side + ahead))).Count == 0);
@@ -751,10 +752,11 @@ internal static class PoseTests {
         Check("deep: a line through Kick's middle fires it on the way, once", through.Count == 1 && through[0].Move == Move.Kick && through[0].Score <= pv.MoveDeepScore);
 
         // two poses at one rest: the better-scored fires; the other never fires until the hands have left it
-        var nearTwin = new PoseSpec(Move.Straight, new HandSpec(kick.A.Pos + new V3(0.1f, 0f, 0f), kick.A.Palm, kick.A.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f),
-            new HandSpec(kick.B.Pos + new V3(0.1f, 0f, 0f), kick.B.Palm, kick.B.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f));
-        var twinHands = Off(new V3(0.03f, 0f, 0f));
-        var straightHands = Off(new V3(0.1f, 0f, 0f));
+        // the twin 0.4 of the zone's width to the side (0.1 m at the first zones), the hands between at 0.12 of it
+        V3 twinBy = new V3(0.4f * kick.A.TolX, 0f, 0f);
+        var nearTwin = new PoseSpec(Move.Straight, Twin(kick.A, twinBy), Twin(kick.B, twinBy));
+        var twinHands = Off(new V3(0.12f * kick.A.TolX, 0f, 0f));
+        var straightHands = Off(twinBy);
         List<PathFire> two = Feed(new PoseMachine(new[] { kick, nearTwin }, PoseValues.Default), PathFrames(1.0, RestHands, twinHands, twinHands, twinHands, twinHands));
         Check("two at one rest: the better-scored fires, the other not while the hands stay", two.Count == 1 && two[0].Move == Move.Kick);
         var restAfter = PathFrames(1.0, RestHands, twinHands, twinHands, twinHands, RestHands, straightHands);
@@ -775,7 +777,10 @@ internal static class PoseTests {
     const double ReplayGapSeconds = 0.25;
 
     /// <summary>A trace's frames through a fresh machine of <paramref name="poses"/>, with each frame's recorded flags.</summary>
-    internal static List<PathFire> Replay(List<TraceFrame> frames, PoseSpec[] poses, PoseValues values) {
+    internal static List<PathFire> Replay(List<TraceFrame> frames, PoseSpec[] poses, PoseValues values) => Replay(frames, poses, values, null);
+
+    /// <summary>As above; <paramref name="armed"/> (when given) gets whether the base had armed the structures after each frame.</summary>
+    internal static List<PathFire> Replay(List<TraceFrame> frames, PoseSpec[] poses, PoseValues values, List<bool>? armed) {
         var m = new PoseMachine(poses, values);
         var fired = new List<PathFire>();
         double last = double.NaN;
@@ -784,6 +789,7 @@ internal static class PoseTests {
             last = f.T;
             Move mv = m.Step(f.T, f.Right, f.Left, f.Empty, f.Grounded, f.Natural, f.Stunned, out bool rA);
             if (mv != Move.None) fired.Add(new PathFire { Move = mv, At = f.T, Score = m.LastScore, RightIsA = rA });
+            armed?.Add(m.Armed(f.T));
         }
         return fired;
     }
@@ -851,8 +857,8 @@ internal static class PoseTests {
         var (er, el) = At(Move.Kick, true);
         PoseMatch.Explain(kickSpec, false, er, el, out HandParts mr, out HandParts ml);
         Check("parts: a mirrored pose's own hands, explained with A on the left, are all 0", Near(mr.Place, 0f) && Near(mr.PalmDeg, 0f) && Near(mr.FingerDeg, 0f) && Near(ml.Place, 0f) && Near(ml.PalmDeg, 0f) && Near(ml.FingerDeg, 0f));
-        PoseMatch.Explain(kickSpec, true, Turned(Moved(R(Move.Kick), new V3(0.125f, 0f, 0f)), 30f), L(Move.Kick), out HandParts sr, out HandParts sl);
-        Check("parts: 0.125 m to the side is half way out, a palm turned 30 degrees reads 30, the fingers 0", Near(sr.Place, 0.5f) && Math.Abs(sr.PalmDeg - 30f) < 0.01f && Near(sr.FingerDeg, 0f) && Near(sl.Place, 0f));
+        PoseMatch.Explain(kickSpec, true, Turned(Moved(R(Move.Kick), new V3(0.15f, 0f, 0f)), 30f), L(Move.Kick), out HandParts sr, out HandParts sl);
+        Check("parts: 0.15 m to the side is half way out, a palm turned 30 degrees reads 30, the fingers 0", Near(sr.Place, 0.5f) && Math.Abs(sr.PalmDeg - 30f) < 0.01f && Near(sr.FingerDeg, 0f) && Near(sl.Place, 0f));
         Check("parts: the line's words", sr.ToString() == "place 0.50 palm 30 fingers 0 deg");
         var noFingers = new HandSpec(kickSpec.A.Pos, kickSpec.A.Palm, V3.Zero, 0.25f, 0.2f, 0.3f, 60f, 60f);
         HandParts unchecked_ = PoseMatch.Parts(noFingers, R(Move.Kick));
@@ -893,7 +899,8 @@ internal static class PoseTests {
 
         // a path written as a trace, read back and replayed: the same fires (each within a frame of its time: 3 decimals)
         var (kr, kl) = At(Move.Kick);
-        List<PathFrame> path = PathFrames(1.0, RestHands, At(Move.Straight), At(Move.Kick, true), (Moved(kr, new V3(0.2f, 0f, 0f)), Moved(kl, new V3(0.2f, 0f, 0f))), RestHands, At(Move.Base), At(Move.Cube));
+        V3 kickOuter = new V3(0.8f * Spec(Move.Kick).A.TolX, 0f, 0f);   // Kick's outer part: 0.8 of the way to its zone's side
+        List<PathFrame> path = PathFrames(1.0, RestHands, At(Move.Straight), At(Move.Kick, true), (Moved(kr, kickOuter), Moved(kl, kickOuter)), RestHands, At(Move.Base), At(Move.Cube));
         List<string> lines = TraceOf(path, Move.Kick, out List<PathFire> direct);
         PoseTrace.Parse(lines.ToArray(), out List<TraceFrame> read, out List<TraceFire> recorded, out List<string> readErrors);
         List<PathFire> replayed = Replay(read, PoseLibrary.Defaults, PoseValues.Default);
@@ -919,7 +926,7 @@ internal static class PoseTests {
     // ----- not a test: `-- --replay <trace.csv> [poses.txt]`, a hands trace from the game through the machine -----
 
     internal static int ReplayTrace(string? path, string[] rest) {
-        if (path == null) { Console.WriteLine("usage: --replay <pose-trace.csv> [poses.txt] [Key=value ...] (keys: " + string.Join(", ", PoseTrace.ValueKeys) + ")"); return 2; }
+        if (path == null) { Console.WriteLine("usage: --replay <pose-trace.csv> [poses.txt] [Key=value ...] (keys: " + string.Join(", ", PoseTrace.ValueKeys) + "; and for every pose's zones TolX, TolY, TolZ, PalmDeg, FingerDeg, TolScale)"); return 2; }
         string? posesPath = rest.FirstOrDefault(a => !a.Contains("="));
         List<string> settings = rest.Where(a => a.Contains("=")).ToList();
         string[] lines;
@@ -940,15 +947,18 @@ internal static class PoseTests {
         // the numbers: the trace's values line (the game's), else the built-in ones; then each Key=value given
         PoseValues values = PoseTrace.ValuesOf(lines, PoseValues.Default, out bool valuesInFile, out int later, out List<string> valueErrors);
         foreach (string e in valueErrors) Console.WriteLine("VALUES SKIPPED " + e);
-        foreach (string kv in settings)
+        foreach (string kv in settings) {
+            if (TryZone(ref poses, kv)) continue;   // a zone key (TolX ... FingerDeg, TolScale) sets every pose's zones
             if (!PoseTrace.TrySet(ref values, kv, out string why)) { Console.WriteLine("ERROR " + why); return 2; }
+        }
         Console.WriteLine($"{frames.Count} frame(s), {recorded.Count} recorded fire(s) in {path}");
         Console.WriteLine($"the machine runs {(valuesInFile ? "the trace's values" : "the built-in values (the trace has no values line)")}{(settings.Count > 0 ? ", with " + string.Join(" ", settings) : "")}: "
             + PoseTrace.ValuesLine(values).Substring(PoseTrace.ValuesPrefix.Length).Trim());
         if (later > 0) Console.WriteLine($"NOTE: the game's values changed {later} time(s) during the trace (more '# values' lines); the replay runs the first throughout");
         if (frames.Count == 0) return 1;
 
-        List<PathFire> replayed = Replay(frames, poses, values);
+        var armedAfter = new List<bool>();
+        List<PathFire> replayed = Replay(frames, poses, values, armedAfter);
         Console.WriteLine();
         Console.WriteLine("Fires (time, move, score, A's hand):");
         var all = replayed.Select(r => (t: r.At, line: $"  replay {r.At,9:0.000} {r.Move,-9} {r.Score:0.00} {(r.RightIsA ? "right" : "left")}"))
@@ -986,6 +996,7 @@ internal static class PoseTests {
             i = j;
         }
         if (steps == 0) Console.WriteLine("  (no practice step in this trace)");
+        PrintStepTable(frames, recorded, replayed, poses, armedAfter);
 
         // each pose: how long the hands were inside it (a gap over 0.1 s between rows counts 0.1 s)
         Console.WriteLine();
@@ -1000,6 +1011,106 @@ internal static class PoseTests {
             Console.WriteLine($"  {s.Move,-9} {inside:0.00}");
         }
         return 0;
+    }
+
+    /// <summary>A replay's zone key, for fitting the zones to a trace: <c>TolX</c>, <c>TolY</c>, <c>TolZ</c>, <c>PalmDeg</c>,
+    /// <c>FingerDeg</c> set that number on both hands of every pose, <c>TolScale</c> multiplies the three half-sizes.</summary>
+    static bool TryZone(ref PoseSpec[] poses, string kv) {
+        int eq = kv.IndexOf('=');
+        string key = kv.Substring(0, eq).Trim();
+        if (!new[] { "TolX", "TolY", "TolZ", "PalmDeg", "FingerDeg", "TolScale" }.Contains(key)) return false;
+        if (!float.TryParse(kv.Substring(eq + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v) || !(v > 0f)) return false;
+        HandSpec Set(HandSpec h) {
+            switch (key) {
+                case "TolX": h.TolX = v; break;
+                case "TolY": h.TolY = v; break;
+                case "TolZ": h.TolZ = v; break;
+                case "PalmDeg": h.PalmDeg = v; break;
+                case "FingerDeg": h.FingerDeg = v; break;
+                default: h.TolX *= v; h.TolY *= v; h.TolZ *= v; break;
+            }
+            return h;
+        }
+        poses = poses.Select(p => new PoseSpec(p.Move, Set(p.A), Set(p.B))).ToArray();
+        return true;
+    }
+
+    /// <summary>Per practice step: when the step's move fired in the file and in the replay (seconds from the step's first
+    /// row; the replay looks 0.3 s past the step's last row, as it may fire a row after the game did), how many other moves
+    /// fired before it in each, and for a structure when the base first armed it (the game's flag and the replay's); then
+    /// where the hands settled round the game's fire (0.4 s before to 0.6 s after, the move's score at most 1.2): each hand's
+    /// median place, palm and finger angles, in the pose's own frame (A as written). Ruling 45's zones were fitted with it.</summary>
+    static void PrintStepTable(List<TraceFrame> frames, List<TraceFire> recorded, List<PathFire> replayed, PoseSpec[] poses, List<bool> armedAfter) {
+        Console.WriteLine();
+        Console.WriteLine("Steps: seconds to the step's move, and other moves fired before it (file -> replay):");
+        int fileWrong = 0, replayWrong = 0, fileMissed = 0, replayMissed = 0;
+        double fileTime = 0, replayTime = 0;
+        var near = new List<string>();
+        for (int i = 0; i < frames.Count;) {
+            Move target = frames[i].Practice;
+            int j = i;
+            while (j < frames.Count && frames[j].Practice == target) j++;
+            if (target != Move.None) {
+                double t0 = frames[i].T, t1 = frames[j - 1].T + 0.3;   // the replay may fire a row after the game did
+                var f = recorded.Where(r => r.T >= t0 - 1e-3 && r.T <= t1).ToList();
+                var r = replayed.Where(x => x.At >= t0 - 1e-3 && x.At <= t1).ToList();
+                int fi = f.FindIndex(x => x.Move == target), ri = r.FindIndex(x => x.Move == target);
+                double? fa = fi >= 0 ? f[fi].T : (double?)null, ra = ri >= 0 ? r[ri].At : (double?)null;
+                int fw = fi >= 0 ? fi : f.Count, rw = ri >= 0 ? ri : r.Count;
+                string Fmt(double? at, int wrong, IEnumerable<Move> others) => (at == null ? "never" : $"{at - t0,5:0.0} s") + $", {wrong} other{(wrong > 0 ? " (" + string.Join(" ", others) + ")" : "")}";
+                fileWrong += fw; replayWrong += rw;
+                if (fa == null) fileMissed++; else fileTime += fa.Value - t0;
+                if (ra == null) replayMissed++; else replayTime += ra.Value - t0;
+                // a structure's step: when the base first armed it (the game's armed flag, and the replay's)
+                string arm = "";
+                if (PoseMachine.IsStructure(target)) {
+                    int ga = -1, rArm = -1;
+                    for (int k = i; k < j; k++) { if (ga < 0 && frames[k].Armed) ga = k; if (rArm < 0 && armedAfter[k]) rArm = k; }
+                    string At(int k) => k < 0 ? "never" : (frames[k].T - t0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " s";
+                    arm = $"; armed at {At(ga)} -> {At(rArm)}";
+                }
+                Console.WriteLine($"  {target,-9} file {Fmt(fa, fw, f.Take(fw).Select(x => x.Move))} -> replay {Fmt(ra, rw, r.Take(rw).Select(x => x.Move))}{arm}");
+
+                // where the hands settled round the game's fire of the step's move
+                PoseSpec spec = poses.FirstOrDefault(p => p.Move == target);
+                var ax = new List<float>[2, 5];
+                for (int a = 0; a < 2; a++) for (int b = 0; b < 5; b++) ax[a, b] = new List<float>();
+                // the settled pose: from 0.4 s before the game's fire of the step's move to 0.6 s after it (the result is shown
+                // then, and the hands mostly stay), where the move scores at most 1.2
+                double fT = fa ?? frames[j - 1].T;
+                for (int k = 0; k < frames.Count; k++) {
+                    if (frames[k].T < fT - 0.4 || frames[k].T > fT + 0.6) continue;
+                    PoseMatch.Match(spec, frames[k].Right, frames[k].Left, out bool rA, out float sc);
+                    if (!(sc <= 1.2f)) continue;
+                    HandSample a = rA ? frames[k].Right : Mirror(frames[k].Left), b = rA ? frames[k].Left : Mirror(frames[k].Right);
+                    for (int h = 0; h < 2; h++) {
+                        HandSample x = h == 0 ? a : b;
+                        HandSpec hs = h == 0 ? spec.A : spec.B;
+                        ax[h, 0].Add(x.Pos.X); ax[h, 1].Add(x.Pos.Y); ax[h, 2].Add(x.Pos.Z);
+                        ax[h, 3].Add(PoseMatch.Checked(hs.Palm) ? PoseMatch.Angle(x.Palm, hs.Palm) : float.NaN);
+                        ax[h, 4].Add(PoseMatch.Checked(hs.Fingers) ? PoseMatch.Angle(x.Fingers, hs.Fingers) : float.NaN);
+                    }
+                }
+                if (ax[0, 0].Count == 0) near.Add($"  {target,-9} never within 1.2 near the fire");
+                else near.Add($"  {target,-9} {ax[0, 0].Count,4} rows: A at ({Med(ax[0, 0]):0.00}, {Med(ax[0, 1]):0.00}, {Med(ax[0, 2]):0.00}) [pose {spec.A.Pos}] palm {Med(ax[0, 3]):0} fingers {Med(ax[0, 4]):0} deg;"
+                    + $" B at ({Med(ax[1, 0]):0.00}, {Med(ax[1, 1]):0.00}, {Med(ax[1, 2]):0.00}) [pose {spec.B.Pos}] palm {Med(ax[1, 3]):0} fingers {Med(ax[1, 4]):0} deg");
+            }
+            i = j;
+        }
+        Console.WriteLine($"  total: file {fileTime:0.0} s, {fileWrong} other fire(s), {fileMissed} never; replay {replayTime:0.0} s, {replayWrong} other fire(s), {replayMissed} never");
+        Console.WriteLine();
+        Console.WriteLine("Where the hands settled round the game's fire of the step's move (0.4 s before to 0.6 s after, score at most 1.2; medians, A as written):");
+        foreach (string l in near) Console.WriteLine(l);
+    }
+
+    static HandSample Mirror(HandSample h) => new HandSample(h.Pos.MirrorX(), h.Palm.MirrorX(), h.Fingers.MirrorX());
+
+    /// <summary>A hand of a made-up pose: <paramref name="h"/> moved by <paramref name="by"/>, with its zone and cones.</summary>
+    static HandSpec Twin(HandSpec h, V3 by) => new HandSpec(h.Pos + by, h.Palm, h.Fingers, h.TolX, h.TolY, h.TolZ, h.PalmDeg, h.FingerDeg);
+
+    static float Med(List<float> v) {
+        var s = v.Where(x => !float.IsNaN(x)).OrderBy(x => x).ToList();
+        return s.Count == 0 ? float.NaN : s[s.Count / 2];
     }
 
     // the capture guide (Task 3b): the hand lines in the recorder's order, the next pose for a count, the card's text, the
