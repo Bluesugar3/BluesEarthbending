@@ -6,17 +6,19 @@ using MelonLoader;
 using UnityEngine;
 
 namespace Earthbending {
-    // Task 13 (spec 2.3, 2.4, 3.2, 3.5; rulings C13, C14, C16): Hold, the server's side, as a part of StoneBody (its own file
+    // Task 13 (spec 2.3, 2.4, 3.2, 3.5; rulings C14, C16; Task 17c: Rulings 40, 41): Hold, the server's side, as a part of StoneBody (its own file
     // to keep StoneBody.cs short). A checked Hold (StoneBody.Do; one taken while Rising waits for the rise, ruling C6) grips the
     // stone with the player's holding hand (the pose's A hand: 0 right, 1 left):
     //   - a grounded stone (Still, Sliding) slides, held (Sliding: ruling 22's slide set-up, gravity on); the pull is along x and
-    //     z only, x [EarthModifiers] HoldGroundScale, and while held its slide neither slows nor stands still (StoneBody.Slide);
+    //     z only, and while held its slide neither slows nor stands still (StoneBody.Slide);
     //   - a loose one (Free, Floating, Held) is Held: not kinematic, nothing frozen, Discrete, and no gravity (useGravity off:
-    //     the PD's force holds it up); the pull is on all three axes, x HoldFreeScale. Every way out of Held puts gravity back
-    //     (the let-go and Kick/Uppercut: Loosen; Stomp: its set-up; Parry: Floating has none).
+    //     the pull holds it up); the pull is on all three axes. Every way out of Held puts gravity back (the let-go and
+    //     Kick/Uppercut: Loosen; Stomp: its set-up; Parry: Floating has none).
     // Each physics step (FixedUpdate, after the state's own step) the server reads its copy of the holder's controller
     // (PlayerController.RightController / LeftController .transform, a NetworkTransform about 22 ms plus ping behind) and head
-    // and adds Pd.Hold's force toward Pd.HoldTarget: the hand plus [EarthModifiers] HoldDistance along the holder's look made
+    // and adds Pd.Follow's pull (Ruling 40: a damped spring at [EarthModifiers] HoldFollowRate x Pd.WeightFactor, damping
+    // HoldDamping; the acceleration times the mass) toward Pd.HoldTarget: the hand plus Pd.HoldReach (HoldDistance to the
+    // stone's near side, Ruling 41) along the holder's look made
     // flat (PlayerController.Head's forward; the last one that had a flat way, the claim's yaw at first: StoneFlick's
     // KeepFlatLook, as Flick; ruling C34). Never the controller's own forward: its +z is not the fingers on every controller,
     // and the finger axis is a per-game [EarthPose] setting the server cannot see. The pull is held so no step leaves the
@@ -112,10 +114,8 @@ namespace Earthbending {
             KeepFlatLook(flatForward, ref look);   // the claim's yaw until the server's head gives a look (ruling C34)
             grip = new Grip { By = by, Account = account, Hand = hand & 1, Name = Server.NameOf(by), Grounded = StoneRules.IsGrounded(next), Look = look, Since = now, LogAt = now + 1.0 };
             gripped[HandKey(account, hand)] = this;
-            if (Logs.Debug) {
-                (float p, float dxz, float dy) g = Pd.HoldGains(body.mass);
-                MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} of {OwnerName} taken by {grip.Name}'s {HandName(grip.Hand)} hand{from}: {was} -> {next}, {body.mass:0.#} kg, p {g.p:0.##}, d {g.dxz:0.##} ({g.dy:0.##} up) per {Server.PdStepSeconds:0.###} s, x {(grip.Grounded ? Server.HoldGroundScale : Server.HoldFreeScale):0.#}{(grip.Grounded ? " along the ground" : ", no gravity")}; {Server.HoldDistance:0.##} m ahead of the hand along the look, no faster than {Server.MaxStoneSpeed:0.##} m/s, let go past {Server.HoldLetGoSpeed:0.##} m/s");
-            }
+            if (Logs.Debug)
+                MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} of {OwnerName} taken by {grip.Name}'s {HandName(grip.Hand)} hand{from}: {was} -> {next}, {body.mass:0.#} kg, follows at {Server.HoldFollowRate * Pd.WeightFactor(body.mass):0.##} rad/s (x {Pd.WeightFactor(body.mass):0.###} for its weight), damping {Server.HoldDamping:0.##}{(grip.Grounded ? ", along the ground" : ", no gravity")}; its centre {Pd.HoldReach(Kind, Server.HoldDistance):0.##} m ahead of the hand along the look (its near side {Server.HoldDistance:0.##} m), no faster than {Server.MaxStoneSpeed:0.##} m/s, let go past {Server.HoldLetGoSpeed:0.##} m/s");
         }
 
         // Each physics step of a hold, after the state's own step (a held slide that left the ground is Free by now): the
@@ -133,7 +133,7 @@ namespace Earthbending {
                 float speed = body.velocity.magnitude;
                 Vector3 at = hand.position;
                 KeepFlatLook(look, ref g.Look);   // ruling C34: the look, never the controller's own forward
-                V3 target = Pd.HoldTarget(V(at), V(g.Look), Server.HoldDistance);
+                V3 target = Pd.HoldTarget(V(at), V(g.Look), Pd.HoldReach(Kind, Server.HoldDistance));   // Ruling 41: to its near side
                 V3 error = target - V(body.worldCenterOfMass);
                 float trail = Pd.Trail(error, g.Grounded);
                 bool wasArmed = g.Armed;
@@ -147,7 +147,7 @@ namespace Earthbending {
                     return;
                 }
                 V3 vel = V(body.velocity);
-                V3 pull = Pd.Hold(error, vel, body.mass, g.Grounded, Server.HoldFreeScale, Server.HoldGroundScale, Server.PdStepSeconds);
+                V3 pull = Pd.Follow(error, vel, body.mass, g.Grounded, Server.HoldFollowRate, Server.HoldDamping, Time.fixedDeltaTime) * body.mass;   // Ruling 40
                 Vector3 force = U(Pd.CappedPull(pull, vel, body.mass, Time.fixedDeltaTime, Server.MaxStoneSpeed));   // ruling C36
                 if (force != Vector3.zero) {
                     body.AddForce(force, ForceMode.Force);

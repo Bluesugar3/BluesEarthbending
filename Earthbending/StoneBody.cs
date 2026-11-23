@@ -42,8 +42,10 @@ namespace Earthbending {
     /// as they turn them, until Stomp drops it or it breaks. Task 15: the hitstop (StoneFreeze.cs, another part): two stones
     /// that clash freeze where they are for a blink (<see cref="Freeze"/>), then the loser breaks and the winner carries
     /// on.</summary>
-    /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
-    /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
+    /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree (through StoneRules.Straight); Kick's,
+    /// Stomp's and Uppercut's come from StoneRules.Push. Ruling 42: every one of them, the launches and the lift-off are
+    /// times [EarthModifiers] PushScale (in StoneRules and SpawnPlan); a blast's force is not. None of them pushes the player
+    /// back but Straight (on their own game, Bend.cs).</remarks>
     internal sealed partial class StoneBody : MonoBehaviour {
         internal StoneKind Kind;
         /// <summary>The owner's account (Server.AccountOf); 0 for a stone nobody owns.</summary>
@@ -444,7 +446,7 @@ namespace Earthbending {
             }
             bool grounded = StoneRules.IsGrounded(was);
             Vector3 impulse, spin = Vector3.zero;
-            if (m == Modifier.Straight) impulse = flatForward * (grounded ? Server.StraightGrounded : Server.StraightFree);
+            if (m == Modifier.Straight) impulse = flatForward * StoneRules.Straight(grounded, Server.StraightGrounded, Server.StraightFree);   // Ruling 42: x PushScale
             else {
                 (V3 i, V3 s) = StoneRules.Push(m, grounded, V(flatForward));
                 impulse = U(i);
