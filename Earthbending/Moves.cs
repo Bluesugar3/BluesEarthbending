@@ -6,20 +6,25 @@ using MelonLoader;
 using UnityEngine;
 
 namespace Earthbending {
-    // Games only: pushing the local player (Jump, Dash, Straight's pushback, and the server's knockback through message 19) and
-    // the hitstun that follows a knockback (spec 3.1 "Push the local player", 3.6, 3.7). [EarthMovement] PushEndSpeed and
-    // PushMaxSeconds, per game.
+    // Games only: pushing the local player (Jump, Dash, Straight's pushback, and the server's knockback through message 19), the
+    // hitstun that follows a knockback (spec 3.1 "Push the local player", 3.6, 3.7) and the movement moves' dust (Dust).
+    // [EarthMovement] PushEndSpeed, PushMaxSeconds and MaxPushSpeed, [EarthLooks] DustEffect, per game.
+    //
+    // Public, with ZeroBelow: the game's own SmoothLocomotion.ApplyGravityAndMovement calls ZeroBelow once transpiled, and a
+    // call into a type the game's assembly may not see could fail in the JIT, which would stop every player's walking.
     //
     // How the game moves the player (SmoothLocomotion.UpdateInput and ApplyGravityAndMovement, read in _decomp 2026-11-22):
     //   - SmoothLocomotion.velocity (public) is added to each frame's move; gravity is Physics.gravity.y x GravityMultiplier (1)
     //     while airborne or rising; friction (GetFrictionMultiplier, 1 by default) takes velocity x 1 x deltaTime off the flat
     //     part every frame.
     //   - While grounded (and nothing overrides movement, e.g. climbing) with velocity.y <= 0.1 the velocity is zeroed. A push
-    //     keeps y at least MinLift (0.11) for its first frame, and while it lasts the zeroing is held off (KeepWhilePushed), so a
-    //     push along the ground slides and the game's own friction slows it.
-    //   - Fall damage counts from the highest point since the player last stood (fallFromHeight); TreatAsGrounded() on the push
-    //     starts that count at the push. The game's curve (SmoothLocomotionSettings.fallDamageOverDistance) hurts from a 3 m
-    //     drop, so a 6 m/s push straight up (2.25 m apex) lands unhurt on level ground.
+    //     from the ground keeps y at least PushRule.MinLift (0.11) for its first frame, and while it lasts the zeroing is held
+    //     off (KeepWhilePushed), so a push along the ground slides and the game's own friction slows it.
+    //   - Fall damage counts from the highest point since the player last stood (fallFromHeight); TreatAsGrounded() on a push
+    //     from the ground starts that count at the push. The game's curve (SmoothLocomotionSettings.fallDamageOverDistance)
+    //     hurts from a 3 m drop, so a 6 m/s push straight up (2.25 m apex) lands unhurt on level ground. A push in the air
+    //     only adds (ruling 14, PushRule): a knockback in mid-fall keeps the fall and its damage.
+    //   - Every push leaves the player at most [EarthMovement] MaxPushSpeed (20 m/s), however many stack.
     //   - NOT in spec 3.1: while standable ground is within about 0.3 m under the feet (IsCloseToGround), every frame's move
     //     gets a -0.2 m snap down (SlopeHelperDistance), and SmoothLocomotion.Move then cuts the velocity to what the
     //     CharacterController really managed (zero, against the ground). On level ground that kills any push slower than about
@@ -28,16 +33,24 @@ namespace Earthbending {
     //     (it keeps a slide on the ground, downhill too).
     //   - Nothing moves a player who is downed or dead (ShouldApplyGravityAndMovement), so no push is given then, and a held
     //     push ends.
-    internal static class Moves {
+    public static class Moves {
         /// <summary>The game zeroes a grounded player's velocity while its y is at most 0.1 m/s.</summary>
         const float GameZeroBelow = 0.1f;
-        const float MinLift = 0.11f;
         /// <summary>A safety net: the ground snap is held off at most this long after a push (a 6 m/s rise takes 0.75 s).</summary>
         const float MaxRiseSeconds = 3f;
-        const float DefaultPushEndSpeed = 0.3f, DefaultPushMaxSeconds = 1.5f;
+        const float DefaultPushEndSpeed = 0.3f, DefaultPushMaxSeconds = 1.5f, DefaultMaxPushSpeed = 20f;
+        const string DefaultDustEffect = "GroundPuffSmall";
+        /// <summary>A dust effect that is not loaded is looked for again after this long (each search walks every loaded asset).</summary>
+        const float DustRetrySeconds = 10f;
 
-        static MelonPreferences_Entry<float>? pushEndSpeed, pushMaxSeconds;
-        static float endSpeed = DefaultPushEndSpeed, maxSeconds = DefaultPushMaxSeconds;
+        static MelonPreferences_Entry<float>? pushEndSpeed, pushMaxSeconds, maxPushSpeed;
+        static MelonPreferences_Entry<string>? dustEffect;
+        static float endSpeed = DefaultPushEndSpeed, maxSeconds = DefaultPushMaxSeconds, maxSpeed = DefaultMaxPushSpeed;
+
+        static PooledObjectDefinition? dust;   // the effect found for dustFor
+        static string dustFor = "";
+        static float dustRetryAt;
+        static bool dustWarned, dustFailed;
 
         static SmoothLocomotion? rising;   // the local player's locomotion while a push still rises (ground snap held off)
         static float riseUntil;
@@ -52,22 +65,20 @@ namespace Earthbending {
             MelonPreferences_Category cat = Cfg.Category("EarthMovement");
             pushEndSpeed = cat.CreateEntry("PushEndSpeed", DefaultPushEndSpeed, description: "Per game. A push (a jump, a dash, Straight's pushback, a knockback) slides the player along the ground until its flat speed falls under this, in m/s; the game's own friction slows it.");
             pushMaxSeconds = cat.CreateEntry("PushMaxSeconds", DefaultPushMaxSeconds, description: "Per game. The longest a push slides the player along the ground, in seconds after the push (0: a push stops as soon as the player stands).");
+            maxPushSpeed = cat.CreateEntry("MaxPushSpeed", DefaultMaxPushSpeed, description: "Per game. However many pushes stack (jumps, dashes, knockbacks), the player is never left faster than this, in m/s. Above 0.");
+            dustEffect = Cfg.Category("EarthLooks").CreateEntry("DustEffect", DefaultDustEffect, description: "Per game. The game's pooled effect played at the feet by a jump or a dash (its name; several names split by ; are tried in order, the first loaded one is used; empty: no dust).");
             Apply();
             Cfg.Changed += Apply;
-            Net.KnockbackReceived += OnKnockback;
+            // a Net whose static initialiser failed (Main says so) throws on every touch: no knockback, the rest still starts
+            try { Net.KnockbackReceived += OnKnockback; }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Moves: no knockback from the server (message 19 is not set up: {e.GetType().Name})"); }
         }
 
         static void Apply() {
-            endSpeed = Read(pushEndSpeed, "PushEndSpeed", DefaultPushEndSpeed);
-            maxSeconds = Read(pushMaxSeconds, "PushMaxSeconds", DefaultPushMaxSeconds);
-        }
-
-        static float Read(MelonPreferences_Entry<float>? e, string key, float fallback) {
-            if (e == null) return fallback;
-            float v = e.Value;
-            if (v >= 0f && !float.IsInfinity(v)) return v;
-            MelonLogger.Warning($"[Earth] Settings: [EarthMovement] {key} {v} is not 0 or more; using {fallback}");
-            return fallback;
+            endSpeed = Cfg.NotNegative(pushEndSpeed, "EarthMovement", "PushEndSpeed", DefaultPushEndSpeed);
+            maxSeconds = Cfg.NotNegative(pushMaxSeconds, "EarthMovement", "PushMaxSeconds", DefaultPushMaxSeconds);
+            maxSpeed = Cfg.Positive(maxPushSpeed, "EarthMovement", "MaxPushSpeed", DefaultMaxPushSpeed);
+            dustRetryAt = 0f;   // a changed name, or the same name saved again, is looked for at the next dust
         }
 
         static void OnKnockback(Vector3 velocity, float hitstun) {
@@ -86,9 +97,10 @@ namespace Earthbending {
         }
 
         /// <summary>Adds <paramref name="velocity"/> (m/s, world space) to the local player's velocity, so pushes stack (spec
-        /// 3.7), with y then at least 0.11 so the game does not zero it, and starts the fall-damage count here. The push lasts
-        /// until its flat speed falls under [EarthMovement] PushEndSpeed or PushMaxSeconds have passed. False (nothing done) on
-        /// the server, with no local player, while downed or dead, or for a velocity that is not a number.</summary>
+        /// 3.7), held to [EarthMovement] MaxPushSpeed; from the ground y is then at least 0.11 so the game does not zero it, and
+        /// the fall-damage count starts here; in the air it only adds (PushRule, ruling 14). The push lasts until its flat speed
+        /// falls under [EarthMovement] PushEndSpeed or PushMaxSeconds have passed. False (nothing done) on the server, with no
+        /// local player, while downed or dead, or for a velocity that is not a number.</summary>
         internal static bool Push(Vector3 velocity) {
             if (Main.IsServer) return false;
             if (!Finite(velocity)) { MelonLogger.Warning($"[Earth] Moves: a push of {velocity} is not a velocity: ignored"); return false; }
@@ -108,18 +120,64 @@ namespace Earthbending {
                 return false;
             }
             Vector3 was = loco.velocity;
-            Vector3 v = Finite(was) ? was + velocity : velocity;
-            if (v.y < MinLift) v.y = MinLift;
+            bool grounded = loco.IsGrounded;
+            V3 next = PushRule.Next(new V3(was.x, was.y, was.z), new V3(velocity.x, velocity.y, velocity.z), grounded, maxSpeed);
+            Vector3 v = new Vector3(next.X, next.Y, next.Z);
             loco.velocity = v;
-            loco.TreatAsGrounded();
+            if (grounded) loco.TreatAsGrounded();
             float now = Time.time;
             rising = loco;
             riseUntil = now + MaxRiseSeconds;
             holding = loco;
             pushedAt = now;
             holdUntil = now + maxSeconds;
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: push {velocity} on {was} -> {v} (grounded {(loco.IsGrounded ? "yes" : "no")})");
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: push {velocity} on {was} -> {v} (grounded {(grounded ? "yes" : "no: it only adds")})");
             return true;
+        }
+
+        /// <summary>[EarthLooks] DustEffect, the game's pooled effect, at <paramref name="at"/> (a jump's or a dash's feet).
+        /// Nothing on the server, for an empty setting, or while the effect is not loaded: a name not found is said once and
+        /// looked for again after 10 s or a settings reload.</summary>
+        internal static void Dust(Vector3 at) {
+            if (Main.IsServer) return;
+            try {
+                PooledObjectDefinition? d = DustDefinition();
+                if (d != null) d.Get(at, Quaternion.identity);
+            }
+            catch (Exception e) {
+                if (dustFailed) return;
+                dustFailed = true;
+                MelonLogger.Warning($"[Earth] Moves: the dust effect failed (said once): {e.Message}");
+            }
+        }
+
+        static PooledObjectDefinition? DustDefinition() {
+            string names = (dustEffect?.Value ?? "").Trim();
+            if (names != dustFor) {
+                dustFor = names;
+                dust = null;
+                dustRetryAt = 0f;
+                dustWarned = false;
+            }
+            if (dust != null) return dust;   // Unity's null: an asset unloaded since is looked for again
+            if (names.Length == 0 || Time.unscaledTime < dustRetryAt) return null;
+            dustRetryAt = Time.unscaledTime + DustRetrySeconds;
+            PooledObjectDefinition[] all = Resources.FindObjectsOfTypeAll<PooledObjectDefinition>();
+            foreach (string raw in names.Split(';')) {
+                string n = raw.Trim();
+                if (n.Length == 0) continue;
+                foreach (PooledObjectDefinition def in all)
+                    if (def != null && (def.name == n || (def.Prefab != null && def.Prefab.name == n))) {
+                        dust = def;
+                        if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: dust effect '{n}' found");
+                        return dust;
+                    }
+            }
+            if (!dustWarned) {
+                dustWarned = true;
+                MelonLogger.Warning($"[Earth] Moves: no loaded effect named '{names}' ([EarthLooks] DustEffect): no dust; looked for again every {DustRetrySeconds:0} s");
+            }
+            return null;
         }
 
         static bool Finite(Vector3 v) => !float.IsNaN(v.x) && !float.IsInfinity(v.x) && !float.IsNaN(v.y) && !float.IsInfinity(v.y) && !float.IsNaN(v.z) && !float.IsInfinity(v.z);
@@ -127,7 +185,7 @@ namespace Earthbending {
         /// <summary>In place of the 0.1 in the game's grounded zeroing test (<c>velocity.y &lt;= 0.1f</c> in
         /// SmoothLocomotion.ApplyGravityAndMovement; reached only while grounded and nothing overrides movement): 0.1, or minus
         /// infinity (never zero) while the local player's push lasts. Called every grounded frame, so it ends the push too.</summary>
-        internal static float ZeroBelow(SmoothLocomotion s) {
+        public static float ZeroBelow(SmoothLocomotion s) {
             try {
                 if (!ReferenceEquals(s, holding)) return GameZeroBelow;
                 Vector3 v = s.velocity;

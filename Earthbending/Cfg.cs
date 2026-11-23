@@ -71,6 +71,21 @@ namespace Earthbending {
             try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : default; }
             catch { return default; }
         }
+
+        /// <summary>A number setting that must be above 0: its value, or <paramref name="fallback"/> (no entry yet, or a value
+        /// that is 0, negative, infinite or not a number, which is said once per load).</summary>
+        internal static float Positive(MelonPreferences_Entry<float>? e, string section, string key, float fallback) => Number(e, section, key, fallback, false);
+
+        /// <summary>As <see cref="Positive"/>, with 0 allowed.</summary>
+        internal static float NotNegative(MelonPreferences_Entry<float>? e, string section, string key, float fallback) => Number(e, section, key, fallback, true);
+
+        static float Number(MelonPreferences_Entry<float>? e, string section, string key, float fallback, bool zeroOk) {
+            if (e == null) return fallback;
+            float v = e.Value;
+            if ((zeroOk ? v >= 0f : v > 0f) && !float.IsInfinity(v)) return v;
+            MelonLogger.Warning($"[Earth] Settings: [{section}] {key} {v} is not {(zeroOk ? "0 or more" : "above 0")}; using {fallback}");
+            return fallback;
+        }
     }
 
     /// <summary>[EarthLog] Debug (per game, off): the per-frame, per-hit and per-claim lines. Written

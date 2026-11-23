@@ -1,12 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using MelonLoader;
 using MelonLoader.Utils;
 using UnityEngine;
 
 namespace Earthbending {
-    // Games only: the local player's head and hands (spec 3.1), and the pose recorder (Task 3). Task 5 adds Hands.Read (the
-    // hands in the body frame, through the axis settings below), Hands.Empty and Hands.GroundState here.
+    // Games only: the local player's head and hands (spec 3.1), and the pose recorder (Task 3). What the pose machine is fed
+    // (Task 5, Bend.cs): Hands.Read (both hands in the body frame: each controller's place, and its palm and fingers as the
+    // local axes the four [EarthPose] axis settings name, through BodyFrame.ToBody at [EarthPose] BodyScale), Hands.Empty
+    // (neither hand interacting with anything: a pickup, a climbing hold, a bow string) and Hands.GroundState (the game's
+    // grounded flag, and the natural-ground test under the feet).
     //
     // The recorder, with [EarthPose] Capture on: each time both controllers have stayed within CaptureStillMetres (1 cm) of
     // where they were for CaptureStillSeconds (0.6 s), and either has moved CaptureMoveMetres (0.2 m) since the last snapshot
@@ -20,14 +24,17 @@ namespace Earthbending {
         // the double buzz of a snapshot: feedback of a one-off tool, so not settings
         const float BuzzStrength = 0.6f, BuzzSeconds = 0.06f, BuzzGapSeconds = 0.15f;
         const float DefaultStillMetres = 0.01f, DefaultStillSeconds = 0.6f, DefaultMoveMetres = 0.2f, DefaultRestBelowMetres = 0.7f;
+        const float DefaultBodyScale = 1f;
 
         static MelonPreferences_Entry<bool>? capture;
-        static MelonPreferences_Entry<float>? stillMetres, stillSeconds, moveMetres, restBelowMetres;
+        static MelonPreferences_Entry<float>? stillMetres, stillSeconds, moveMetres, restBelowMetres, bodyScaleEntry;
 
         /// <summary>[EarthPose] PalmAxisRight, FingerAxisRight, PalmAxisLeft, FingerAxisLeft: which local axis of each
-        /// controller's transform (one of <c>+x -x +y -y +z -z</c>) points out of the palm and along the fingers. Defined
-        /// here (Task 3), read by Task 5's Hands.Read.</summary>
+        /// controller's transform (one of <c>+x -x +y -y +z -z</c>) points out of the palm and along the fingers. Checked on
+        /// every load (HandAxes.Check) into the four below, which Hands.Read uses.</summary>
         internal static MelonPreferences_Entry<string>? PalmAxisRight, FingerAxisRight, PalmAxisLeft, FingerAxisLeft;
+        static HandAxis palmR = HandAxes.PalmRight, fingersR = HandAxes.FingersRight, palmL = HandAxes.PalmLeft, fingersL = HandAxes.FingersLeft;
+        static float bodyScale = DefaultBodyScale;
 
         // the recorder; on = Capture, read on every settings load, so a frame with it off costs one bool test
         static bool on;
@@ -46,10 +53,11 @@ namespace Earthbending {
             stillSeconds = cat.CreateEntry("CaptureStillSeconds", DefaultStillSeconds, description: "Per game. The pose recorder: both hands still this many seconds take a snapshot.");
             moveMetres = cat.CreateEntry("CaptureMoveMetres", DefaultMoveMetres, description: "Per game. The pose recorder: after a snapshot, the next one waits until either hand has moved this many metres from where it was, or the hands have rested at the sides. Before the first, from where the hands were when the capture started.");
             restBelowMetres = cat.CreateEntry("CaptureRestBelowMetres", DefaultRestBelowMetres, description: "Per game. The pose recorder: both hands held still more than this many metres under the head is a rest (arms at the sides), never a snapshot; it arms the next one. Every pose keeps a hand at most 0.55 m under the head (Base, Stomp), so 0.7 refuses no pose; never set it to 0.55 or less.");
-            PalmAxisRight = cat.CreateEntry("PalmAxisRight", "-x", description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture.");
-            FingerAxisRight = cat.CreateEntry("FingerAxisRight", "+z", description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
-            PalmAxisLeft = cat.CreateEntry("PalmAxisLeft", "+x", description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture.");
-            FingerAxisLeft = cat.CreateEntry("FingerAxisLeft", "+z", description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
+            PalmAxisRight = cat.CreateEntry("PalmAxisRight", HandAxes.PalmRight.ToString(), description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture. Anything else, or the same axis as FingerAxisRight, uses the defaults (-x, +z) and says so in the log.");
+            FingerAxisRight = cat.CreateEntry("FingerAxisRight", HandAxes.FingersRight.ToString(), description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
+            PalmAxisLeft = cat.CreateEntry("PalmAxisLeft", HandAxes.PalmLeft.ToString(), description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture. Anything else, or the same axis as FingerAxisLeft, uses the defaults (+x, +z) and says so in the log.");
+            FingerAxisLeft = cat.CreateEntry("FingerAxisLeft", HandAxes.FingersLeft.ToString(), description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
+            bodyScaleEntry = cat.CreateEntry("BodyScale", DefaultBodyScale, description: "Per game. Your size against the player the poses were made for: every pose's hand places are this many times as far from the head. The built-in poses are a 1.75 m player's (a 1.60 m player: 0.91); poses.txt from the pose capture are the capturer's own (1 for them). Above 0.");
             Apply();
             Cfg.Changed += Apply;
         }
@@ -83,11 +91,70 @@ namespace Earthbending {
             return Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg;
         }
 
+        /// <summary>Both hands in the body frame (spec 3.3), the head's world place and its yaw: each controller's place, and
+        /// its palm and fingers as the local axes the [EarthPose] axis settings name, through BodyFrame.ToBody at
+        /// [EarthPose] BodyScale. False (the hands default) when <see cref="Raw"/> is. Allocates nothing.</summary>
+        internal static bool Read(out HandSample right, out HandSample left, out Vector3 head, out float yawDeg) {
+            right = default;
+            left = default;
+            if (!Raw(out head, out yawDeg, out Transform r, out Transform l)) return false;
+            V3 h = V(head);
+            right = Sample(h, yawDeg, r, palmR, fingersR);
+            left = Sample(h, yawDeg, l, palmL, fingersL);
+            return true;
+        }
+
+        static HandSample Sample(V3 head, float yawDeg, Transform t, HandAxis palm, HandAxis fingers) {
+            V3 x = V(t.right), y = V(t.up), z = V(t.forward);
+            return BodyFrame.ToBody(head, yawDeg, V(t.position), palm.Pick(x, y, z), fingers.Pick(x, y, z), bodyScale);
+        }
+
+        /// <summary>The local player's hands are both empty: neither controller's Interactor is interacting with anything (a
+        /// pickup, a climbing hold, a bow string). False with no local player.</summary>
+        internal static bool Empty() => Empty(PlayerController.Current);
+
+        /// <summary>As <see cref="Empty()"/> for <paramref name="pc"/>; a controller or Interactor that is missing reads full.</summary>
+        internal static bool Empty(PlayerController pc) {
+            if (pc == null) return false;
+            Controller r = pc.RightController, l = pc.LeftController;
+            return r != null && l != null && Free(r) && Free(l);
+        }
+
+        static bool Free(Controller c) {
+            Interactor i = c.Interactor;
+            return i != null && !i.IsInteracting;
+        }
+
+        /// <summary>The game's grounded flag for the local player (SmoothLocomotion.IsGrounded: the character controller's
+        /// last move touched below) and, only while grounded, whether the ground under the feet is natural (Ground.Under from
+        /// 0.5 m above the feet, as the Debug ground line reads it). Both false with no local player or no SmoothLocomotion.</summary>
+        internal static void GroundState(out bool grounded, out bool natural) {
+            grounded = false;
+            natural = false;
+            PlayerController pc = PlayerController.Current;
+            if (pc == null) return;
+            var smooth = pc as SmoothLocomotionPlayerController;
+            SmoothLocomotion? loco = smooth != null ? smooth.SmoothLocomotion : null;
+            if (loco == null) return;
+            grounded = loco.IsGrounded;
+            if (grounded) natural = Ground.Under(pc.RealFeetPosition + Vector3.up * 0.5f, out _);
+        }
+
+        /// <summary>The pose recorder is on ([EarthPose] Capture): Bend fires no move then, so striking a pose for the capture
+        /// never throws the player or raises a stone.</summary>
+        internal static bool Capturing => on;
+
         static void Apply() {
-            float s = Read(stillMetres, "CaptureStillMetres", DefaultStillMetres);
-            float h = Read(stillSeconds, "CaptureStillSeconds", DefaultStillSeconds);
-            float m = Read(moveMetres, "CaptureMoveMetres", DefaultMoveMetres);
-            float r = Read(restBelowMetres, "CaptureRestBelowMetres", DefaultRestBelowMetres);
+            bodyScale = Cfg.Positive(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
+            var warnings = new List<string>();
+            HandAxes.Check("PalmAxisRight", PalmAxisRight?.Value, "FingerAxisRight", FingerAxisRight?.Value, HandAxes.PalmRight, HandAxes.FingersRight, out palmR, out fingersR, warnings);
+            HandAxes.Check("PalmAxisLeft", PalmAxisLeft?.Value, "FingerAxisLeft", FingerAxisLeft?.Value, HandAxes.PalmLeft, HandAxes.FingersLeft, out palmL, out fingersL, warnings);
+            foreach (string w in warnings) MelonLogger.Warning("[Earth] Settings: [EarthPose] " + w);
+
+            float s = Cfg.Positive(stillMetres, "EarthPose", "CaptureStillMetres", DefaultStillMetres);
+            float h = Cfg.Positive(stillSeconds, "EarthPose", "CaptureStillSeconds", DefaultStillSeconds);
+            float m = Cfg.Positive(moveMetres, "EarthPose", "CaptureMoveMetres", DefaultMoveMetres);
+            float r = Cfg.Positive(restBelowMetres, "EarthPose", "CaptureRestBelowMetres", DefaultRestBelowMetres);
             bool changed = s != still || h != holdSeconds || m != moveAway || r != restBelow;
             still = s;
             holdSeconds = h;
@@ -102,14 +169,6 @@ namespace Earthbending {
             }
         }
 
-        static float Read(MelonPreferences_Entry<float>? e, string key, float fallback) {
-            if (e == null) return fallback;
-            float v = e.Value;
-            if (v > 0f && !float.IsInfinity(v)) return v;
-            MelonLogger.Warning($"[Earth] Settings: [EarthPose] {key} {v} is not above 0; using {fallback}");
-            return fallback;
-        }
-
         static void Start() {
             on = true;
             gate = new CaptureGate(still, holdSeconds, moveAway, restBelow);
@@ -118,7 +177,7 @@ namespace Earthbending {
             startedAt = -1f;
             secondBuzzAt = -1f;
             warned = false;
-            MelonLogger.Msg("[Earth] Capture: on. Strike the 16 poses in order (Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash) with A on the right hand, each held still until both hands buzz twice; rest the arms at your sides between poses (a rest takes no snapshot)");
+            MelonLogger.Msg("[Earth] Capture: on. Strike the 16 poses in order (Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash) with A on the right hand, each held still until both hands buzz twice; rest the arms at your sides between poses (a rest takes no snapshot). No pose fires a move while the capture is on");
         }
 
         static void Stop() {

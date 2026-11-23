@@ -7,8 +7,10 @@ using System.Globalization;
 // two hands (PoseSpec: A is the right hand as written, the mirror image counts with A on the left); PoseMatch judges one pose;
 // PoseLibrary holds the sixteen poses and reads and writes poses.txt; PoseMachine turns every frame's matches into moves (the
 // hold, the entry, the rearm, the cooldowns, the base pose arming a structure, the ground rules and the priority). Bend.cs
-// feeds it the hands every frame. The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot is taken) and
-// PoseCapture (what its CSV row holds); Hands.cs runs them, Earthbending/tools/fit_poses.py reads the file.
+// feeds it the hands every frame, through the rules at the end of this file (Task 5): HandAxis and HandAxes (the axis
+// settings), EmptyGate (the two-frame empty test), GroundGrace (ruling 16), PoseLibrary.Merge (poses.txt over the defaults)
+// and PushRule (a push's velocity, ruling 14). The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot
+// is taken) and PoseCapture (what its CSV row holds); Hands.cs runs them, Earthbending/tools/fit_poses.py reads the file.
 namespace Earthbending {
     /// <summary>What a pose does. <see cref="Base"/> is never fired: it arms the structures. The order is the spec 3.3 table's.</summary>
     internal enum Move : byte { None, Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash }
@@ -144,6 +146,22 @@ namespace Earthbending {
 
         /// <summary>The built-in poses (a fresh copy each time), in the table's order.</summary>
         public static PoseSpec[] Defaults => (PoseSpec[])Table.Clone();
+
+        /// <summary>The poses the game runs (Task 5): <paramref name="defaults"/> in their order, each replaced by
+        /// <paramref name="fromFile"/>'s pose of the same move when it has one (a pose of a move the defaults lack goes at the
+        /// end). A pose the file leaves out, or whose line <see cref="Parse"/> skipped, stays the default. A new array; neither
+        /// argument is changed. <paramref name="replaced"/> counts the file's poses used.</summary>
+        public static PoseSpec[] Merge(PoseSpec[] defaults, PoseSpec[]? fromFile, out int replaced) {
+            var all = new List<PoseSpec>(defaults ?? new PoseSpec[0]);
+            replaced = 0;
+            foreach (PoseSpec s in fromFile ?? new PoseSpec[0]) {
+                int at = all.FindIndex(p => p.Move == s.Move);
+                if (at >= 0) all[at] = s;
+                else all.Add(s);
+                replaced++;
+            }
+            return all.ToArray();
+        }
 
         /// <summary>Reads poses.txt's lines. Blank lines and comments are skipped; a line that does not parse, or names a pose
         /// already read above it, is skipped and named in <paramref name="errors"/> (its line number, why, and the line).</summary>
@@ -383,8 +401,8 @@ namespace Earthbending {
             return -1;
         }
 
-        /// <summary>Every pose and the base's arming start over; the cooldowns stay.</summary>
-        void Reset() {
+        /// <summary>Every pose and the base's arming start over; the cooldowns stay. Also what a frame with a hand full does.</summary>
+        public void Reset() {
             for (int i = 0; i < states.Length; i++) states[i] = new State { LeftAt = double.NegativeInfinity };
             baseAt = double.NegativeInfinity;
         }
@@ -503,5 +521,131 @@ namespace Earthbending {
             }
             return string.Join(",", c);
         }
+    }
+
+    // ---------------------------------------------------------------- the game's side of the machine (Task 5)
+    // Hands.cs and Bend.cs read the game every frame and feed the machine; these are the rules of that feeding that need no
+    // Unity (the axis settings, the two-frame empty test, the ground grace) and Moves.Push's velocity.
+
+    /// <summary>One signed local axis of a controller's transform, as an <c>[EarthPose]</c> axis setting names it: one of
+    /// <c>+x -x +y -y +z -z</c> (x the transform's right, y its up, z its forward).</summary>
+    internal readonly struct HandAxis {
+        /// <summary>0 x, 1 y, 2 z.</summary>
+        public readonly byte Index;
+        public readonly bool Negative;
+
+        public HandAxis(int index, bool negative) { Index = (byte)(index < 0 ? 0 : index > 2 ? 2 : index); Negative = negative; }
+
+        /// <summary>One of the six names; case and the spaces round it do not matter. False for anything else.</summary>
+        public static bool TryParse(string? text, out HandAxis axis) {
+            axis = default;
+            string t = (text ?? "").Trim();
+            if (t.Length != 2 || (t[0] != '+' && t[0] != '-')) return false;
+            int i = "xyz".IndexOf(char.ToLowerInvariant(t[1]));
+            if (i < 0) return false;
+            axis = new HandAxis(i, t[0] == '-');
+            return true;
+        }
+
+        /// <summary>The named one of the three axes, turned round for <c>-</c>.</summary>
+        public V3 Pick(V3 x, V3 y, V3 z) {
+            V3 v = Index == 0 ? x : Index == 1 ? y : z;
+            return Negative ? -v : v;
+        }
+
+        public override string ToString() => (Negative ? "-" : "+") + "xyz"[Index];
+    }
+
+    /// <summary>The four axis settings' defaults and their check.</summary>
+    internal static class HandAxes {
+        // Ruling 3, until the owner's capture says otherwise: the OpenXR grip pose as Unity sees it (the palm faces the other
+        // hand, the fingers point ahead of the grip)
+        public static readonly HandAxis PalmRight = new HandAxis(0, true), FingersRight = new HandAxis(2, false),
+            PalmLeft = new HandAxis(0, false), FingersLeft = new HandAxis(2, false);
+
+        /// <summary>One hand's two settings as the game uses them. A text that is not one of the six falls back to its
+        /// default; then a palm and fingers on the same axis (they are square to each other, so never along one axis) both
+        /// fall back to the defaults. Each fall-back adds one line to <paramref name="warnings"/>, naming the setting, what it
+        /// said and what is used. The defaults must name two axes.</summary>
+        public static void Check(string palmKey, string? palmText, string fingerKey, string? fingerText, HandAxis palmDefault, HandAxis fingerDefault,
+            out HandAxis palm, out HandAxis fingers, List<string> warnings) {
+            if (!HandAxis.TryParse(palmText, out palm)) {
+                palm = palmDefault;
+                warnings.Add(palmKey + " '" + palmText + "' is not one of +x -x +y -y +z -z; using " + palmDefault);
+            }
+            if (!HandAxis.TryParse(fingerText, out fingers)) {
+                fingers = fingerDefault;
+                warnings.Add(fingerKey + " '" + fingerText + "' is not one of +x -x +y -y +z -z; using " + fingerDefault);
+            }
+            if (palm.Index != fingers.Index) return;
+            warnings.Add(palmKey + " " + palm + " and " + fingerKey + " " + fingers + " name the same axis (the palm and the fingers are square to each other); using " + palmDefault + " and " + fingerDefault);
+            palm = palmDefault;
+            fingers = fingerDefault;
+        }
+    }
+
+    /// <summary>The empty-hands test as the machine is fed it. The machine starts every pose over on any frame with a hand
+    /// full, so a hand that reads full for a single frame (a pickup handed over, a grab and its release in one frame) would let
+    /// a held pose fire again once its cooldown is over. Full counts only from the <see cref="FullFrames"/>th full frame in a
+    /// row; an empty frame reads empty at once.</summary>
+    internal sealed class EmptyGate {
+        public const int FullFrames = 2;
+        int full;
+
+        /// <summary>One frame: whether the hands are empty now, as the game says. Returns what the machine is given.</summary>
+        public bool Step(bool emptyNow) {
+            if (emptyNow) { full = 0; return true; }
+            if (full < FullFrames) full++;
+            return full < FullFrames;
+        }
+
+        public void Reset() => full = 0;
+    }
+
+    /// <summary>Ruling 16: the game's grounded flag (the character controller's last move touching below) flickers, and a
+    /// pose judged on a frame in the air is used up, so a flicker would eat a Jump. The machine's "grounded" is grounded within
+    /// the last <see cref="Seconds"/>, and its ground is the ground that was under the feet on that last grounded frame (as
+    /// RUMBLE uses the last grounded spot).</summary>
+    internal sealed class GroundGrace {
+        const double Eps = 1e-6;   // seconds: a frame that lands on the grace's end still counts
+        double lastGrounded = double.NegativeInfinity;
+        bool lastNatural;
+
+        /// <summary>The grace in seconds (0: only a grounded frame is grounded).</summary>
+        public float Seconds;
+
+        public GroundGrace(float seconds) { Seconds = seconds; }
+
+        /// <summary>One frame: the game's grounded flag and the ground under the feet now. Returns whether the machine is
+        /// grounded; <paramref name="onNatural"/> is the last grounded frame's ground (false before any).</summary>
+        public bool Step(double now, bool grounded, bool natural, out bool onNatural) {
+            if (grounded) { lastGrounded = now; lastNatural = natural; }
+            onNatural = lastNatural;
+            return now - lastGrounded <= Seconds + Eps;
+        }
+
+        public void Reset() {
+            lastGrounded = double.NegativeInfinity;
+            lastNatural = false;
+        }
+    }
+
+    /// <summary>A push's new velocity (Moves.Push, ruling 14): the push is added to the velocity the player has (a velocity
+    /// that is not a number is replaced), so pushes stack; the sum is held to <c>maxSpeed</c> along its own direction (a max
+    /// that is not above 0 holds nothing); then, only on the ground, y is at least <see cref="MinLift"/> so the game does not
+    /// zero it. In the air a push only adds: a fall goes on, and so does its fall-damage count.</summary>
+    internal static class PushRule {
+        /// <summary>The game zeroes a grounded player's velocity while its y is at most 0.1 m/s.</summary>
+        public const float MinLift = 0.11f;
+
+        public static V3 Next(V3 was, V3 push, bool grounded, float maxSpeed) {
+            V3 v = Finite(was) ? was + push : push;
+            float l = v.Length;
+            if (maxSpeed > 0f && !float.IsInfinity(maxSpeed) && l > maxSpeed) v = v * (maxSpeed / l);
+            if (grounded && v.Y < MinLift) v = new V3(v.X, MinLift, v.Z);
+            return v;
+        }
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }
 }

@@ -111,6 +111,7 @@ internal static class PoseTests {
     internal static void Run() {
         V3Checks();
         CaptureChecks();
+        GameSideChecks();
 
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
@@ -250,6 +251,129 @@ internal static class PoseTests {
         PoseSpec[] twice = PoseLibrary.Parse(new[] { wallLine, wallLine.Replace("0.18 40 45", "0.3 40 45") }, out List<string> twiceErrors);
         Check("parse: a repeated pose keeps the first and names the repeat", twice.Length == 1 && twice[0].A.PosTol == 0.18f && twiceErrors.Count == 1 && twiceErrors[0].Contains("line 2"));
         Check("parse: names in any case, numbers with a dot", PoseLibrary.Parse(new[] { "wALL | 0.2 0.1 0.3  0 1 0  0 0 1 | -0.2 0.1 0.3  0 1 0  0 0 1 | 0.18 40 45" }, out _).Length == 1);
+    }
+
+    // the game's side of the machine (Task 5): the axis settings, the two-frame empty test, the ground grace, poses.txt over
+    // the defaults, and a push's velocity
+    static void GameSideChecks() {
+        V3 x = new V3(1f, 0f, 0f), y = new V3(0f, 1f, 0f), z = new V3(0f, 0f, 1f);
+
+        // [EarthPose] PalmAxis* / FingerAxis*
+        string[] six = { "+x", "-x", "+y", "-y", "+z", "-z" };
+        bool all = true;
+        for (int i = 0; i < six.Length; i++)
+            all &= HandAxis.TryParse(six[i], out HandAxis a) && a.Index == i / 2 && a.Negative == (i % 2 == 1) && a.ToString() == six[i];
+        Check("axis: the six names parse, and print back", all);
+        Check("axis: case and spaces do not matter", HandAxis.TryParse(" -Y ", out HandAxis my) && my.Index == 1 && my.Negative);
+        Check("axis: anything else is refused", new[] { "x", "+w", "", "  ", "++x", "+x+", "1", "-", "x+" }.All(t => !HandAxis.TryParse(t, out _)) && !HandAxis.TryParse(null, out _));
+        Check("axis: Pick takes the named axis, turned round for -", NearV(new HandAxis(1, true).Pick(x, y, z), -y) && NearV(new HandAxis(2, false).Pick(x, y, z), z) && NearV(new HandAxis(0, true).Pick(x, y, z), -x));
+        Check("axis: the defaults are the OpenXR grip (right palm -x, left palm +x, fingers +z), each hand on two axes",
+            HandAxes.PalmRight.ToString() == "-x" && HandAxes.FingersRight.ToString() == "+z" && HandAxes.PalmLeft.ToString() == "+x" && HandAxes.FingersLeft.ToString() == "+z"
+            && HandAxes.PalmRight.Index != HandAxes.FingersRight.Index && HandAxes.PalmLeft.Index != HandAxes.FingersLeft.Index);
+        var warnings = new List<string>();
+        HandAxes.Check("PalmAxisRight", "+y", "FingerAxisRight", "-z", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p1, out HandAxis f1, warnings);
+        Check("axis check: a good pair is kept, no warning", p1.ToString() == "+y" && f1.ToString() == "-z" && warnings.Count == 0);
+        warnings.Clear();
+        HandAxes.Check("PalmAxisRight", "+q", "FingerAxisRight", "+y", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p2, out HandAxis f2, warnings);
+        Check("axis check: a bad name falls back to its default with one warning naming it", p2.ToString() == "-x" && f2.ToString() == "+y" && warnings.Count == 1
+            && warnings[0].Contains("PalmAxisRight") && warnings[0].Contains("+q") && warnings[0].Contains("-x"));
+        warnings.Clear();
+        HandAxes.Check("PalmAxisLeft", "+y", "FingerAxisLeft", "-y", HandAxes.PalmLeft, HandAxes.FingersLeft, out HandAxis p3, out HandAxis f3, warnings);
+        Check("axis check: palm and fingers on the same axis: the hand falls back to both defaults, one warning", p3.ToString() == "+x" && f3.ToString() == "+z" && warnings.Count == 1
+            && warnings[0].Contains("PalmAxisLeft") && warnings[0].Contains("FingerAxisLeft"));
+        warnings.Clear();
+        HandAxes.Check("PalmAxisRight", "", "FingerAxisRight", "+x", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p4, out HandAxis f4, warnings);
+        Check("axis check: a bad palm whose default meets the fingers' axis: both defaults, a warning for each", p4.ToString() == "-x" && f4.ToString() == "+z" && warnings.Count == 2);
+        warnings.Clear();
+        HandAxes.Check("PalmAxisRight", null, "FingerAxisRight", "sideways", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p5, out HandAxis f5, warnings);
+        Check("axis check: both bad: both defaults, two warnings", p5.ToString() == "-x" && f5.ToString() == "+z" && warnings.Count == 2);
+
+        // the two-frame empty test: one full frame is not "full" (it would start every pose over), two in a row are
+        var gate = new EmptyGate();
+        bool[] seen = new[] { true, false, true, false, false, false, true }.Select(e => gate.Step(e)).ToArray();
+        Check("empty gate: one full frame reads empty, the second full frame in a row reads full, an empty frame empty at once",
+            seen.SequenceEqual(new[] { true, true, true, true, false, false, true }));
+        gate.Step(false);
+        gate.Reset();
+        Check("empty gate: Reset forgets a full frame", gate.Step(false));
+        // a Jump held 1.5 s, with something in a hand for one frame at 0.7 s: through the gate it fires once; fed raw, the blip
+        // starts the pose over and it fires again once its 0.6 s cooldown is over
+        Seg[] blip = Seq(Hold(Move.Jump, 0.7 + Dt / 2), Holding(Hold(Move.Jump, Dt)), Hold(Move.Jump, 0.8));   // the blip is frame 64 alone
+        Check("empty gate: a one-frame blip does not fire a held jump again", RunGated(M(), blip, 1.5, new EmptyGate(), null).SequenceEqual(new[] { Move.Jump })
+            && Run(M(), blip, 1.5).SequenceEqual(new[] { Move.Jump, Move.Jump }));
+        Check("empty gate: two full frames still start over", RunGated(M(), Seq(Hold(Move.Jump, 0.7 + Dt / 2), Holding(Hold(Move.Jump, 2 * Dt)), Hold(Move.Jump, 0.8)), 1.5, new EmptyGate(), null)
+            .SequenceEqual(new[] { Move.Jump, Move.Jump }));
+
+        // the ground grace (ruling 16): grounded within the last 0.15 s, on the ground that was under the feet then
+        var grace = new GroundGrace(0.15f);
+        Check("grace: never grounded is not grounded", !grace.Step(0.0, false, false, out _));
+        Check("grace: grounded on natural ground", grace.Step(1.0, true, true, out bool n1) && n1);
+        Check("grace: 0.15 s after the last grounded frame still grounded, on that frame's ground", grace.Step(1.15, false, false, out bool n2) && n2);
+        Check("grace: past 0.15 s not grounded", !grace.Step(1.16, false, false, out _));
+        grace.Step(2.0, true, false, out _);
+        Check("grace: the ground is the last grounded frame's (wood, then the air over grass)", grace.Step(2.05, false, true, out bool n3) && !n3);
+        grace.Reset();
+        Check("grace: Reset forgets", !grace.Step(2.06, false, false, out _));
+        grace.Seconds = 0f;
+        grace.Step(3.0, true, true, out _);
+        Check("grace 0: only a grounded frame is grounded", grace.Step(3.0, false, false, out _) && !grace.Step(3.0 + Dt, false, false, out _));
+        // the grounded flag of the game flickers; every 5th frame off puts the frame the Jump is judged on (its 6th) in the air
+        Func<int, bool> flicker = f => f % 5 != 0;
+        Check("grace: a held jump on flickering ground fires once; without the grace the flicker eats it",
+            RunGated(M(), Hold(Move.Jump, 0.5), 0.5, null, new GroundGrace(0.15f), flicker).SequenceEqual(new[] { Move.Jump })
+            && RunGated(M(), Hold(Move.Jump, 0.5), 0.5, null, null, flicker).Count == 0);
+
+        // poses.txt over the defaults: the file's pose replaces the default of the same move, in the defaults' order; a pose
+        // the file leaves out, or whose line did not parse, stays the default
+        PoseSpec[] d = PoseLibrary.Defaults;
+        PoseSpec[] none = PoseLibrary.Merge(d, null, out int r0);
+        Check("merge: no file is the defaults", r0 == 0 && Equal(none, d));
+        string wall = PoseLibrary.Format(new[] { Spec(Move.Wall) })[2].Replace("| 0.18 40 45", "| 0.3 40 45");
+        string jumpBad = PoseLibrary.Format(new[] { Spec(Move.Jump) })[2].Replace("0.18 40 45", "0.18 40");
+        PoseSpec[] file = PoseLibrary.Parse(new[] { "# mine", jumpBad, wall }, out List<string> fileErrors);
+        PoseSpec[] merged = PoseLibrary.Merge(d, file, out int r1);
+        Check("merge: a file pose replaces its default in place; a bad line keeps the default", r1 == 1 && fileErrors.Count == 1 && merged.Length == 16
+            && merged.Select(s => s.Move).SequenceEqual(d.Select(s => s.Move)) && merged[(int)Move.Wall - 1].A.PosTol == 0.3f
+            && Equal(merged[(int)Move.Jump - 1].A, Spec(Move.Jump).A) && merged.Where(s => s.Move != Move.Wall).All(s => Equal(s.A, Spec(s.Move).A) && Equal(s.B, Spec(s.Move).B)));
+        Check("merge: the defaults are not changed", Equal(d, PoseLibrary.Defaults));
+
+        // a push (ruling 14): adds to the velocity; on the ground y at least 0.11 and the fall count starts there; in the air it
+        // only adds; never faster than the cap
+        Check("push: a jump on the ground", NearV(PushRule.Next(V3.Zero, new V3(0f, 6f, 0f), true, 20f), new V3(0f, 6f, 0f)));
+        Check("push: a flat push on the ground lifts 0.11", NearV(PushRule.Next(V3.Zero, new V3(8f, 0f, 0f), true, 20f), new V3(8f, 0.11f, 0f)));
+        Check("push: in the air it only adds (a fall goes on)", NearV(PushRule.Next(new V3(0f, -5f, 0f), new V3(2f, 0f, 0f), false, 20f), new V3(2f, -5f, 0f)));
+        Check("push: pushes stack", NearV(PushRule.Next(new V3(1f, 2f, 0f), new V3(0f, 6f, 3f), true, 20f), new V3(1f, 8f, 3f)));
+        Check("push: capped at the max speed, the direction kept", Near(PushRule.Next(new V3(0f, 15f, 0f), new V3(0f, 15f, 0f), false, 20f).Length, 20f)
+            && NearV(PushRule.Next(new V3(0f, 15f, 0f), new V3(0f, 15f, 0f), false, 20f), new V3(0f, 20f, 0f)));
+        V3 fast = PushRule.Next(V3.Zero, new V3(30f, 0f, 0f), true, 20f);
+        Check("push: capped, then lifted on the ground", Near(fast.X, 20f) && Near(fast.Y, 0.11f));
+        Check("push: a broken velocity is replaced by the push", NearV(PushRule.Next(new V3(float.NaN, 0f, 0f), new V3(0f, 6f, 0f), false, 20f), new V3(0f, 6f, 0f)));
+        Check("push: a cap that is not above 0 caps nothing", Near(PushRule.Next(V3.Zero, new V3(0f, 30f, 0f), false, 0f).Y, 30f) && Near(PushRule.Next(V3.Zero, new V3(0f, 30f, 0f), false, float.NaN).Y, 30f));
+    }
+
+    /// <summary>As <see cref="Run(PoseMachine, Seg[], double, bool, bool)"/>, with the game's side in between: the hands-full
+    /// flag through <paramref name="gate"/> and the ground (grounded per frame number from <paramref name="groundedAt"/>,
+    /// always natural) through <paramref name="grace"/> (null: fed raw).</summary>
+    static List<Move> RunGated(PoseMachine m, Seg[] script, double seconds, EmptyGate? gate, GroundGrace? grace, Func<int, bool>? groundedAt = null) {
+        var fired = new List<Move>();
+        int frames = (int)Math.Round(seconds / Dt);
+        for (int n = 0; n < frames; n++) {
+            double t = n * Dt;
+            Seg seg = new Seg { Pose = Move.None };
+            double start = 0;
+            foreach (Seg s in script) {
+                if (t < start + s.Dur) { seg = s; break; }
+                start += s.Dur;
+            }
+            var (r, l) = seg.Pose == Move.None ? (IdleR, IdleL) : At(seg.Pose, seg.Mirrored);
+            bool empty = gate != null ? gate.Step(!seg.Full) : !seg.Full;
+            bool rawGrounded = groundedAt == null || groundedAt(n);
+            bool natural = true;
+            bool grounded = grace != null ? grace.Step(t, rawGrounded, true, out natural) : rawGrounded;
+            Move mv = m.Step(t, r, l, empty, grounded, natural, seg.Stunned, out _);
+            if (mv != Move.None) fired.Add(mv);
+        }
+        return fired;
     }
 
     static void V3Checks() {
