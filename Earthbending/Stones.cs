@@ -486,17 +486,19 @@ namespace Earthbending {
         /// <summary>Spec 2.4: a held stone is let go (it keeps its velocity: that is the throw) once it moves faster than
         /// <paramref name="letGoSpeed"/> m/s ([EarthModifiers] HoldLetGoSpeed; at it, it holds on), or when it changed between
         /// grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground, a Held one became
-        /// grounded). Ruling C27: the speed test counts only when <paramref name="armed"/> (<see cref="HoldArmed"/>: the stone
-        /// has been at the let-go speed or under since the hold began), so a stone caught flying is slowed by the pull first
-        /// and a throw speeds past it again; grounded changed lets go armed or not. A speed that is not a finite number lets
-        /// go, armed or not.</summary>
+        /// grounded). Rulings C27, C28: the speed test counts only when <paramref name="armed"/> (<see cref="HoldArmed"/>: the
+        /// stone has settled near its target since the hold began), so a stone caught flying, or pulled in from afar, is not
+        /// thrown by its own rush to the hand, and a swing then throws it; grounded changed lets go armed or not. A speed that
+        /// is not a finite number lets go, armed or not.</summary>
         public static bool HoldLetGo(float speed, bool groundedChanged, float letGoSpeed, bool armed = true) =>
             groundedChanged || float.IsNaN(speed) || float.IsInfinity(speed) || (armed && !(speed <= letGoSpeed));
 
-        /// <summary>Ruling C27: whether a hold's speed test counts from this step: it already did (<paramref name="wasArmed"/>;
-        /// false when the hold begins), or the stone moves at <paramref name="letGoSpeed"/> m/s or slower now. A speed that is
-        /// not a number does not arm it.</summary>
-        public static bool HoldArmed(bool wasArmed, float speed, float letGoSpeed) => wasArmed || speed <= letGoSpeed;
+        /// <summary>Ruling C28 (refines C27): whether a hold's speed test counts from this step: it already did
+        /// (<paramref name="wasArmed"/>; false when the hold begins), or in this one step the stone is both within
+        /// <paramref name="armMetres"/> ([EarthModifiers] HoldArmMetres) of its target (<paramref name="trail"/>, Pd.Trail)
+        /// and at <paramref name="letGoSpeed"/> m/s or slower. A distance or speed that is not a number does not arm it.</summary>
+        public static bool HoldArmed(bool wasArmed, float trail, float speed, float armMetres, float letGoSpeed) =>
+            wasArmed || (trail <= armMetres && speed <= letGoSpeed);
 
         /// <summary>A Hold by a hand on the stone that hand already holds lets it go. <paramref name="heldBy"/> is the hand
         /// (0 right, 1 left) that holds the stone for the SAME player, -1 when that player does not hold it (not held, or held
@@ -507,14 +509,25 @@ namespace Earthbending {
     /// <summary>Task 13 (spec 2.4, rulings C13, C14): the PD controller that pulls a held stone toward its target ahead of the
     /// holding hand. Unity-free: StoneHold.cs reads the server's copy of the hand and adds the force each physics step.</summary>
     internal static class Pd {
-        /// <summary>[EarthModifiers] HoldDistance (m), HoldFreeScale, HoldGroundScale, HoldLetGoSpeed (m/s) and
-        /// PdStepSeconds (s) defaults (spec 2.4; ruling C13 for the step).</summary>
-        public const float DefaultHoldDistance = 1f, DefaultHoldFreeScale = 2500f, DefaultHoldGroundScale = 1500f, DefaultHoldLetGoSpeed = 8f, DefaultPdStepSeconds = 0.02f;
+        /// <summary>[EarthModifiers] HoldDistance (m), HoldFreeScale, HoldGroundScale, HoldLetGoSpeed (m/s), HoldArmMetres (m)
+        /// and PdStepSeconds (s) defaults (spec 2.4; ruling C13 for the step; ruling C28: let go at 5 m/s, not RUMBLE's 8,
+        /// which goes with RUMBLE's own gains: with these an arm swing of about 2 m throws a Ball at 5, and none reaches 8;
+        /// armed within 0.5 m).</summary>
+        public const float DefaultHoldDistance = 1f, DefaultHoldFreeScale = 2500f, DefaultHoldGroundScale = 1500f, DefaultHoldLetGoSpeed = 5f,
+            DefaultHoldArmMetres = 0.5f, DefaultPdStepSeconds = 0.02f;
 
         /// <summary>The flat part (length) of a length-1 direction under which it points "straight up or down" for
         /// <see cref="HoldTarget"/>: within 45 degrees of vertical. The Hold pose's fingers point up (its A hand), and a hand's
         /// flat way that near vertical swings round with every small turn of the wrist.</summary>
         public const float UprightFlat = 0.70710678f;
+
+        /// <summary>How far a held stone trails its target, from <paramref name="error"/> (target minus its centre): the whole
+        /// distance on a free hold, the flat distance on a grounded one (it slides at its own height under a target at hand
+        /// height, and <see cref="Hold"/> pulls it along x and z only). Infinitely far for an error that is not a number.</summary>
+        public static float Trail(V3 error, bool grounded) {
+            if (!Finite(error)) return float.PositiveInfinity;
+            return grounded ? new V3(error.X, 0f, error.Z).Length : error.Length;
+        }
 
         /// <summary>Spec 2.4's gains by the stone's mass in kg: p 1, no i; d 8 up to 150, 9 up to 300, 11 (13 up) up to 400,
         /// 15 (18 up) past it. <c>dxz</c> damps x and z, <c>dy</c> y. A mass that is not a number is the heaviest band.</summary>

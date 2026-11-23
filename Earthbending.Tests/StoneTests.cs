@@ -40,8 +40,9 @@ internal static class StoneTests {
         Check("hold again with the hand that holds it lets go", StoneRules.HoldAgain(0, 0) && StoneRules.HoldAgain(1, 1));
 
         // the defaults (the settings')
-        Check("defaults: hold 1 m ahead, x 2500 free, x 1500 grounded, let go past 8 m/s, d per 0.02 s", Near(Pd.DefaultHoldDistance, 1f) && Near(Pd.DefaultHoldFreeScale, 2500f)
-            && Near(Pd.DefaultHoldGroundScale, 1500f) && Near(Pd.DefaultHoldLetGoSpeed, 8f) && Near(Pd.DefaultPdStepSeconds, 0.02f));
+        Check("defaults: hold 1 m ahead, x 2500 free, x 1500 grounded, d per 0.02 s", Near(Pd.DefaultHoldDistance, 1f) && Near(Pd.DefaultHoldFreeScale, 2500f)
+            && Near(Pd.DefaultHoldGroundScale, 1500f) && Near(Pd.DefaultPdStepSeconds, 0.02f));
+        Check("defaults (C28): let go past 5 m/s, armed within 0.5 m", Near(Pd.DefaultHoldLetGoSpeed, 5f) && Near(Pd.DefaultHoldArmMetres, 0.5f));
 
         // HoldGains at every band edge (spec 2.4: up to 150, 150-300, 300-400, past 400 kg)
         Check("hold gains: 0 and 100 kg are the lightest band", Pd.HoldGains(0f) == (1f, 8f, 8f) && Pd.HoldGains(100f) == (1f, 8f, 8f) && Pd.HoldGains(-5f) == (1f, 8f, 8f));
@@ -81,6 +82,19 @@ internal static class StoneTests {
                 foreach (bool grounded in new[] { false, true })
                     stable &= Settles(StoneTable.Default(k).Mass, grounded, 1f / hz);
         Check("pd hold: every stone settles on a still target at 15, 30, 45 and 50 Hz, free and grounded", stable);
+        // ruling C28's model: a Ball (150 kg) held by Pd.Hold at the defaults, stepped at 45 Hz through the arming and let-go
+        // rules: an arm swing throws it, a body turn does not, and a far pick-up is not thrown on its pull-in
+        Check("model (C28): a swing (2.5 m in 0.25 s) throws a Ball", Held(150f, false, 45f, Ramp(2.5, 0.25), 0.0, 3.0, out _, out _, out _));
+        Check("model (C28): a body turn (1.5 m in 0.5 s) does not", !Held(150f, false, 45f, Ramp(1.5, 0.5), 0.0, 3.0, out float turnPeak, out bool turnArmed, out _)
+            && turnArmed && turnPeak < Pd.DefaultHoldLetGoSpeed);
+        Check("model (C28): a far pick-up (at rest 2.7 m off) is not thrown: it arms near the target and settles",
+            !Held(150f, false, 45f, _ => 0.0, -2.7, 10.0, out float pickPeak, out bool pickArmed, out float pickLeft) && pickArmed && pickLeft < 0.01f && pickPeak > Pd.DefaultHoldLetGoSpeed);
+        Check("model (C28): a far pick-up of a Disc (100 kg) is not thrown either", !Held(100f, false, 45f, _ => 0.0, -2.7, 10.0, out _, out _, out _));
+        bool rates = true;
+        foreach (float hz in new[] { 15f, 30f, 50f })
+            rates &= Held(150f, false, hz, Ramp(2.5, 0.25), 0.0, 3.0, out _, out _, out _) && !Held(150f, false, hz, Ramp(1.5, 0.5), 0.0, 3.0, out _, out _, out _)
+                && !Held(150f, false, hz, _ => 0.0, -2.7, 10.0, out _, out _, out _);
+        Check("model (C28): the same three at the server's 15, 30 and 50 Hz", rates);
 
         // the target: the hand plus its own flat forward x HoldDistance; the head's flat forward when the hand points within
         // 45 degrees of straight up or down (the Hold pose's fingers point up)
@@ -103,19 +117,26 @@ internal static class StoneTests {
         // letting go (ruling: past HoldLetGoSpeed, or grounded changed)
         Check("let go: at 8 m/s it holds on", !StoneRules.HoldLetGo(8f, false, 8f));
         Check("let go: a speed that is not a number lets go", StoneRules.HoldLetGo(float.NaN, false, 8f));
-        // ruling C27: the speed test counts only once the held stone has been at HoldLetGoSpeed or under since the hold began
-        // (a stone caught flying is slowed by the pull first; a throw speeds past it again)
-        bool armed = false, caught = true;
-        foreach (float sp in new[] { 12f, 11f, 9.5f, 8.5f, 8.01f }) {
-            armed = StoneRules.HoldArmed(armed, sp, 8f);
-            caught &= !armed && !StoneRules.HoldLetGo(sp, false, 8f, armed);
-        }
-        Check("let go (C27): a hold that begins at 12 m/s is not let go while it stays above 8", caught);
-        armed = StoneRules.HoldArmed(armed, 7f, 8f);
-        Check("let go (C27): once it has been at 7 m/s, 8.1 lets go", armed && StoneRules.HoldLetGo(8.1f, false, 8f, armed) && !StoneRules.HoldLetGo(7.9f, false, 8f, armed));
-        Check("let go (C27): armed stays armed however fast it goes", StoneRules.HoldArmed(true, 20f, 8f) && StoneRules.HoldArmed(true, float.NaN, 8f));
-        Check("let go (C27): at the let-go speed it arms, just past it does not", StoneRules.HoldArmed(false, 8f, 8f) && !StoneRules.HoldArmed(false, 8.01f, 8f));
-        Check("let go (C27): a speed that is not a number does not arm", !StoneRules.HoldArmed(false, float.NaN, 8f) && !StoneRules.HoldArmed(false, float.PositiveInfinity, 8f));
+        // rulings C27, C28: the speed test counts only once the held stone has been, in one step, both within HoldArmMetres of
+        // its target and at HoldLetGoSpeed or under (a stone caught flying, or pulled in from afar, settles first; a swing
+        // then throws it)
+        Check("arm (C28): near and slow arms", StoneRules.HoldArmed(false, 0.4f, 3f, 0.5f, 5f) && StoneRules.HoldArmed(false, 0f, 0f, 0.5f, 5f));
+        Check("arm (C28): slow but far does not (a far pick-up)", !StoneRules.HoldArmed(false, 2.7f, 0f, 0.5f, 5f) && !StoneRules.HoldArmed(false, 0.6f, 1f, 0.5f, 5f));
+        Check("arm (C28): near but fast does not (a stone caught flying, or rushing past its place)", !StoneRules.HoldArmed(false, 0.1f, 12f, 0.5f, 5f) && !StoneRules.HoldArmed(false, 0.4f, 6f, 0.5f, 5f));
+        Check("arm (C28): at both edges it arms, just past either it does not", StoneRules.HoldArmed(false, 0.5f, 5f, 0.5f, 5f)
+            && !StoneRules.HoldArmed(false, 0.51f, 5f, 0.5f, 5f) && !StoneRules.HoldArmed(false, 0.5f, 5.01f, 0.5f, 5f));
+        Check("arm (C28): armed stays armed however far or fast", StoneRules.HoldArmed(true, 9f, 20f, 0.5f, 5f) && StoneRules.HoldArmed(true, float.NaN, float.NaN, 0.5f, 5f));
+        Check("arm (C28): a distance or speed that is not a number does not arm", !StoneRules.HoldArmed(false, float.NaN, 1f, 0.5f, 5f) && !StoneRules.HoldArmed(false, 0.1f, float.NaN, 0.5f, 5f)
+            && !StoneRules.HoldArmed(false, float.PositiveInfinity, 1f, 0.5f, 5f) && !StoneRules.HoldArmed(false, 0.1f, float.PositiveInfinity, 0.5f, 5f));
+        // the trail: how far the stone is from its target, flat for a grounded hold (it slides at its own height under a target
+        // at hand height, and Pd.Hold pulls it along x and z only)
+        Check("trail: a free hold's is the whole distance", Near(Pd.Trail(new V3(3f, 4f, 0f), false), 5f) && Near(Pd.Trail(V3.Zero, false), 0f));
+        Check("trail: a grounded hold's is flat", Near(Pd.Trail(new V3(3f, 4f, 0f), true), 3f) && Near(Pd.Trail(new V3(0f, 0.9f, 0f), true), 0f) && Near(Pd.Trail(new V3(0.3f, -2f, 0.4f), true), 0.5f));
+        Check("trail: an error that is not a number is infinitely far", float.IsPositiveInfinity(Pd.Trail(new V3(float.NaN, 0f, 0f), false))
+            && float.IsPositiveInfinity(Pd.Trail(new V3(0f, 0f, float.PositiveInfinity), true)));
+        // armed or not (HoldLetGo's own checks, with the let-go speed given)
+        Check("let go (C27): unarmed, 12 m/s holds on; armed, 8.1 lets go and 7.9 does not", !StoneRules.HoldLetGo(12f, false, 8f, false)
+            && StoneRules.HoldLetGo(8.1f, false, 8f, true) && !StoneRules.HoldLetGo(7.9f, false, 8f, true));
         Check("let go (C27): grounded changed lets go unarmed", StoneRules.HoldLetGo(12f, true, 8f, false) && StoneRules.HoldLetGo(1f, true, 8f, false));
         Check("let go (C27): a speed that is not a number lets go unarmed too", StoneRules.HoldLetGo(float.NaN, false, 8f, false) && StoneRules.HoldLetGo(float.PositiveInfinity, false, 8f, false));
         Check("let go (C27): the brief's checks are the armed case", StoneRules.HoldLetGo(8.1f, false, 8f, true) && StoneRules.HoldLetGo(1f, true, 8f, true) && !StoneRules.HoldLetGo(7.9f, false, 8f, true));
@@ -172,6 +193,31 @@ internal static class StoneTests {
         }
         return (float)(speed * t - x);
     }
+
+    // Ruling C28's model: one held stone along x, stepped as PhysX steps a body (semi-implicit Euler) every 1/hz s with the
+    // default settings, through the arming (Pd.Trail, StoneRules.HoldArmed) and let-go (StoneRules.HoldLetGo) rules in the order
+    // StoneHold.DriveHold runs them, starting at rest at x0 under the target `target(t)`. True when it is let go (thrown);
+    // `peak` its fastest, `armed` whether it armed, `left` how far from the target it is at the end (or the let-go).
+    static bool Held(float mass, bool grounded, float hz, System.Func<double, double> target, double x0, double seconds, out float peak, out bool armed, out float left) {
+        double x = x0, v = 0.0, dt = 1.0 / hz;
+        peak = 0f;
+        armed = false;
+        for (double t = 0.0; t < seconds; t += dt) {
+            var error = new V3((float)(target(t) - x), 0f, 0f);
+            float speed = (float)System.Math.Abs(v);
+            armed = StoneRules.HoldArmed(armed, Pd.Trail(error, grounded), speed, Pd.DefaultHoldArmMetres, Pd.DefaultHoldLetGoSpeed);
+            if (StoneRules.HoldLetGo(speed, false, Pd.DefaultHoldLetGoSpeed, armed)) { left = error.Length; return true; }
+            V3 f = Pd.Hold(error, new V3((float)v, 0f, 0f), mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds);
+            v += f.X / mass * dt;
+            x += v * dt;
+            peak = System.Math.Max(peak, (float)System.Math.Abs(v));
+        }
+        left = (float)System.Math.Abs(target(seconds) - x);
+        return false;
+    }
+
+    // The target moving `metres` along x at an even speed over `seconds`, then still.
+    static System.Func<double, double> Ramp(double metres, double seconds) => t => metres * System.Math.Min(System.Math.Max(t / seconds, 0.0), 1.0);
 
     // A stone of this mass 1 m off a still target settles within 1 cm of it in 20 s (it neither runs away nor rings forever).
     static bool Settles(float mass, bool grounded, float dt) {

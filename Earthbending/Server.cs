@@ -39,7 +39,8 @@ namespace Earthbending {
     // blasts everything within ExplodeRadius with ExplodeForce: Hits.Explode), and a second Straight claim on one stone within
     // DoubleStraightSeconds of the last (by anyone: a two-player move) bursts it at once (rulings C8, C26). The server's quit
     // breaks every stone with no blast. Task 13: Hold (StoneHold.cs) with HoldDistance, HoldFreeScale, HoldGroundScale,
-    // HoldLetGoSpeed and PdStepSeconds (ruling C13: spec 2.4's d read per physics step of that many seconds).
+    // HoldLetGoSpeed, HoldArmMetres (rulings C27, C28) and PdStepSeconds (ruling C13: spec 2.4's d read per physics step of
+    // that many seconds).
     internal static class Server {
         const float DefaultLife = 60f, DefaultHeadSlack = 1f, DefaultCooldownSlack = 0.1f;
         const float DefaultStraightGrounded = 2300f, DefaultStraightFree = 1800f, DefaultRangeSlack = 0.5f, DefaultSlideDeceleration = 4f;
@@ -66,7 +67,7 @@ namespace Earthbending {
         static MelonPreferences_Entry<float>? straightGroundedEntry, straightFreeEntry, rangeSlackEntry, doubleStraightEntry, slideDecelerationEntry;
         static MelonPreferences_Entry<float>? kickUpEntry, stompDownEntry, uppercutFreeEntry, uppercutGroundedEntry, uppercutSpinEntry, maxStoneSpeedEntry;
         static MelonPreferences_Entry<float>? parrySecondsEntry, parryBreakSpeedEntry, explodeRadiusEntry, explodeForceEntry;
-        static MelonPreferences_Entry<float>? holdDistanceEntry, holdFreeScaleEntry, holdGroundScaleEntry, holdLetGoSpeedEntry, pdStepEntry;
+        static MelonPreferences_Entry<float>? holdDistanceEntry, holdFreeScaleEntry, holdGroundScaleEntry, holdLetGoSpeedEntry, holdArmEntry, pdStepEntry;
 
         static bool[] enabled = new bool[StoneTable.Count];
         static int maxPerPlayer = DefaultMaxPerPlayer, maxTotal = DefaultMaxTotal;
@@ -100,8 +101,11 @@ namespace Earthbending {
         internal static float HoldFreeScale { get; private set; } = Pd.DefaultHoldFreeScale;
         /// <summary>[EarthModifiers] HoldGroundScale: the same on a held slide (along the ground only).</summary>
         internal static float HoldGroundScale { get; private set; } = Pd.DefaultHoldGroundScale;
-        /// <summary>[EarthModifiers] HoldLetGoSpeed: a held stone faster than this many m/s is let go (thrown).</summary>
+        /// <summary>[EarthModifiers] HoldLetGoSpeed: a held stone faster than this many m/s is let go (thrown), once armed.</summary>
         internal static float HoldLetGoSpeed { get; private set; } = Pd.DefaultHoldLetGoSpeed;
+        /// <summary>[EarthModifiers] HoldArmMetres (ruling C28): a hold's throw counts once the stone has been this near its
+        /// target at HoldLetGoSpeed or slower (StoneRules.HoldArmed).</summary>
+        internal static float HoldArmMetres { get; private set; } = Pd.DefaultHoldArmMetres;
         /// <summary>[EarthModifiers] PdStepSeconds (ruling C13): spec 2.4's d is the error's change per physics step of this
         /// many seconds (Pd.Hold).</summary>
         internal static float PdStepSeconds { get; private set; } = Pd.DefaultPdStepSeconds;
@@ -146,7 +150,8 @@ namespace Earthbending {
             holdDistanceEntry = mods.CreateEntry("HoldDistance", Pd.DefaultHoldDistance, description: "Server. Hold makes a stone follow the holding hand (the top hand of the pose) this many metres ahead of it: along the way the hand points, made flat, or along the look when the hand points within 45 degrees of straight up or down (as the Hold pose's fingers do). It follows the server's copy of the hand, which lags the real one a little. 0: at the hand itself. 0 or more.");
             holdFreeScaleEntry = mods.CreateEntry("HoldFreeScale", Pd.DefaultHoldFreeScale, description: "Server. How hard Hold pulls a loose stone toward its place ahead of the hand: the pull is this many N for each metre it is off, less a damping by its weight (spec 2.4's d: 8 for a Ball, up to 18 for the heaviest), and its gravity is off while it is held. Higher follows tighter and swings more. 0: no pull (it floats where it is). 0 or more.");
             holdGroundScaleEntry = mods.CreateEntry("HoldGroundScale", Pd.DefaultHoldGroundScale, description: "Server. The same for a stone standing on the ground when it is held: it slides along the ground after the hand (pulled only sideways, gravity on), and while held it neither slows down nor stands still. 0 or more.");
-            holdLetGoSpeedEntry = mods.CreateEntry("HoldLetGoSpeed", Pd.DefaultHoldLetGoSpeed, description: "Server. A held stone is let go, keeping its speed (a throw: swing the holding hand hard), once it moves faster than this many m/s (never past MaxStoneSpeed), but only after it has been this slow or slower since it was held: a stone caught flying faster is slowed by the pull first, and then a swing throws it. It is also let go when it leaves the ground or lands, when Kick, Uppercut, Stomp or Parry changes it (Straight and Explode keep it held), when its holder dies, is downed or leaves, when the same hand holds another stone, and on Hold with the same hand again. Above 0.");
+            holdLetGoSpeedEntry = mods.CreateEntry("HoldLetGoSpeed", Pd.DefaultHoldLetGoSpeed, description: "Server. A held stone is let go, keeping its speed (a throw), once it moves faster than this many m/s (never past MaxStoneSpeed), but only after it has settled near the hand: once, it was within HoldArmMetres of its place ahead of the hand and this slow or slower at the same moment. So a stone pulled in from afar or caught flying is not thrown by its own rush to the hand; then a swing of the holding arm throws it. At 5, a quick swing (a quarter second) throws a loose Ball with about 2 m of hand travel, a Pillar or Cube 2.5 m, a Wall 3 m; a stone held sliding on the ground needs more (a Ball 2.3 m, a Pillar or Cube 3 m, a Wall 3.5 m), more than an arm swings: strike Hold again to let it slide on instead. Lower throws more easily (and lets go on a quick turn of the body sooner). It is also let go at once when a held sliding stone leaves the ground, when Kick, Uppercut, Stomp or Parry is used on it (Straight and Explode keep it held), when its holder dies, is downed or leaves, when that hand holds another stone, and on Hold with the same hand again. Above 0.");
+            holdArmEntry = mods.CreateEntry("HoldArmMetres", Pd.DefaultHoldArmMetres, description: "Server. A held stone can be thrown (HoldLetGoSpeed) only once it has settled near the hand: within this many metres of its place ahead of the hand (measured flat for a stone sliding on the ground) while no faster than HoldLetGoSpeed, at the same moment. Until then it is only pulled in. Above 0.");
             pdStepEntry = mods.CreateEntry("PdStepSeconds", Pd.DefaultPdStepSeconds, description: "Server. How Hold reads spec 2.4's damping d: as the stone's change over one physics step of this many seconds (0.02, RUMBLE's 50 steps a second). A held Ball trails a hand moving 1 m/s by about 8 x this (0.16 m). Higher damps more and trails further; 1 (d per second) makes the server's physics run away. 0: no damping (it swings until it is thrown). 0 or more.");
             Apply();
             Cfg.Changed += Apply;
@@ -191,6 +196,7 @@ namespace Earthbending {
             HoldFreeScale = Cfg.NotNegative(holdFreeScaleEntry, "EarthModifiers", "HoldFreeScale", Pd.DefaultHoldFreeScale);
             HoldGroundScale = Cfg.NotNegative(holdGroundScaleEntry, "EarthModifiers", "HoldGroundScale", Pd.DefaultHoldGroundScale);
             HoldLetGoSpeed = Cfg.Positive(holdLetGoSpeedEntry, "EarthModifiers", "HoldLetGoSpeed", Pd.DefaultHoldLetGoSpeed);
+            HoldArmMetres = Cfg.Positive(holdArmEntry, "EarthModifiers", "HoldArmMetres", Pd.DefaultHoldArmMetres);
             PdStepSeconds = Cfg.NotNegative(pdStepEntry, "EarthModifiers", "PdStepSeconds", Pd.DefaultPdStepSeconds);
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
@@ -210,7 +216,7 @@ namespace Earthbending {
             MelonLogger.Msg($"[Earth] Modifiers: Straight {StraightGrounded:0.#} N s on an anchored stone (it slides, slowing {SlideDeceleration:0.##} m/s every second), {StraightFree:0.#} on a loose one; reach {ReachSettings.Reach:0.##} m, at most {ReachSettings.MaxHeight:0.##} m above the feet, {rangeSlack:0.##} m of slack on the server");
             MelonLogger.Msg($"[Earth] Modifiers: Kick {StoneRules.KickUp:0.#} N s up; Stomp {StoneRules.StompDown:0.#} down on a loose stone; Uppercut {StoneRules.UppercutFree:0.#} forward and up on a loose stone, {StoneRules.UppercutGrounded:0.#} each way and {StoneRules.UppercutSpin:0.##} rad/s of spin on an anchored one; no push leaves a stone faster than {MaxStoneSpeed:0.##} m/s");
             MelonLogger.Msg($"[Earth] Modifiers: Parry floats a stone {ParrySeconds:0.##} s (or until it moves faster than {ParryBreakSpeed:0.##} m/s); a stone marked by Explode, or Straighted twice within {DoubleStraightSeconds:0.##} s, blasts {ExplodeRadius:0.##} m round it with {ExplodeForce:0.#} N s when it breaks");
-            MelonLogger.Msg($"[Earth] Modifiers: Hold pulls a stone {HoldDistance:0.##} m ahead of the holding hand (x {HoldFreeScale:0.#} loose, x {HoldGroundScale:0.#} along the ground, d per {PdStepSeconds:0.###} s) and lets it go past {HoldLetGoSpeed:0.##} m/s");
+            MelonLogger.Msg($"[Earth] Modifiers: Hold pulls a stone {HoldDistance:0.##} m ahead of the holding hand (x {HoldFreeScale:0.#} loose, x {HoldGroundScale:0.#} along the ground, d per {PdStepSeconds:0.###} s) and lets it go past {HoldLetGoSpeed:0.##} m/s once it has been within {HoldArmMetres:0.##} m of its place at that speed or slower");
         }
 
         static int AtLeastOne(MelonPreferences_Entry<int>? e, string key, int fallback) {

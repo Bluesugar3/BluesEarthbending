@@ -19,9 +19,10 @@ namespace Earthbending {
     // Pd.Hold's force toward Pd.HoldTarget: the hand plus [EarthModifiers] HoldDistance along the hand's flat forward (the
     // look's, when the hand points within 45 degrees of up or down, as the Hold pose's fingers do). The stone is let go
     // (StoneRules.HoldLetGo) once it moves faster than HoldLetGoSpeed (the throw: it keeps its velocity, held to MaxStoneSpeed
-    // by ruling C10), counted only once it has been at that speed or under since the hold began (ruling C27,
-    // StoneRules.HoldArmed: a stone caught flying is slowed by the pull first), or at once when it changes between grounded
-    // and free (a held slide left the ground); and when the holder is gone (left,
+    // by ruling C10), counted only once it has settled near its target since the hold began: in one step within HoldArmMetres
+    // of it (flat, on a held slide: Pd.Trail) and at HoldLetGoSpeed or slower (rulings C27, C28, StoneRules.HoldArmed: a stone
+    // caught flying or pulled in from afar is not thrown by its own rush to the hand); or at once when it changes between
+    // grounded and free (a held slide left the ground); and when the holder is gone (left,
     // no body or hand, dead, downed), the same hand strikes Hold on it again (StoneRules.HoldAgain), that hand takes another
     // stone, another modifier changes its state (Kick, Uppercut, Stomp, Parry; Straight and Explode keep it held), or it
     // breaks. A Held stone let go is Free (gravity back); a held slide slides on as any slide (slows, stands still). A Hold by
@@ -41,7 +42,7 @@ namespace Earthbending {
             public double Since, LogAt, LoggedAt;
             public Vector3 LoggedHand;
             public bool Logged;
-            /// <summary>Ruling C27: it has been at HoldLetGoSpeed or under since the hold began, so its speed test counts.</summary>
+            /// <summary>Rulings C27, C28: it has settled near its target since the hold began, so its speed test counts.</summary>
             public bool Armed;
             /// <summary>Physics steps driven so far (a stone not armed at its first step was caught fast).</summary>
             public int Steps;
@@ -108,35 +109,37 @@ namespace Earthbending {
         }
 
         // Each physics step of a hold, after the state's own step (a held slide that left the ground is Free by now): the
-        // let-go checks, then the pull toward the target, then (Debug) the once-a-second line.
+        // holder and the target, the arming and the let-go (StoneRules.HoldArmed, HoldLetGo, in the order the tests' model
+        // runs them), then the pull toward the target, then (Debug) the once-a-second line.
         void DriveHold() {
             Grip? g = grip;
             if (g == null) return;
             try {
                 if (body == null || body.isKinematic) { LetGoHold(Logs.Debug ? $"it is {State} and does not move" : ""); return; }
                 bool groundedChanged = StoneRules.IsGrounded(State) != g.Grounded;
+                if (!groundedChanged && State != StoneState.Held && State != StoneState.Sliding) { LetGoHold(Logs.Debug ? $"it is {State}" : ""); return; }
+                if (!HandOf(g, out Transform hand, out Vector3 look, out string gone)) { LetGoHold(gone); return; }
                 float speed = body.velocity.magnitude;
+                Vector3 at = hand.position;
+                V3 target = Pd.HoldTarget(V(at), V(hand.forward), V(look), Server.HoldDistance);
+                V3 error = target - V(body.worldCenterOfMass);
+                float trail = Pd.Trail(error, g.Grounded);
                 bool wasArmed = g.Armed;
-                g.Armed = StoneRules.HoldArmed(wasArmed, speed, Server.HoldLetGoSpeed);   // ruling C27
+                g.Armed = StoneRules.HoldArmed(wasArmed, trail, speed, Server.HoldArmMetres, Server.HoldLetGoSpeed);   // rulings C27, C28
                 if (Logs.Debug && g.Armed && !wasArmed && g.Steps > 0)
-                    MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} caught fast by {g.Name} has slowed to {speed:0.##} m/s after {Time.fixedTimeAsDouble - g.Since:0.##} s; a throw counts from now (past {Server.HoldLetGoSpeed:0.##} m/s)");
+                    MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} held by {g.Name} has settled {trail:0.##} m from its place at {speed:0.##} m/s after {Time.fixedTimeAsDouble - g.Since:0.##} s; a throw counts from now (past {Server.HoldLetGoSpeed:0.##} m/s)");
                 g.Steps++;
                 if (StoneRules.HoldLetGo(speed, groundedChanged, Server.HoldLetGoSpeed, g.Armed)) {
                     LetGoHold(!Logs.Debug ? "" : groundedChanged ? $"it {(g.Grounded ? "left the ground" : "became grounded")} ({State})"
                         : $"thrown at {speed:0.##} m/s (past [EarthModifiers] HoldLetGoSpeed {Server.HoldLetGoSpeed:0.##})");
                     return;
                 }
-                if (State != StoneState.Held && State != StoneState.Sliding) { LetGoHold(Logs.Debug ? $"it is {State}" : ""); return; }
-                if (!HandOf(g, out Transform hand, out Vector3 look, out string gone)) { LetGoHold(gone); return; }
-                Vector3 at = hand.position;
-                V3 target = Pd.HoldTarget(V(at), V(hand.forward), V(look), Server.HoldDistance);
-                V3 error = target - V(body.worldCenterOfMass);
                 Vector3 force = U(Pd.Hold(error, V(body.velocity), body.mass, g.Grounded, Server.HoldFreeScale, Server.HoldGroundScale, Server.PdStepSeconds));
                 if (force != Vector3.zero) {
                     body.AddForce(force, ForceMode.Force);
                     body.WakeUp();   // NetworkRigidbody sends it while it is awake (ruling 21)
                 }
-                if (Logs.Debug && Time.fixedTimeAsDouble >= g.LogAt) LogHold(g, at, target, error, speed);
+                if (Logs.Debug && Time.fixedTimeAsDouble >= g.LogAt) LogHold(g, at, target, trail, speed);
             }
             catch (Exception e) {
                 if (!holdFailed) { holdFailed = true; MelonLogger.Warning($"[Earth] Hold: holding a stone failed (said once; it is let go): {e}"); }
@@ -147,11 +150,10 @@ namespace Earthbending {
 
         // Debug, once a second per held stone (spec 4, unknown 3): the server's copy of the hand and how fast it moved since
         // the last line, the target, how far the stone trails it (flat for a held slide) and its speed.
-        void LogHold(Grip g, Vector3 hand, V3 target, V3 error, float speed) {
+        void LogHold(Grip g, Vector3 hand, V3 target, float trail, float speed) {
             double now = Time.fixedTimeAsDouble;
-            float trail = g.Grounded ? new V3(error.X, 0f, error.Z).Length : error.Length;
             string moved = g.Logged && now > g.LoggedAt ? $", moving {(hand - g.LoggedHand).magnitude / (float)(now - g.LoggedAt):0.##} m/s" : "";
-            MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} in {g.Name}'s {HandName(g.Hand)} hand for {now - g.Since:0.#} s ({State}): the server's hand at {V(hand)}{moved}, the target {target}; the stone trails it by {trail:0.###} m{(g.Grounded ? " (flat)" : "")} at {speed:0.##} m/s{(g.Armed ? "" : $" (caught fast: a throw counts once it is under {Server.HoldLetGoSpeed:0.##} m/s)")}");
+            MelonLogger.Msg($"[Earth] Hold: {Kind} #{Id} in {g.Name}'s {HandName(g.Hand)} hand for {now - g.Since:0.#} s ({State}): the server's hand at {V(hand)}{moved}, the target {target}; the stone trails it by {trail:0.###} m{(g.Grounded ? " (flat)" : "")} at {speed:0.##} m/s{(g.Armed ? "" : $" (not settled yet: a throw counts once it is within {Server.HoldArmMetres:0.##} m at {Server.HoldLetGoSpeed:0.##} m/s or slower)")}");
             g.LogAt = now + 1.0;
             g.LoggedAt = now;
             g.LoggedHand = hand;
