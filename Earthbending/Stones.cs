@@ -17,7 +17,9 @@ using System.Globalization;
 // StoneBody.cs and Hits.Explode run them. Task 13: Hold in After and CanApply, when a held stone is let go (StoneRules.HoldLetGo,
 // HoldAgain) and the hold's pull (Pd: the gains by weight, the PD force, the target ahead of the hand); StoneHold.cs runs them.
 // Task 14: Flick in After and CanApply, and the flick's pull and turn (Pd: FlickGains, the PID force, the target between the
-// hands, the turn from the hands, the turn still to go and its torque); StoneFlick.cs runs them.
+// hands, the turn from the hands, the turn still to go and its torque); StoneFlick.cs runs them. Task 15: how long two
+// clashing stones freeze (StoneRules.HitstopSeconds), that a frozen one is broken by no contact (StoneRules.Breakable), and
+// Dash's push (MoveRules.Dash); StoneFreeze.cs, Hits.cs and Moves.cs run them.
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -530,6 +532,43 @@ namespace Earthbending {
         /// (0 right, 1 left) that holds the stone for the SAME player, -1 when that player does not hold it (not held, or held
         /// by another player); <paramref name="hand"/> is the new Hold's hand.</summary>
         public static bool HoldAgain(int heldBy, int hand) => heldBy >= 0 && heldBy == hand;
+
+        // ---------------------------------------------------------------- Task 15: hitstop
+
+        /// <summary>[EarthDamage] HitstopSeconds' and HitstopPerPower's defaults (spec 3.7: two stones that clash freeze for
+        /// 0.06 + 0.02 x (powerA + powerB) seconds first).</summary>
+        public const float DefaultHitstopSeconds = 0.06f, DefaultHitstopPerPower = 0.02f;
+
+        /// <summary>[EarthDamage] HitstopSeconds: every clash's freeze before the powers add to it, in seconds (0 or more).</summary>
+        public static float HitstopBase { get; private set; } = DefaultHitstopSeconds;
+        /// <summary>[EarthDamage] HitstopPerPower: the freeze's seconds per point of the two stones' power together (0 or more).</summary>
+        public static float HitstopPerPower { get; private set; } = DefaultHitstopPerPower;
+
+        /// <summary>The hitstop's numbers from the settings (Hits.cs); one below 0 or not a finite number is 0.</summary>
+        public static void SetHitstop(float seconds, float perPower) {
+            HitstopBase = NotNegative(seconds);
+            HitstopPerPower = NotNegative(perPower);
+        }
+
+        /// <summary>Spec 2.2, 3.7: how long two clashing stones of powers <paramref name="a"/> and <paramref name="b"/>
+        /// freeze, <see cref="HitstopBase"/> + <see cref="HitstopPerPower"/> x (a + b) seconds.</summary>
+        public static float HitstopSeconds(int a, int b) => HitstopSeconds(a, b, HitstopBase, HitstopPerPower);
+
+        /// <summary>As the other, with the numbers given: <paramref name="baseSeconds"/> + <paramref name="perPower"/> x (a +
+        /// b). Never negative and never a number that is not one: a power below 0 counts as 0, a base or a per-power below 0
+        /// (or not a finite number) is 0; worked in doubles and held to the range of a float. 0 means no freeze.</summary>
+        public static float HitstopSeconds(int a, int b, float baseSeconds, float perPower) {
+            double powers = (double)Math.Max(a, 0) + Math.Max(b, 0);
+            double s = NotNegative(baseSeconds) + NotNegative(perPower) * powers;
+            return s < float.MaxValue ? (float)s : float.MaxValue;
+        }
+
+        /// <summary>Ruling C19: whether a contact (a creature's, a player's capsule, another stone's clash) can break a stone:
+        /// never while it is <paramref name="frozen"/> in a hitstop (spec 2.2: frozen, unbreakable). Its life, its owner
+        /// leaving, the server's quit, `earth clear` and a double Straight still break a frozen stone.</summary>
+        public static bool Breakable(bool frozen) => !frozen;
+
+        static float NotNegative(float v) => v >= 0f && !float.IsInfinity(v) ? v : 0f;
     }
 
     /// <summary>Task 13 (spec 2.4, rulings C13, C14): the PD controller that pulls a held stone toward its target ahead of the
@@ -1132,6 +1171,17 @@ namespace Earthbending {
     }
 
     internal static class MoveRules {
+        /// <summary>[EarthMovement] DashSpeed's (m/s along the yaw) and DashLift's (m/s up) defaults (spec 3.6).</summary>
+        public const float DefaultDashSpeed = 8f, DefaultDashLift = 0.5f;
+
+        /// <summary>Ruling C20 (spec 2.5, 3.6): Dash's push on the player who struck it (on their own game): along
+        /// <paramref name="yawDeg"/> (Unity's: 0 faces +Z, 90 faces +X) at <paramref name="speed"/> m/s, and
+        /// <paramref name="lift"/> m/s up (it keeps the game from zeroing a push along the ground).</summary>
+        public static V3 Dash(float yawDeg, float speed, float lift) {
+            V3 f = SpawnPlan.Forward(yawDeg);
+            return new V3(f.X * speed, lift, f.Z * speed);
+        }
+
         /// <summary>Straight's push on the player who struck it (spec 3.5, on their own game): back along the yaw at
         /// <paramref name="grounded"/> m/s when the target stone is anchored (as that game sees it), <paramref name="free"/> when
         /// it is not, and <paramref name="lift"/> up; all of it halved while the player is in the air.</summary>

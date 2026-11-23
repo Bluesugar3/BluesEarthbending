@@ -27,6 +27,62 @@ internal static class StoneTests {
         ParryAndExplode();
         Holds();
         Flicks();
+        DashAndHitstop();
+    }
+
+    // Task 15: Dash and hitstop (spec 2.2, 2.5, 3.6, 3.7; rulings C17-C20)
+    static void DashAndHitstop() {
+        // the brief's checks
+        Check("hitstop: powers 3 and 1 freeze 0.14 s", Near(StoneRules.HitstopSeconds(3, 1), 0.14f));
+        Check("breakable: a frozen stone is not broken by a contact", !StoneRules.Breakable(true) && StoneRules.Breakable(false));
+        Check("dash: yaw 90 is (8, 0.5, 0)", NearV(MoveRules.Dash(90f, 8f, 0.5f), new V3(8f, 0.5f, 0f)));
+
+        // the defaults (the settings': [EarthDamage] HitstopSeconds and HitstopPerPower, [EarthMovement] DashSpeed and DashLift)
+        Check("defaults: hitstop 0.06 s + 0.02 s per power", Near(StoneRules.DefaultHitstopSeconds, 0.06f) && Near(StoneRules.DefaultHitstopPerPower, 0.02f)
+            && Near(StoneRules.HitstopBase, 0.06f) && Near(StoneRules.HitstopPerPower, 0.02f));
+        Check("defaults: dash 8 m/s, lift 0.5 m/s", Near(MoveRules.DefaultDashSpeed, 8f) && Near(MoveRules.DefaultDashLift, 0.5f));
+
+        // spec 3.7: 0.06 + 0.02 x (powerA + powerB)
+        Check("hitstop: powers 0 and 0 are the base alone", Near(StoneRules.HitstopSeconds(0, 0), 0.06f));
+        Check("hitstop: powers 1 and 1", Near(StoneRules.HitstopSeconds(1, 1), 0.10f));
+        Check("hitstop: a pushed wall (5) and a sliding cube (4)", Near(StoneRules.HitstopSeconds(5, 4), 0.24f));
+        Check("hitstop: the order does not matter", Near(StoneRules.HitstopSeconds(1, 3), StoneRules.HitstopSeconds(3, 1)));
+        Check("hitstop: given numbers", Near(StoneRules.HitstopSeconds(3, 1, 0.1f, 0.05f), 0.3f) && Near(StoneRules.HitstopSeconds(2, 2, 0f, 0.02f), 0.08f)
+            && Near(StoneRules.HitstopSeconds(2, 2, 0.06f, 0f), 0.06f));
+
+        // bad inputs: never negative, never a number that is not one
+        Check("hitstop: a power below 0 counts as 0", Near(StoneRules.HitstopSeconds(-3, 1), 0.08f) && Near(StoneRules.HitstopSeconds(-5, -5), 0.06f));
+        Check("hitstop: a base or a per-power below 0 is 0", Near(StoneRules.HitstopSeconds(3, 1, -1f, 0.02f), 0.08f) && Near(StoneRules.HitstopSeconds(3, 1, 0.06f, -1f), 0.06f)
+            && StoneRules.HitstopSeconds(3, 1, -1f, -1f) == 0f);
+        Check("hitstop: a base or a per-power that is not a number is 0", Near(StoneRules.HitstopSeconds(3, 1, float.NaN, 0.02f), 0.08f)
+            && Near(StoneRules.HitstopSeconds(3, 1, 0.06f, float.NaN), 0.06f) && Near(StoneRules.HitstopSeconds(3, 1, float.PositiveInfinity, 0.02f), 0.08f)
+            && Near(StoneRules.HitstopSeconds(3, 1, 0.06f, float.NegativeInfinity), 0.06f));
+        float huge = StoneRules.HitstopSeconds(int.MaxValue, int.MaxValue, float.MaxValue, float.MaxValue);
+        Check("hitstop: the largest powers and numbers stay a finite number", !float.IsNaN(huge) && !float.IsInfinity(huge) && huge > 0f);
+        Check("hitstop: the smallest powers do not wrap round", Near(StoneRules.HitstopSeconds(int.MinValue, int.MinValue), 0.06f));
+
+        // the settings replace both numbers; bad ones are never negative
+        StoneRules.SetHitstop(0.1f, 0.05f);
+        Check("hitstop: from the settings", Near(StoneRules.HitstopSeconds(3, 1), 0.3f) && Near(StoneRules.HitstopBase, 0.1f) && Near(StoneRules.HitstopPerPower, 0.05f));
+        StoneRules.SetHitstop(0f, 0f);
+        Check("hitstop: settings 0 and 0 freeze for no time", StoneRules.HitstopSeconds(3, 1) == 0f);
+        StoneRules.SetHitstop(-1f, float.NaN);
+        Check("hitstop: bad settings are never negative", StoneRules.HitstopSeconds(3, 1) == 0f && StoneRules.HitstopBase == 0f && StoneRules.HitstopPerPower == 0f);
+        StoneRules.SetHitstop(StoneRules.DefaultHitstopSeconds, StoneRules.DefaultHitstopPerPower);
+        Check("hitstop: defaults back", Near(StoneRules.HitstopSeconds(3, 1), 0.14f));
+
+        // ruling C19: only a contact is refused on a frozen stone (its life, its owner, the quit, clear, a double Straight still break it)
+        Check("breakable: the same answer every time", StoneRules.Breakable(false) == StoneRules.Breakable(false) && StoneRules.Breakable(true) == StoneRules.Breakable(true));
+
+        // ruling C20: along the yaw at the speed, y the lift
+        Check("dash: yaw 0 is (0, 0.5, 8)", NearV(MoveRules.Dash(0f, 8f, 0.5f), new V3(0f, 0.5f, 8f)));
+        Check("dash: yaw -90 is (-8, 0.5, 0)", NearV(MoveRules.Dash(-90f, 8f, 0.5f), new V3(-8f, 0.5f, 0f)));
+        Check("dash: yaw 180 is (0, 0.5, -8)", NearV(MoveRules.Dash(180f, 8f, 0.5f), new V3(0f, 0.5f, -8f)));
+        V3 d30 = MoveRules.Dash(30f, 6f, 0.2f);
+        Check("dash: yaw 30, flat speed 6, lift 0.2", Near((float)System.Math.Sqrt(d30.X * d30.X + d30.Z * d30.Z), 6f) && Near(d30.Y, 0.2f) && Near(d30.X, 3f));
+        Check("dash: no speed is the lift alone", NearV(MoveRules.Dash(45f, 0f, 0.5f), new V3(0f, 0.5f, 0f)));
+        Check("dash: no lift is flat", NearV(MoveRules.Dash(90f, 8f, 0f), new V3(8f, 0f, 0f)));
+        Check("dash: the defaults along yaw 90", NearV(MoveRules.Dash(90f, MoveRules.DefaultDashSpeed, MoveRules.DefaultDashLift), new V3(8f, 0.5f, 0f)));
     }
 
     // Task 14: Flick (spec 2.3, 2.4, 3.5; rulings C13, C15, C16)

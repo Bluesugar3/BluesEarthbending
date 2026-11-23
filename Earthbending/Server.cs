@@ -374,7 +374,7 @@ namespace Earthbending {
             StoneState was = b.State;
             b.Apply(c.Mod, p, c.Hand, U(SpawnPlan.Forward(c.Yaw)));
             if (Logs.Debug)
-                MelonLogger.Msg($"[Earth] Modify: {c.Mod} on {b.Kind} #{b.Id} of {b.OwnerName} by {NameOf(p)}: {was} -> {(b.Broken ? "burst (a double Straight)" : b.State.ToString())}{(b.Queued != null && !b.Broken ? " (held until it has risen)" : "")}{(c.Mod == Modifier.Explode ? " (marked)" : "")} along yaw {c.Yaw:0.#} (its box {Reach.Nearest(serverHead, V(box.min), V(box.max)):0.##} m from the server's head; heads {(c.Head - serverHead).Length:0.##} m apart)");
+                MelonLogger.Msg($"[Earth] Modify: {c.Mod} on {b.Kind} #{b.Id} of {b.OwnerName} by {NameOf(p)}: {was} -> {(b.Broken ? "burst (a double Straight)" : b.State.ToString())}{(b.Queued != null && !b.Broken ? b.Frozen ? " (held until its hitstop ends)" : " (held until it has risen)" : "")}{(c.Mod == Modifier.Explode ? " (marked)" : "")} along yaw {c.Yaw:0.#} (its box {Reach.Nearest(serverHead, V(box.min), V(box.max)):0.##} m from the server's head; heads {(c.Head - serverHead).Length:0.##} m apart)");
         }
 
         // One Debug line; nothing is built without [EarthLog] Debug.

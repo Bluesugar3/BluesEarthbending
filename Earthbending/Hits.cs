@@ -39,10 +39,15 @@ namespace Earthbending {
     //   - One stone hits one target at most once per HitCooldownSeconds (HitLedger); with BreakOnHit the stone then breaks,
     //     so it hits once. A stone that has broken hits nothing more, in the same physics step too.
     //   - Two stones that touch clash when neither is Rising and they meet at MinHitSpeed or faster relative to each other:
-    //     StoneRules.Clash on both powers, and the loser (both on a tie) breaks; a winner that is not kinematic carries on at
-    //     its velocity (and spin) from before the step (StoneBody.CarryOn, spec 3.7), and the loser stops colliding at once
-    //     (StoneBody.Break). Both stones get the collision; the one with the lower Identifier decides it. No hitstop freeze
-    //     yet (Task 15).
+    //     StoneRules.Clash on both powers at the contact decides the loser (both on a tie). Task 15 (spec 2.2, 3.7; rulings
+    //     C17-C19): both then freeze where they are for StoneRules.HitstopSeconds (HitstopSeconds + HitstopPerPower x both
+    //     powers; StoneBody.Freeze, StoneFreeze.cs), shaking on the games (Applied(Hitstop)); as the freeze ends the loser
+    //     breaks and stops colliding (StoneBody.Break), and a winner that is not kinematic carries on at its velocity (and
+    //     spin) from before the contact (StoneBody.CarryOn). With no hitstop (both settings 0) that happens at once, the
+    //     winner first. Both stones get the collision; the one with the lower Identifier decides it. Only stone on stone
+    //     freezes (ruling C17): a hit on a creature or a player breaks the stone at once. Ruling C19: a frozen stone is
+    //     broken by no contact (StoneRules.Breakable): it hits no creature or player and clashes with nothing (a second
+    //     clash does nothing), and a blast leaves it alone.
     //   - Per hit and per clash one Debug line ([EarthLog] Debug), with the target's health before and after, for tuning
     //     DamagePerPower. A failure is warned once per kind, then Debug lines; nothing here ever throws into the physics step.
     //   - Ruling 30: a player hit counts only when the game really lowered their health: a hit with damage above 0 that left
@@ -52,8 +57,9 @@ namespace Earthbending {
     //   - Task 12 (ruling C12; spec 2.4, 2.6, 3.7): Explode, a marked stone's blast when it breaks (StoneBody.Break), by
     //     StoneRules.ExplodeShare of each thing's distance: players (only with HurtPlayers) knocked back away from it,
     //     living creatures staggered (cripple 1, no damage), loose rigidbodies and our own stones pushed away (grounded stones
-    //     set loose first, Rising ones left alone). No damage, and a blast breaks no stone, so blasts never chain. A clash's
-    //     winner carries on first, so a marked loser's blast adds to the speed it carries on at.
+    //     set loose first, Rising and frozen ones left alone). No damage, and a blast breaks no stone, so blasts never chain.
+    //     A clash's winner carries on first (thawed first: StoneFreeze.cs), so a marked loser's blast adds to the speed it
+    //     carries on at.
     internal static class Hits {
         const bool DefaultHurtPlayers = true, DefaultBreakOnHit = true;
         const float DefaultDamagePerPower = 8f, DefaultCripplePerPower = 0.5f, DefaultMinHitSpeed = 2f, DefaultMovingSpeed = 3f;
@@ -62,6 +68,7 @@ namespace Earthbending {
 
         static MelonPreferences_Entry<bool>? hurtPlayersEntry, breakOnHitEntry;
         static MelonPreferences_Entry<float>? damagePerPowerEntry, cripplePerPowerEntry, minHitSpeedEntry, movingSpeedEntry, knockbackSpeedEntry, hitCooldownEntry;
+        static MelonPreferences_Entry<float>? hitstopEntry, hitstopPerPowerEntry;
 
         /// <summary>[EarthDamage] HurtPlayers: stones hit players (damage, knockback, the break); off, they ignore players entirely.</summary>
         internal static bool HurtPlayers { get; private set; } = DefaultHurtPlayers;
@@ -100,6 +107,8 @@ namespace Earthbending {
             knockbackSpeedEntry = cat.CreateEntry("KnockbackSpeed", DefaultKnockbackSpeed, description: "Server. A struck player is pushed this many m/s along the stone's way (flat, or 45 degrees up when the stone rose that steeply), on their own game, and cannot bend for power x 0.7 / 3 s (never after a Disc). A marked stone's blast ([EarthModifiers] ExplodeRadius) pushes each player in it this many m/s away from it, times their share (all of it within half the radius, a quarter at its edge), with the same stun. 0 or more.");
             breakOnHitEntry = cat.CreateEntry("BreakOnHit", DefaultBreakOnHit, description: "Server. A stone breaks once it has hit a creature or a player (so each stone hits once). Off: it carries on, and may hit the same one again after HitCooldownSeconds.");
             hitCooldownEntry = cat.CreateEntry("HitCooldownSeconds", DefaultHitCooldown, description: "Server. One stone hits one creature or player at most once in this many seconds. 0 or more.");
+            hitstopEntry = cat.CreateEntry("HitstopSeconds", StoneRules.DefaultHitstopSeconds, description: "Server. Two stones that clash both freeze where they are for this many seconds, plus HitstopPerPower for each point of their power together (the hitstop: they shake on the games and nothing they touch breaks them), then the weaker breaks (both when equal) and the stronger carries on at its speed from before. Only stone on stone; a stone that hits a creature or a player breaks at once. 0 or more (this and HitstopPerPower both 0: no freeze, the clash's outcome at once).");
+            hitstopPerPowerEntry = cat.CreateEntry("HitstopPerPower", StoneRules.DefaultHitstopPerPower, description: "Server. A clash's freeze lasts this many seconds more for each point of the two stones' power together (see HitstopSeconds: a pushed Pillar, power 3, on a Ball, power 1, freezes 0.06 + 0.02 x 4 = 0.14 s). 0 or more.");
             Apply();
             Cfg.Changed += Apply;
         }
@@ -113,7 +122,9 @@ namespace Earthbending {
             MovingSpeed = Cfg.NotNegative(movingSpeedEntry, "EarthDamage", "MovingSpeed", DefaultMovingSpeed);
             KnockbackSpeed = Cfg.NotNegative(knockbackSpeedEntry, "EarthDamage", "KnockbackSpeed", DefaultKnockbackSpeed);
             HitCooldownSeconds = Cfg.NotNegative(hitCooldownEntry, "EarthDamage", "HitCooldownSeconds", DefaultHitCooldown);
-            MelonLogger.Msg($"[Earth] Hits: {DamagePerPower:0.##} damage and {CripplePerPower:0.##} cripple per power from {MinHitSpeed:0.##} m/s (+1 power over {MovingSpeed:0.##} m/s); {(HurtPlayers ? $"players hurt and knocked back {KnockbackSpeed:0.##} m/s" : "players ignored ([EarthDamage] HurtPlayers off)")}; a stone {(BreakOnHit ? "breaks on its hit" : "carries on after a hit")}, one hit per target every {HitCooldownSeconds:0.##} s");
+            StoneRules.SetHitstop(Cfg.NotNegative(hitstopEntry, "EarthDamage", "HitstopSeconds", StoneRules.DefaultHitstopSeconds),
+                Cfg.NotNegative(hitstopPerPowerEntry, "EarthDamage", "HitstopPerPower", StoneRules.DefaultHitstopPerPower));
+            MelonLogger.Msg($"[Earth] Hits: {DamagePerPower:0.##} damage and {CripplePerPower:0.##} cripple per power from {MinHitSpeed:0.##} m/s (+1 power over {MovingSpeed:0.##} m/s); {(HurtPlayers ? $"players hurt and knocked back {KnockbackSpeed:0.##} m/s" : "players ignored ([EarthDamage] HurtPlayers off)")}; a stone {(BreakOnHit ? "breaks on its hit" : "carries on after a hit")}, one hit per target every {HitCooldownSeconds:0.##} s; clashing stones freeze {StoneRules.HitstopBase:0.###} s + {StoneRules.HitstopPerPower:0.###} s per power");
         }
 
         /// <summary>From Server.Forget: a stone that no longer stands is forgotten by the hit record.</summary>
@@ -122,10 +133,11 @@ namespace Earthbending {
         // ---------------------------------------------------------------- creatures and stones: the stone's collisions
 
         /// <summary>Server, from StoneBody.OnCollisionEnter: the stone touched something. Another stone: a clash. A creature: a
-        /// hit. Anything else (the ground, a player's collider, a tree) does nothing here. Never throws.</summary>
+        /// hit. Anything else (the ground, a player's collider, a tree) does nothing here, and nothing at all for a stone frozen
+        /// in a hitstop (ruling C19). Never throws.</summary>
         internal static void OnContact(StoneBody stone, Collision c) {
             try {
-                if (stone == null || stone.Broken || c == null || stone.State == StoneState.Rising) return;
+                if (stone == null || stone.Broken || c == null || stone.State == StoneState.Rising || !StoneRules.Breakable(stone.Frozen)) return;
                 float rel = c.relativeVelocity.magnitude, own = stone.Velocity.magnitude;
                 if (!(rel >= MinHitSpeed) && !(own >= MinHitSpeed)) return;   // most contacts (a stone on the ground) end here
                 Collider other = c.collider;
@@ -154,18 +166,31 @@ namespace Earthbending {
 
         static void Clash(StoneBody a, StoneBody b, float rel) {
             if (a.Id > b.Id || b.Broken) return;   // both stones get the collision; the lower Identifier decides
+            if (!StoneRules.Breakable(a.Frozen) || !StoneRules.Breakable(b.Frozen)) return;   // ruling C19: a second clash on a frozen stone does nothing
             if (!StoneRules.Clashes(a.State, b.State, rel, MinHitSpeed)) return;
             int pa = a.Power, pb = b.Power;
             ClashResult r = StoneRules.Clash(pa, pb);
-            // spec 3.7: the winner carries on at its old speed (the step's solver stopped or bounced it against the loser, which
-            // has stopped colliding); a kinematic winner (Still) has none to get back. Before the loser breaks, so a marked
-            // loser's blast (Task 12) adds to that speed. No hitstop freeze yet (Task 15).
             StoneBody? winner = r == ClashResult.ABreaks ? b : r == ClashResult.BBreaks ? a : null;
-            bool carried = winner != null && winner.CarryOn();
-            if (r != ClashResult.BBreaks) a.Break(Logs.Debug ? $"clash with {b.Kind} #{b.Id} (power {pa} against {pb})" : "clash");
-            if (r != ClashResult.ABreaks) b.Break(Logs.Debug ? $"clash with {a.Kind} #{a.Id} (power {pb} against {pa})" : "clash");
-            if (Logs.Debug)
-                MelonLogger.Msg($"[Earth] Hits: {a.Kind} #{a.Id} of {a.OwnerName} ({a.State}, power {pa}, {a.Velocity.magnitude:0.##} m/s) met {b.Kind} #{b.Id} of {b.OwnerName} ({b.State}, power {pb}, {b.Velocity.magnitude:0.##} m/s) at {rel:0.##} m/s: {(winner == null ? "both break" : $"#{(winner == a ? b.Id : a.Id)} breaks, #{winner.Id} {(carried ? $"carries on at {winner.Velocity.magnitude:0.##} m/s" : "stands (kinematic)")}")}");
+            string? whyA = r == ClashResult.BBreaks ? null : Logs.Debug ? $"clash with {b.Kind} #{b.Id} (power {pa} against {pb})" : "clash";
+            string? whyB = r == ClashResult.ABreaks ? null : Logs.Debug ? $"clash with {a.Kind} #{a.Id} (power {pb} against {pa})" : "clash";
+            string met = !Logs.Debug ? "" : $"{a.Kind} #{a.Id} of {a.OwnerName} ({a.State}, power {pa}, {a.Velocity.magnitude:0.##} m/s) met {b.Kind} #{b.Id} of {b.OwnerName} ({b.State}, power {pb}, {b.Velocity.magnitude:0.##} m/s) at {rel:0.##} m/s";
+            // spec 2.2, 3.7 (Task 15, rulings C17-C19): decided now, on the powers now; both freeze for the hitstop, then the
+            // loser breaks and the winner carries on at its speed from before this contact (the step's solver stopped or
+            // bounced it against the loser); a kinematic winner (Still) has none to get back. StoneFreeze.cs thaws the winner
+            // before its loser breaks, so a marked loser's blast (Task 12) adds to that speed.
+            float seconds = StoneRules.HitstopSeconds(pa, pb);
+            bool fa = a.Freeze(seconds, b, whyA), fb = b.Freeze(seconds, a, whyB);
+            // a stone that did not freeze (no hitstop: [EarthDamage] HitstopSeconds and HitstopPerPower 0) takes its outcome
+            // at once, as before Task 15: the winner first, for the same blast
+            bool carried = false;
+            if (winner != null && !(ReferenceEquals(winner, a) ? fa : fb)) carried = winner.CarryOn();
+            if (whyA != null && !fa) a.Break(whyA);
+            if (whyB != null && !fb) b.Break(whyB);
+            if (Logs.Debug) {
+                string outcome = winner == null ? "both break" : $"#{(winner == a ? b.Id : a.Id)} breaks, #{winner.Id} wins";
+                string then = fa || fb ? $"both freeze {seconds:0.###} s first (the hitstop)" : $"at once (no hitstop: {seconds:0.###} s){(winner != null ? carried ? $"; #{winner.Id} carries on at {winner.Velocity.magnitude:0.##} m/s" : $"; #{winner.Id} stands (kinematic)" : "")}";
+                MelonLogger.Msg($"[Earth] Hits: {met}: {outcome}, {then}");
+            }
         }
 
         static void HitCreature(StoneBody stone, HealthObject h, Vector3 point, Vector3 normal, float rel) {
@@ -192,11 +217,11 @@ namespace Earthbending {
 
         /// <summary>Server, from StoneBody.FixedUpdate (before the physics step, after the stone's own update): a moving stone
         /// (its own speed, this step's or the last one's, at least MinHitSpeed; never Rising) against every player's capsule
-        /// but its holder's and its flicker's (ruling C16); nothing at all with HurtPlayers off (StoneRules.HitsPlayer decides).
-        /// Never throws.</summary>
+        /// but its holder's and its flicker's (ruling C16); nothing at all with HurtPlayers off (StoneRules.HitsPlayer decides),
+        /// nor for a stone frozen in a hitstop (ruling C19). Never throws.</summary>
         internal static void TestPlayers(StoneBody stone) {
             try {
-                if (stone == null || stone.Broken || !HurtPlayers) return;   // HurtPlayers off: stones ignore players entirely
+                if (stone == null || stone.Broken || !HurtPlayers || !StoneRules.Breakable(stone.Frozen)) return;   // HurtPlayers off: stones ignore players entirely
                 Vector3 now = stone.Velocity, last = stone.LastVelocity;
                 if (!StoneRules.CanHit(stone.State, Mathf.Max(now.magnitude, last.magnitude), MinHitSpeed)) return;
                 Collider? shape = stone.Shape;
@@ -344,7 +369,7 @@ namespace Earthbending {
         /// (to its centre of mass; straight up when that is on the centre), <paramref name="force"/> x share in N s, the speed
         /// it adds held to [EarthModifiers] MaxStoneSpeed (a 1 kg log would otherwise fly off at 1000 m/s).</item>
         /// <item>Our own stones (not the source, not broken; a copy of Server.Stones): StoneBody.Blast with the same push
-        /// (Rising ones left alone, grounded ones set loose first, held to MaxStoneSpeed).</item>
+        /// (Rising ones and ones frozen in a hitstop left alone, grounded ones set loose first, held to MaxStoneSpeed).</item>
         /// </list>
         /// The games within 80 m get Applied(Exploded) at the centre (they play ExplodeEffect and ExplodeSound). One Debug line
         /// with what it pushed. Never throws: a failure is warned once, then Debug lines, and the rest of the blast goes on.</summary>
@@ -364,7 +389,7 @@ namespace Earthbending {
                 if (!(force >= 0f) || float.IsInfinity(force)) force = 0f;
                 List<string>? said = Logs.Debug ? new List<string>() : null;
                 int players = Players(centre, radius, source, said);
-                int creatures = 0, bodies = 0, stones = 0, loosened = 0, rising = 0;
+                int creatures = 0, bodies = 0, stones = 0, loosened = 0, rising = 0, frozen = 0;
 
                 // creatures and loose rigidbodies: every solid collider in the sphere (the game's Explosive.Trigger does the same)
                 Collider[] found = Physics.OverlapSphere(centre, radius, ~0, QueryTriggerInteraction.Ignore);
@@ -413,6 +438,7 @@ namespace Earthbending {
                         float share = StoneRules.ExplodeShare((s.Box.ClosestPoint(centre) - centre).magnitude, radius);
                         if (!(share > 0f)) continue;
                         if (s.State == StoneState.Rising) { rising++; continue; }   // half in the ground (ruling C6)
+                        if (s.Frozen) { frozen++; continue; }   // in a hitstop (Task 15): it holds where it is
                         StoneState was = s.State;
                         if (!s.Blast(Away(centre, s.CentreOfMass) * (force * share), out bool freed)) continue;
                         stones++;
@@ -422,7 +448,7 @@ namespace Earthbending {
                     catch (Exception e) { BlastFailed("a stone", e); }
                 }
                 if (said != null)
-                    MelonLogger.Msg($"[Earth] Hits: {what} exploded at {centre} ({radius:0.##} m, {force:0.#} N s): {players} player(s) knocked back, {creatures} creature(s) staggered, {bodies} loose rigidbody(ies) and {stones} stone(s) pushed ({loosened} set loose{(rising > 0 ? $", {rising} rising left alone" : "")}){(said.Count > 0 ? ": " + string.Join(", ", said.ToArray()) : "")}; the look goes to {games} game(s)");
+                    MelonLogger.Msg($"[Earth] Hits: {what} exploded at {centre} ({radius:0.##} m, {force:0.#} N s): {players} player(s) knocked back, {creatures} creature(s) staggered, {bodies} loose rigidbody(ies) and {stones} stone(s) pushed ({loosened} set loose{(rising > 0 ? $", {rising} rising left alone" : "")}{(frozen > 0 ? $", {frozen} frozen left alone" : "")}){(said.Count > 0 ? ": " + string.Join(", ", said.ToArray()) : "")}; the look goes to {games} game(s)");
             }
             catch (Exception e) { BlastFailed("the blast", e); }
         }

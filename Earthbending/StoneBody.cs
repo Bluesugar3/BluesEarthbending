@@ -39,7 +39,9 @@ namespace Earthbending {
     /// reaching this one. Task 13: Hold (StoneHold.cs, a part of this class): the stone follows the holder's hand on the
     /// server, a held slide (Sliding) or loose with no gravity (Held), until it is thrown or let go. Task 14: Flick
     /// (StoneFlick.cs, another part): a loose stone hangs between the flicker's two hands with no gravity (Flicked) and turns
-    /// as they turn them, until Stomp drops it or it breaks.</summary>
+    /// as they turn them, until Stomp drops it or it breaks. Task 15: the hitstop (StoneFreeze.cs, another part): two stones
+    /// that clash freeze where they are for a blink (<see cref="Freeze"/>), then the loser breaks and the winner carries
+    /// on.</summary>
     /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
     /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
     internal sealed partial class StoneBody : MonoBehaviour {
@@ -79,8 +81,9 @@ namespace Earthbending {
         /// <summary>It broke, or was destroyed: it takes no more modifiers, and hits and clashes no more.</summary>
         internal bool Broken => broken;
 
-        /// <summary>Task 8: the rigidbody's velocity before this physics step (zero while kinematic), set at the end of each
-        /// FixedUpdate: a collision callback comes after the step, which has already slowed the stone against what it struck.</summary>
+        /// <summary>Task 8: the rigidbody's velocity before this physics step (zero while kinematic, and while frozen in a
+        /// hitstop: Task 15), set at the end of each FixedUpdate: a collision callback comes after the step, which has already
+        /// slowed the stone against what it struck.</summary>
         internal Vector3 Velocity { get; private set; }
         /// <summary>The same for the physics step before (Hits: a stone that bounced off a player in between still came toward them).</summary>
         internal Vector3 LastVelocity { get; private set; }
@@ -122,8 +125,9 @@ namespace Earthbending {
 
         void FixedUpdate() {
             if (broken) return;
+            if (frozen && !Thawed()) return;   // Task 15: a hitstop holds everything (StoneFreeze.cs); a loser breaks as it ends
             if (State == StoneState.Rising) Rise();
-            else if (queued is { } q) {   // ruling C6: the step after the rise ended, so a launch fired then has landed
+            else if (queued is { } q) {   // ruling C6: the step after the rise ended, so a launch fired then has landed; Task 15: or the step a hitstop ended
                 queued = null;
                 Do(q.m, q.by, q.hand, q.flatForward);
             }
@@ -141,9 +145,11 @@ namespace Earthbending {
 
         /// <summary>Task 8 (spec 3.7): this stone won a clash and carries on at its speed from before the physics step: the
         /// step's solver stopped or bounced it against the loser (a kinematic Still loser stops it dead). Its rigidbody gets
-        /// <see cref="Velocity"/> and <see cref="AngularVelocity"/> back. Set from the collision callback, after the step and
-        /// before the next FixedUpdate, so the next Slide reads the restored speed and does not anchor a winner the loser had
-        /// stopped (the loser no longer collides: <see cref="Break"/>). Nothing for a broken or kinematic stone; false then.</summary>
+        /// <see cref="Velocity"/> and <see cref="AngularVelocity"/> back. Task 15: run as its hitstop ends (Thaw, with the
+        /// velocities kept at the contact), or from the collision callback when a clash has no hitstop (Hits.Clash), after the
+        /// step and before the next FixedUpdate, so the next Slide reads the restored speed and does not anchor a winner the
+        /// loser had stopped (the loser no longer collides: <see cref="Break"/>). Nothing for a broken or kinematic stone; false
+        /// then.</summary>
         internal bool CarryOn() {
             if (broken || body == null || body.isKinematic) return false;
             body.velocity = Velocity;
@@ -219,9 +225,9 @@ namespace Earthbending {
         /// <summary>Server (ruling C4): another stone is summoned where this one stands. When StoneRules.SummonUnder sets it
         /// loose (Still, Sliding, Stomped) it is loose (<see cref="Loosen"/>, Free) and thrown up at the rule's lift, a velocity
         /// change (a lift of 0: loose, not thrown; Task 9's CARRY); true then. False, and nothing changes, in any other state
-        /// (the rule leaves it as it is) or broken.</summary>
+        /// (the rule leaves it as it is), broken or frozen in a hitstop (Task 15: it holds where it is).</summary>
         internal bool LiftOff() {
-            if (broken || body == null) return false;
+            if (broken || frozen || body == null) return false;
             (StoneState next, float lift) = StoneRules.SummonUnder(State);
             if (next == State) return false;
             StoneState was = State;
@@ -243,9 +249,15 @@ namespace Earthbending {
             if (body.collisionDetectionMode != want) body.collisionDetectionMode = want;
         }
 
-        /// <summary>Normal physics (Free's): not kinematic, gravity, nothing frozen, its own material back, Discrete collision.</summary>
+        /// <summary>Normal physics (Free's): not kinematic, gravity, nothing frozen, its own material back, Discrete collision.
+        /// In a hitstop (Task 15: a hold or a flick let go in it) the body stays frozen and gets Free's physics as it ends.</summary>
         void Loosen() {
             if (body == null) return;
+            if (frozen) {
+                EndSlideMaterial();
+                LoosenKept();
+                return;
+            }
             Detection(StoneState.Free);   // out of Stomped (a Kick, an Uppercut, a lift-off)
             body.isKinematic = false;
             body.useGravity = true;
@@ -285,9 +297,9 @@ namespace Earthbending {
             Land(c);   // a stone stomped while it already lay on the ground lands in the next step
         }
 
-        // Only a sliding stone looks; one up-facing contact point is enough.
+        // Only a sliding stone looks (not one frozen in a hitstop); one up-facing contact point is enough.
         void Touched(Collision c) {
-            if (State != StoneState.Sliding || touchedGround || c == null) return;
+            if (State != StoneState.Sliding || frozen || touchedGround || c == null) return;
             for (int i = 0; i < c.contactCount; i++) {
                 if (!StoneRules.IsGroundContact(c.GetContact(i).normal.y)) continue;
                 touchedGround = true;
@@ -298,9 +310,10 @@ namespace Earthbending {
 
         // Ruling C7: a Stomped stone lands on any up-facing contact (the ground, a floor, another stone's top): Still where it
         // is (StoneRules.Landed), and the games within 80 m get Applied(Stomp) under its middle at the contact's height, where
-        // they play the slam. A collider a clash disabled in this same contact (StoneBody.Break) holds nothing up.
+        // they play the slam. A collider a clash disabled in this same contact (StoneBody.Break) holds nothing up. A stone frozen
+        // in a hitstop (Task 15: by a clash in this same contact too) does not land; it falls on as it ends.
         void Land(Collision c) {
-            if (State != StoneState.Stomped || broken || body == null || c == null) return;
+            if (State != StoneState.Stomped || broken || frozen || body == null || c == null) return;
             Collider other = c.collider;
             if (other == null || !other.enabled) return;
             for (int i = 0; i < c.contactCount; i++) {
@@ -379,7 +392,8 @@ namespace Earthbending {
         /// [EarthModifiers] DoubleStraightSeconds of the last bursts the stone at once instead (<see cref="Burst"/>, ruling C26),
         /// even while it rises. On a Rising stone every other modifier is held until the rise has ended (ruling C6), then
         /// applied as if it had just arrived; a later claim replaces a held one (also in the one physics step between the
-        /// rise's end and the held one's turn).</summary>
+        /// rise's end and the held one's turn). Task 15: the same while it is frozen in a hitstop, until the freeze ends (a loser
+        /// breaks then, and its held modifier with it).</summary>
         internal void Apply(Modifier m, Player by, int hand, Vector3 flatForward) {
             if (broken || !StoneRules.CanApply(State, m)) return;
             if (m == Modifier.Explode) { Mark(by); return; }
@@ -392,9 +406,9 @@ namespace Earthbending {
                 pushLater = null;
                 if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} came before its launch's second push, which is dropped");
             }
-            if (queued is { } old && Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} replaces the {old.m} it took while rising");
+            if (queued is { } old && Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} replaces the {old.m} it took while {(frozen ? "frozen" : "rising")}");
             queued = null;
-            if (State == StoneState.Rising) queued = (m, by, hand, flatForward);   // spec 2.3: a rising stone is half in the ground
+            if (State == StoneState.Rising || frozen) queued = (m, by, hand, flatForward);   // spec 2.3: a rising stone is half in the ground; Task 15: a frozen one holds
             else Do(m, by, hand, flatForward);
         }
 
@@ -549,10 +563,11 @@ namespace Earthbending {
         /// grounded one (Still, Sliding, Stomped) is set loose first (<see cref="Loosen"/>, Free; <paramref name="loosened"/>).
         /// Then its velocity is StoneRules.Pushed (its velocity + the impulse over its mass, held to [EarthModifiers]
         /// MaxStoneSpeed), as every modifier's push; a Floating one floats on with it, and its speed ends the float. A blast never
-        /// breaks a stone. False, and nothing changes, when it is broken, Rising or has no rigidbody.</summary>
+        /// breaks a stone. False, and nothing changes, when it is broken, Rising, frozen in a hitstop (Task 15: a clash's
+        /// winner is thawed before its marked loser blasts, so that blast still adds) or has no rigidbody.</summary>
         internal bool Blast(Vector3 impulse, out bool loosened) {
             loosened = false;
-            if (broken || body == null || State == StoneState.Rising) return false;
+            if (broken || frozen || body == null || State == StoneState.Rising) return false;
             if (StoneRules.IsGrounded(State)) {
                 Loosen();
                 State = StoneState.Free;
@@ -568,10 +583,13 @@ namespace Earthbending {
         /// Applied(Broke) at its place (they play the break), then the entity is destroyed. One Debug line with
         /// <paramref name="why"/>. Twice is once. A marked stone (<see cref="Exploding"/>) then blasts round its place
         /// (Hits.Explode with [EarthModifiers] ExplodeRadius and ExplodeForce, ruling C12), unless <paramref name="explode"/>
-        /// is false (the server's quit, `earth clear`). The blast never throws into the break.</summary>
+        /// is false (the server's quit, `earth clear`). The blast never throws into the break. Task 15 (ruling C19): a stone
+        /// frozen in a hitstop breaks too (its life, its owner leaving, the quit, `earth clear`, a double Straight), and what
+        /// its clash would have done next is dropped.</summary>
         internal void Break(string why, bool explode = true) {
             if (broken) return;
             broken = true;
+            bool wasFrozen = DropFreeze();
             EndHold("it broke");   // Task 13
             EndFlick("it broke");   // Task 14
             Server.Forget(this);
@@ -588,7 +606,7 @@ namespace Earthbending {
                 if (!sendFailed) { sendFailed = true; MelonLogger.Warning($"[Earth] Stones: telling the games a stone broke failed (said once): {e.Message}"); }
             }
             bool blast = explode && Exploding;
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} broke at {at}: {why}{(Exploding ? blast ? "; it was marked: it blasts" : "; it was marked, but no blast (it was not broken in play)" : "")}");
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} broke at {at}: {why}{(wasFrozen ? " (in its hitstop: its clash's outcome is dropped)" : "")}{(Exploding ? blast ? "; it was marked: it blasts" : "; it was marked, but no blast (it was not broken in play)" : "")}");
             if (blast) {
                 try { Hits.Explode(at, Server.ExplodeRadius, Server.ExplodeForce, this); }   // never throws; a guard all the same
                 catch (Exception e) {
