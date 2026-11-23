@@ -6,5 +6,6 @@
   <ItemGroup>
     <Compile Include="..\Earthbending\Stones.cs" />
     <Compile Include="..\Earthbending\StoneBox.cs" />
+    <Compile Include="..\Earthbending\Poses.cs" />
   </ItemGroup>
 </Project>
