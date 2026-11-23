@@ -267,8 +267,8 @@ internal static class PoseTests {
 
     // the pose recorder (Task 3): when a snapshot is taken, and what its row holds
     static void CaptureChecks() {
-        // the head stands still at H; the hands r0 / l0 are 0.7 m under it (low, but no rest: that is 0.85 m under the head)
-        V3 H = new V3(1f, 1.5f, -3f);
+        // the head stands still at H; the hands r0 / l0 are 0.6 m under it (low, but no rest: that is 0.7 m under the head)
+        V3 H = new V3(1f, 1.4f, -3f);
         // steps a gate at 90 Hz: each hand at a place given by the time; returns the times snapshots were taken (and, into
         // rests, the times a rest was seen)
         List<double> Snaps(CaptureGate g, double seconds, Func<double, V3> right, Func<double, V3> left, double from = 0.0, List<double>? rests = null) {
@@ -282,7 +282,7 @@ internal static class PoseTests {
             }
             return at;
         }
-        static CaptureGate G() => new CaptureGate(0.01f, 0.6f, 0.2f, 0.85f);
+        static CaptureGate G() => new CaptureGate(0.01f, 0.6f, 0.2f, 0.7f);
         V3 r0 = new V3(1.25f, 0.8f, -3.05f), l0 = new V3(0.75f, 0.8f, -3.05f), r1 = r0 + new V3(0f, 0.45f, 0.3f);
         Func<double, V3> restR = _ => r0, restL = _ => l0;
         Func<double, V3> raiseR = t => t < 0.3 ? r0 + (r1 - r0) * (float)(t / 0.3) : r1;   // the right hand raised 0.54 m in 0.3 s, then still
@@ -329,8 +329,11 @@ internal static class PoseTests {
             Snaps(G(), 2.0, Glide(hangR, H + jump.A.Pos, 0.0), Glide(hangL, H + jump.B.Pos, 0.0)).Count == 1);
         Check("capture rest: one hand hanging and the other raised is no rest",
             Snaps(G(), 2.0, _ => hangR, Glide(hangL, H + new V3(-0.2f, 0.1f, 0.1f), 0.0)).Count == 1);
-        Check("capture rest: every default pose keeps a hand above the rest line, written or mirrored",
-            PoseLibrary.Defaults.All(s => Math.Max(s.A.Pos.Y, s.B.Pos.Y) > -0.85f + 0.25f));
+        PoseSpec stomp = Spec(Move.Stomp);
+        Check("capture rest: Stomp's default hands (both 0.55 m under the head, the lowest pair) snapshot",
+            Snaps(G(), 2.0, Glide(hangR, H + stomp.A.Pos, 0.0), Glide(hangL, H + stomp.B.Pos, 0.0)).Count == 1);
+        Check("capture rest: every default pose keeps a hand 0.1 m or more above the rest line, written or mirrored",
+            PoseLibrary.Defaults.All(s => Math.Max(s.A.Pos.Y, s.B.Pos.Y) >= -0.7f + 0.1f));
         Check("capture: a head that is not a number takes nothing", G().Step(0.0, new V3(0f, float.NaN, 0f), r0, l0) == CaptureEvent.None);
 
         // a hand's record: the controller's place and axes through the body frame. Facing +X (yaw 90), a controller turned

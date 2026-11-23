@@ -13,13 +13,13 @@ namespace Earthbending {
     // (CaptureGate in Poses.cs), one row goes to UserData\Earthbending\pose-capture-<yyyyMMdd-HHmmss>.csv (PoseCapture.Row:
     // each controller's place and local X, Y and Z axes in the body frame, through BodyFrame.ToBody at body scale 1), both
     // hands buzz twice and the log says "[Earth] Capture: snapshot N". Both hands still more than CaptureRestBelowMetres
-    // (0.85 m) under the head is a rest (arms at the sides): no row, no buzz, one log line, and it arms the next snapshot. The
+    // (0.7 m) under the head is a rest (arms at the sides): no row, no buzz, one log line, and it arms the next snapshot. The
     // owner strikes the 16 poses of spec 3.3 in its order with A on the right hand, resting between them;
     // Earthbending/tools/fit_poses.py turns the file into poses.txt and the four axis settings.
     internal static class Hands {
         // the double buzz of a snapshot: feedback of a one-off tool, so not settings
         const float BuzzStrength = 0.6f, BuzzSeconds = 0.06f, BuzzGapSeconds = 0.15f;
-        const float DefaultStillMetres = 0.01f, DefaultStillSeconds = 0.6f, DefaultMoveMetres = 0.2f, DefaultRestBelowMetres = 0.85f;
+        const float DefaultStillMetres = 0.01f, DefaultStillSeconds = 0.6f, DefaultMoveMetres = 0.2f, DefaultRestBelowMetres = 0.7f;
 
         static MelonPreferences_Entry<bool>? capture;
         static MelonPreferences_Entry<float>? stillMetres, stillSeconds, moveMetres, restBelowMetres;
@@ -45,7 +45,7 @@ namespace Earthbending {
             stillMetres = cat.CreateEntry("CaptureStillMetres", DefaultStillMetres, description: "Per game. The pose recorder: a hand counts as still while it stays within this many metres of where it was.");
             stillSeconds = cat.CreateEntry("CaptureStillSeconds", DefaultStillSeconds, description: "Per game. The pose recorder: both hands still this many seconds take a snapshot.");
             moveMetres = cat.CreateEntry("CaptureMoveMetres", DefaultMoveMetres, description: "Per game. The pose recorder: after a snapshot, the next one waits until either hand has moved this many metres from where it was, or the hands have rested at the sides. Before the first, from where the hands were when the capture started.");
-            restBelowMetres = cat.CreateEntry("CaptureRestBelowMetres", DefaultRestBelowMetres, description: "Per game. The pose recorder: both hands held still more than this many metres under the head is a rest (arms at the sides), never a snapshot; it arms the next one. Every pose keeps a hand at most 0.55 m under the head (Base, Stomp), so a lower value down to about 0.7 is safe if hanging hands still take snapshots.");
+            restBelowMetres = cat.CreateEntry("CaptureRestBelowMetres", DefaultRestBelowMetres, description: "Per game. The pose recorder: both hands held still more than this many metres under the head is a rest (arms at the sides), never a snapshot; it arms the next one. Every pose keeps a hand at most 0.55 m under the head (Base, Stomp), so 0.7 refuses no pose; never set it to 0.55 or less.");
             PalmAxisRight = cat.CreateEntry("PalmAxisRight", "-x", description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture.");
             FingerAxisRight = cat.CreateEntry("FingerAxisRight", "+z", description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
             PalmAxisLeft = cat.CreateEntry("PalmAxisLeft", "+x", description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture.");
