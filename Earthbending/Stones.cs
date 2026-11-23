@@ -538,17 +538,14 @@ namespace Earthbending {
 
         // ---------------------------------------------------------------- Task 13: Hold
 
-        /// <summary>Spec 2.4, Ruling 43: a held stone is let go once the holding hand's speed <paramref name="handSpeed"/> is
-        /// above <paramref name="letGoSpeed"/> m/s ([EarthModifiers] HoldLetGoSpeed; at it, it holds on), measured RELATIVE TO
-        /// THE HOLDER'S HEAD (<see cref="HandTrack"/>: walking, a dash or a knock-back move both together and
-        /// never throw; a head turn moves the target, not the hand), which is the throw (<see cref="Pd.ThrowVelocity"/>), or
-        /// when it changed between grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground,
-        /// a Held one became grounded). Rulings C27, C28: the speed test counts only when <paramref name="armed"/>
-        /// (<see cref="HoldArmed"/>: the stone has settled near its target since the hold began), so a stone caught flying, or
-        /// pulled in from afar, settles first; grounded changed lets go armed or not. A hand speed that is not a number (no
-        /// track yet) never throws.</summary>
-        public static bool HoldLetGo(float handSpeed, bool groundedChanged, float letGoSpeed, bool armed = true) =>
-            groundedChanged || (armed && handSpeed > letGoSpeed && !float.IsInfinity(handSpeed));
+        /// <summary>Spec 2.4, Ruling 43 (amended): a held stone is let go when a swing of the holding hand ends
+        /// (<paramref name="swung"/>: <see cref="SwingGate"/> says the hand, relative to the holder's head, stayed above
+        /// HoldLetGoSpeed long enough and has passed its peak), which is the throw (<see cref="Pd.ThrowVelocity"/>), or when it
+        /// changed between grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground, a Held
+        /// one became grounded). Rulings C27, C28: a swing throws only when <paramref name="armed"/> (<see cref="HoldArmed"/>:
+        /// the stone has settled near its target since the hold began), so a stone caught flying, or pulled in from afar,
+        /// settles first; grounded changed lets go armed or not.</summary>
+        public static bool HoldLetGo(bool swung, bool groundedChanged, bool armed) => groundedChanged || (armed && swung);
 
         /// <summary>Ruling C28 (refines C27), Ruling 43: whether a hold's throw counts from this step: it already did
         /// (<paramref name="wasArmed"/>; false when the hold begins), or in this one step the stone is within
@@ -626,6 +623,14 @@ namespace Earthbending {
         /// <summary>Ruling 43: [EarthModifiers] HoldThrowScale's default: a thrown stone takes the head's velocity plus the
         /// hand's velocity relative to the head times this (<see cref="ThrowVelocity"/>).</summary>
         public const float DefaultHoldThrowScale = 1.5f;
+
+        /// <summary>Ruling 43 (amended): [EarthModifiers] HoldSwingSeconds' and HoldSwingMaxSeconds' defaults
+        /// (<see cref="SwingGate"/>): the hand must stay above HoldLetGoSpeed this long before a throw can come, and the
+        /// throw comes at the latest this long after it passed it. HoldSwingSeconds is 0.11, not the ruling's 0.05: an 8 m/s
+        /// dash whose hand copy reaches the server 50 ms after the head's reads 4 m/s for about 0.06 s (the reading is the
+        /// change over 0.1 s, so a lag of L keeps it above 3.5 for about L + 0.01 s), and 0.05 let lags from 45 ms throw. At
+        /// 0.11 the longest lag that does not throw is 100 ms at 50 steps a second and 90 at 20.</summary>
+        public const float DefaultHoldSwingSeconds = 0.11f, DefaultHoldSwingMaxSeconds = 0.2f;
 
         /// <summary>Ruling 43: the velocity a held stone is thrown with: <paramref name="headVelocity"/> +
         /// <paramref name="handRelative"/> (the hand's velocity relative to the head) x <paramref name="scale"/>
@@ -824,6 +829,74 @@ namespace Earthbending {
         }
 
         static float InRange(double v) => v > float.MaxValue ? float.MaxValue : v < -float.MaxValue ? -float.MaxValue : (float)v;
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+    }
+
+    /// <summary>Ruling 43 (amended): when a swing of the holding hand throws. Fed each physics step the hand's speed and
+    /// velocity relative to the head (<see cref="HandTrack"/>). A swing starts when the speed passes HoldLetGoSpeed. It is
+    /// sustained once it has stayed above it for HoldSwingSeconds; a swing that drops back under before then throws nothing
+    /// and the next starts over (a spike: the server's hand and head copies arriving out of step in a dash or a knock-back).
+    /// A sustained swing throws at its peak: in the first step whose reading is lower than the highest since the swing
+    /// started (dropping under HoldLetGoSpeed is lower too), or HoldSwingMaxSeconds after it started, whichever comes first.
+    /// The throw carries the HIGHEST relative velocity read in the swing (its way too). Nothing is allocated.</summary>
+    internal sealed class SwingGate {
+        const double Eps = 1e-6;   // a step that lands on a time counts as past it
+
+        bool fast;
+        double since;
+        float peak;
+        V3 peakVelocity;
+
+        /// <summary>Whether a swing is under way (the hand above HoldLetGoSpeed since <see cref="Since"/>).</summary>
+        public bool Swinging => fast;
+        /// <summary>When the swing under way passed HoldLetGoSpeed.</summary>
+        public double Since => since;
+        /// <summary>The highest relative speed read in the swing under way (0 with none).</summary>
+        public float Peak => fast ? peak : 0f;
+
+        /// <summary>Forgets the swing under way.</summary>
+        public void Clear() {
+            fast = false;
+            peak = 0f;
+            peakVelocity = V3.Zero;
+        }
+
+        /// <summary>One physics step at <paramref name="now"/> (s) with the hand's relative <paramref name="speed"/> and
+        /// <paramref name="velocity"/> (m/s), the let-go speed, <paramref name="sustainSeconds"/> (HoldSwingSeconds) and
+        /// <paramref name="maxSeconds"/> (HoldSwingMaxSeconds). True when the swing throws now: <paramref name="swing"/> is
+        /// then its highest relative velocity, and the gate is clear again. A speed or velocity that is not a number (no track
+        /// yet) is not fast; a time that is not a number clears the gate.</summary>
+        public bool Step(double now, float speed, V3 velocity, float letGoSpeed, float sustainSeconds, float maxSeconds, out V3 swing) {
+            swing = V3.Zero;
+            if (double.IsNaN(now) || double.IsInfinity(now)) { Clear(); return false; }
+            bool above = speed > letGoSpeed && !float.IsInfinity(speed) && Finite(velocity);
+            double sustain = sustainSeconds > 0f && !float.IsInfinity(sustainSeconds) ? sustainSeconds : 0.0;
+            double most = maxSeconds > 0f && !float.IsInfinity(maxSeconds) ? maxSeconds : 0.0;
+            if (!above) {
+                bool sustained = fast && now - since >= sustain - Eps;
+                if (sustained) swing = peakVelocity;
+                Clear();
+                return sustained;   // a sustained swing that drops under has passed its peak; one that was not throws nothing
+            }
+            if (!fast) {
+                fast = true;
+                since = now;
+                peak = speed;
+                peakVelocity = velocity;
+            }
+            else if (speed > peak) {
+                peak = speed;
+                peakVelocity = velocity;
+            }
+            double held = now - since;
+            if (held >= sustain - Eps && (speed < peak || held >= most - Eps)) {
+                swing = peakVelocity;
+                Clear();
+                return true;
+            }
+            return false;
+        }
 
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }
