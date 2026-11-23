@@ -118,31 +118,32 @@ StoneLook (dress, rise, break, effects)   <---- spawn / NetworkRigidbody / Net.A
 
 ### 3.3 Poses: the numbers
 
-Frame: the origin is the head (camera) position. +Z is the head's forward flattened to the ground, +Y is world up, +X is right. Metres for a 1.75 m player, all multiplied by `[Pose] BodyScale`. Each hand is: position `p`, palm normal `n` (out of the palm) and finger direction `f`. The table gives A as the right hand. The mirror (A is the left hand) flips x of `p`, `n` and `f`. Default tolerances: position 0.18 m, palm 40 degrees, fingers 45 degrees; `-` means the axis is not checked.
+Frame: the origin is the head (camera) position. +Z is the head's forward flattened to the ground, +Y is world up, +X is right. Metres for a 1.75 m player, all multiplied by the body scale (`[EarthPose] BodyScale`: 0 = measured from the player's standing head height over 1.63 m, the design player's eye height, held to 0.7..1.3; above 0 = that number). Each hand is: position `p`, palm normal `n` (out of the palm) and finger direction `f`. The table gives A as the right hand. The mirror (A is the left hand) flips x of `p`, `n` and `f`. `-` means the axis is not checked.
 
-**These are starting values read from the wiki's words. Task 3's capture replaces them with the owner's own poses.**
+**Flow, not hold (the owner, 2026-11-22, after the first capture):** "it's less about going to the exact pose and holding it than moving fluidly from one to the other", with "a little bit more tolerance", "not exactly fixed points", and no pose "far out from my body". So each hand's place is a roomy ZONE, an ellipsoid round `p` with half-sizes sideways 0.25, up/down 0.20 and reach (forward/back) 0.30 m, and the directions allow 60 degrees (palm) and 60 degrees (fingers). No pose needs a straight arm: "arm out" is about half reach (0.42-0.45 m ahead of the head). The table is the second design; `poses.txt` from a natural capture (the guide's words only, no markers) re-centres each zone on the player's own pose.
 
 | Pose | A p | A n | A f | B p | B n | B f |
 |---|---|---|---|---|---|---|
 | Base | (0.20, -0.55, 0.30) | +Y | +Z | (-0.20, -0.55, 0.30) | +Y | +Z |
-| Disc | (0.05, -0.30, 0.60) | -X | +Z | (-0.05, -0.30, 0.35) | -Z | +X |
-| Ball | (0.15, -0.30, 0.25) | -X | +Z | (-0.10, -0.30, 0.60) | +X | +Z |
+| Disc | (0.05, -0.30, 0.45) | -X | +Z | (-0.05, -0.30, 0.28) | -Z | +X |
+| Ball | (0.15, -0.30, 0.22) | -X | +Z | (-0.10, -0.30, 0.45) | +X | +Z |
 | Pillar | (0.20, -0.55, 0.30) | -X | +Z | (-0.20, -0.05, 0.25) | +X | +Y |
 | Cube | (0.20, -0.05, 0.25) | -X | +Y | (-0.20, -0.05, 0.25) | +X | +Y |
-| Wall | (0.20, 0.10, 0.30) | +Y | +Z | (-0.20, 0.10, 0.30) | +Y | +Z |
-| Straight | (0.20, -0.25, 0.25) | -X | +Y | (-0.15, -0.25, 0.60) | -Y | +Z |
-| Kick | (0.20, -0.25, 0.25) | -X | +Y | (-0.05, -0.70, 0.20) | -Z | -Y |
-| Stomp | (0.20, -0.55, 0.40) | (0, -0.71, -0.71) | (0, -0.71, 0.71) | (-0.20, -0.55, 0.40) | (0, -0.71, -0.71) | (0, -0.71, 0.71) |
-| Uppercut | (0.20, -0.30, 0.25) | -X | (0, 0.97, 0.26) | (-0.05, -0.05, 0.35) | -Z | +Y |
-| Parry | (0.20, -0.25, 0.50) | +Z | +Y | (-0.20, -0.25, 0.50) | +Z | +Y |
-| Hold | (0.05, -0.25, 0.50) | +Z | +Y | (0.05, -0.40, 0.45) | +Y | +Z |
-| Flick | (0.10, -0.25, 0.50) | +X | +Z | (0.10, -0.50, 0.45) | +X | +Z |
-| Explode | (0.06, -0.50, 0.30) | -Z | -X | (-0.06, -0.50, 0.30) | -Z | +X |
-| Jump | (0.20, -0.75, 0.20) | +Y | +Z | (-0.20, 0.10, 0.10) | +X | +Y |
-| Dash | (0.20, -0.75, 0.20) | +Y | +Z | (-0.10, -0.30, 0.60) | +X | +Z |
+| Wall | (0.20, 0.00, 0.30) | +Y | +Z | (-0.20, 0.00, 0.30) | +Y | +Z |
+| Straight | (0.20, -0.25, 0.25) | -X | +Y | (-0.15, -0.25, 0.45) | -Y | +Z |
+| Kick | (0.20, -0.25, 0.25) | -X | +Y | (-0.05, -0.65, 0.22) | -Z | -Y |
+| Stomp | (0.20, -0.55, 0.35) | (0, -0.71, -0.71) | (0, -0.71, 0.71) | (-0.20, -0.55, 0.35) | (0, -0.71, -0.71) | (0, -0.71, 0.71) |
+| Uppercut | (0.20, -0.30, 0.25) | -X | (0, 0.97, 0.26) | (-0.05, -0.10, 0.32) | -Z | +Y |
+| Parry | (0.20, -0.25, 0.42) | +Z | +Y | (-0.20, -0.25, 0.42) | +Z | +Y |
+| Hold | (0.05, -0.25, 0.42) | +Z | +Y | (0.05, -0.40, 0.38) | +Y | +Z |
+| Flick | (0.10, -0.25, 0.42) | +X | +Z | (0.10, -0.48, 0.38) | +X | +Z |
+| Explode | (0.06, -0.50, 0.28) | -Z | -X | (-0.06, -0.50, 0.28) | -Z | +X |
+| Jump | (0.20, -0.72, 0.20) | +Y | +Z | (-0.20, 0.05, 0.10) | +X | +Y |
+| Dash | (0.20, -0.72, 0.20) | +Y | +Z | (-0.10, -0.30, 0.45) | +X | +Z |
 
-Rules of the pose machine (all settings, `[Pose]`):
-- A pose counts once it has matched for `MinHoldSeconds` 0.05 (a hand sweeping through a pose for one frame fires nothing). It fires on entry. It fires again only after it has stopped matching for `RearmSeconds` 0.1.
+Rules of the pose machine (all settings, `[EarthPose]`):
+- A pose fires the first frame the hands are inside it (`MinHoldSeconds` 0: passing through counts). It fires again only after it has stopped matching for `RearmSeconds` 0.1.
+- While a structure is armed (the base pose within `StructureWindowSeconds`), Jump and Dash do not fire: moving from the base pose into a structure must not dash on the way (RUMBLE's own wiki warns of that accident). Modifiers still fire.
 - Structure poses count only while armed: the base pose matched within the last `StructureWindowSeconds` 1.2, and the player is grounded on natural ground now. Firing a structure disarms; the base pose must be struck again.
 - Movement needs grounded on natural ground. Modifiers work grounded on natural ground or in the air; never while standing on other ground.
 - Both hands empty, or nothing counts and the machine resets.
