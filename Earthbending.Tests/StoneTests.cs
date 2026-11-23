@@ -48,7 +48,7 @@ internal static class StoneTests {
             && StoneRules.CanApply(StoneState.Flicked, Modifier.Straight) && !StoneRules.IsGrounded(StoneState.Flicked));
 
         // the defaults (the settings')
-        Check("defaults: flick x 1000, turn gain 8, turn damp 1", Near(Pd.DefaultFlickScale, 1000f) && Near(Pd.DefaultFlickTurnGain, 8f) && Near(Pd.DefaultFlickTurnDamp, 1f));
+        Check("defaults (C30): flick x 1000, turn gain 8, turn damp 4", Near(Pd.DefaultFlickScale, 1000f) && Near(Pd.DefaultFlickTurnGain, 8f) && Near(Pd.DefaultFlickTurnDamp, 4f));
 
         // ruling C15: FlickGains at every band edge (Hold's bands: up to 150, up to 300, past it)
         Check("flick gains: 0, 100, 150 kg (and below 0) are (1, 0.1, 6)", Pd.FlickGains(0f) == (1f, 0.1f, 6f) && Pd.FlickGains(100f) == (1f, 0.1f, 6f)
@@ -208,6 +208,17 @@ internal static class StoneTests {
         Check("model: every flicked stone 1 m off a still target settles within 1 cm in 40 s, never further than it started (15-50 Hz)", settles);
         Check("model: a flicked Ball follows a 2 m sweep of the hands in 1 s, never 1.2 m behind, and settles after it (15-50 Hz)", follows);
         Check("model: a stone turned 3 rad, 4 rad (the short way) or -2 rad off settles on the wanted turn (15-50 Hz)", turns);
+        // ruling C30: FlickTurnDamp 4 (damping 0.71 with gain 8): a quick 90 degree turn of the hands swings past by a few
+        // degrees and settles within a degree in 3 s; the plan's 1 (damping 0.18) swung past by about 50 degrees
+        double quarter = System.Math.PI / 2.0, degree = System.Math.PI / 180.0;
+        bool crisp = true, swung = true;
+        foreach (float hz in new[] { 15f, 30f, 45f, 50f }) {
+            crisp &= Turned(hz, quarter, 3.0, Pd.DefaultFlickTurnDamp, out float past) < 1.0 * degree && past < 10.0 * degree;
+            Turned(hz, quarter, 3.0, 1f, out float oldPast);
+            swung &= oldPast > 40.0 * degree && oldPast < 60.0 * degree;
+        }
+        Check("model (C30): a quick 90 degree turn swings past by under 10 degrees and settles within 1 degree in 3 s (15-50 Hz)", crisp);
+        Check("model (C30): with damp 1 the same turn swung past by 40 to 60 degrees", swung);
         float pdTrail = 6f * Pd.DefaultPdStepSeconds * 1f;   // a PD alone (no i) trails a 1 m/s target by d x dStep / p
         float iTrail = Flicked(150f, 45f, t => t, 0.0, 40.0, out _);
         Check("model: the integral takes up the trail behind a steadily moving hand", iTrail < pdTrail * 0.5f);
@@ -282,16 +293,22 @@ internal static class StoneTests {
     // A flicked stone's turn about x, `wanted` radians from where it starts at rest, driven each 1/hz s step by
     // Pd.FlickTorque (the defaults: an acceleration, so its inertia does not count) on the short way to it (Pd.TurnVector):
     // how far off the wanted turn it is after `seconds`, in radians (the short way). NaN when it runs away.
-    static float Turned(float hz, double wanted, double seconds) {
-        double angle = 0.0, spin = 0.0, dt = 1.0 / hz;
+    static float Turned(float hz, double wanted, double seconds) => Turned(hz, wanted, seconds, Pd.DefaultFlickTurnDamp, out _);
+
+    // As above with FlickTurnDamp `damp`; `past` is how far it swung past the wanted turn (wanted within half a turn, so the
+    // short way is its own way), in radians.
+    static float Turned(float hz, double wanted, double seconds, float damp, out float past) {
+        double angle = 0.0, spin = 0.0, dt = 1.0 / hz, most = 0.0;
         for (double t = 0.0; t < seconds; t += dt) {
             double off = (wanted - angle) * 0.5;
             V3 turn = Pd.TurnVector((float)System.Math.Sin(off), 0f, 0f, (float)System.Math.Cos(off));
-            V3 torque = Pd.FlickTorque(turn, new V3((float)spin, 0f, 0f), Pd.DefaultFlickTurnGain, Pd.DefaultFlickTurnDamp);
+            V3 torque = Pd.FlickTorque(turn, new V3((float)spin, 0f, 0f), Pd.DefaultFlickTurnGain, damp);
             spin += torque.X * dt;
             angle += spin * dt;
-            if (double.IsNaN(angle) || System.Math.Abs(angle) > 1e6) return float.NaN;
+            most = System.Math.Max(most, (angle - wanted) * System.Math.Sign(wanted));
+            if (double.IsNaN(angle) || System.Math.Abs(angle) > 1e6) { past = float.NaN; return float.NaN; }
         }
+        past = (float)most;
         return (float)System.Math.Abs(System.Math.IEEERemainder(wanted - angle, 2.0 * System.Math.PI));   // the short way, worked out here
     }
 

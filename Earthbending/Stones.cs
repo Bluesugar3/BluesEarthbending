@@ -604,8 +604,9 @@ namespace Earthbending {
 
         /// <summary>[EarthModifiers] FlickScale (N per metre off), FlickTurnGain (rad/s every second per radian off) and
         /// FlickTurnDamp (rad/s every second per rad/s of spin) defaults (spec 2.4: the PID's output x 1000; the brief's turn
-        /// numbers).</summary>
-        public const float DefaultFlickScale = 1000f, DefaultFlickTurnGain = 8f, DefaultFlickTurnDamp = 1f;
+        /// gain; ruling C30: damp 4, not the plan's 1: with gain 8 that is damping 0.71, a quick turn swinging past by a few
+        /// degrees, where 1 is 0.18 and swings past by about 50).</summary>
+        public const float DefaultFlickScale = 1000f, DefaultFlickTurnGain = 8f, DefaultFlickTurnDamp = 4f;
 
         /// <summary><see cref="FlickTurn"/>'s fallback: the look made square to up shorter than this (up within about 6
         /// degrees of the look, or of straight back along it) has too little way left to face along.</summary>
