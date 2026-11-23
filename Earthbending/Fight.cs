@@ -291,8 +291,16 @@ namespace Earthbending {
     /// head in groups of five, and rows of five across the forearm for the fighter who cannot see their own head.</summary>
     internal static class FightPips {
         /// <summary>No fighter is drawn more stones than <see cref="MaxShown"/>; a group is <see cref="Group"/> stones; one
-        /// line over a head holds <see cref="PerLine"/> (four groups), the rest go on in a line above it.</summary>
-        public const int MaxShown = 40, Group = 5, PerLine = 20;
+        /// line over a head holds <see cref="PerLine"/> (four groups), the rest go on in a line above it. A row grown for a
+        /// far looker holds <see cref="PerLineFar"/> a line (<see cref="PerLineAt"/>).</summary>
+        public const int MaxShown = 40, Group = 5, PerLine = 20, PerLineFar = 10;
+
+        /// <summary>A row grown past <see cref="SplitScale"/> times its size is laid in lines of <see cref="PerLineFar"/>; it
+        /// switches <see cref="SplitSlack"/> past it and switches back that far under it.</summary>
+        public const float SplitScale = 1.5f, SplitSlack = 0.05f;
+
+        /// <summary>A hidden forearm band comes back this many times its hiding distance from the eyes (0.2 m: at 0.25 m).</summary>
+        public const float BandBackShare = 1.25f;
 
         /// <summary>The <paramref name="i"/>-th of <paramref name="n"/> stones in a row centred on 0 (the first at the low
         /// end): stones <paramref name="size"/> + <paramref name="gap"/> apart, an extra <paramref name="groupGap"/> between
@@ -304,17 +312,78 @@ namespace Earthbending {
             return at - last * 0.5f;
         }
 
-        /// <summary>How many lines <paramref name="n"/> stones take over a head.</summary>
-        public static int Lines(int n) => n <= 0 ? 0 : (n + PerLine - 1) / PerLine;
+        /// <summary>How many lines <paramref name="n"/> stones take over a head, <paramref name="perLine"/> to a line (a
+        /// length that is not one counts as <see cref="PerLine"/>, here and below).</summary>
+        public static int Lines(int n, int perLine) {
+            if (perLine <= 0) perLine = PerLine;
+            return n <= 0 ? 0 : (n + perLine - 1) / perLine;
+        }
 
         /// <summary>The line stone <paramref name="i"/> is on (0 the lowest).</summary>
-        public static int LineOf(int i) => i <= 0 ? 0 : i / PerLine;
+        public static int LineOf(int i, int perLine) => i <= 0 ? 0 : i / (perLine <= 0 ? PerLine : perLine);
 
         /// <summary>How many of <paramref name="n"/> stones are on line <paramref name="line"/>.</summary>
-        public static int InLine(int line, int n) {
+        public static int InLine(int line, int n, int perLine) {
+            if (perLine <= 0) perLine = PerLine;
             if (line < 0 || n <= 0) return 0;
-            int left = n - line * PerLine;
-            return left <= 0 ? 0 : left > PerLine ? PerLine : left;
+            int left = n - line * perLine;
+            return left <= 0 ? 0 : left > perLine ? perLine : left;
+        }
+
+        /// <summary>How wide <paramref name="n"/> stones are over a head, edge to edge of their widest (the lowest) line, at
+        /// their own size.</summary>
+        public static float RowWidth(int n, int perLine, float size, float gap, float groupGap) {
+            int m = InLine(0, n, perLine);
+            return m <= 0 ? 0f : RowOffset(m - 1, m, size, gap, groupGap) - RowOffset(0, m, size, gap, groupGap) + size;
+        }
+
+        /// <summary>How many stones to a line for a row drawn <paramref name="scale"/> times its size (<see cref="FarScale"/>)
+        /// that has <paramref name="now"/> to a line: <see cref="PerLineFar"/> once the scale is more than
+        /// <see cref="SplitSlack"/> over <see cref="SplitScale"/>, <see cref="PerLine"/> once it is that far under, and what
+        /// it has in between, so a looker standing at the switching distance sees no flicker. A grown row of 20 in one line
+        /// is 2.5 m wide at x2.5 and runs into the next fighter's; in two lines of ten it is 1.22 m.</summary>
+        public static int PerLineAt(float scale, int now) {
+            if (scale > SplitScale + SplitSlack) return PerLineFar;
+            if (scale < SplitScale - SplitSlack) return PerLine;
+            return now == PerLineFar ? PerLineFar : PerLine;
+        }
+
+        /// <summary>A fighter's place among the first <paramref name="count"/> of <paramref name="accounts"/> (every fighter
+        /// now, their own included, in any order): how many have a lower account. The same on every game.</summary>
+        public static int Rank(int account, int[] accounts, int count) {
+            int rank = 0;
+            if (count > accounts.Length) count = accounts.Length;
+            for (int i = 0; i < count; i++)
+                if (accounts[i] < account) rank++;
+            return rank;
+        }
+
+        /// <summary>Every second fighter's row hangs higher, so two rows side by side are never at one height.</summary>
+        public static bool Raised(int rank) => rank > 0 && (rank & 1) == 1;
+
+        /// <summary>How many lines higher a raised row hangs: a whole row's lines (of <paramref name="most"/> stones, the most
+        /// points heard of any fighter, held to 1..<see cref="MaxShown"/>), so its lowest line is over the highest line of a
+        /// row that is not raised: one line near, two for a row of 20 from afar. 0 when not raised.</summary>
+        public static int RaiseLines(bool raised, int most, int perLine) {
+            if (!raised) return 0;
+            return Lines(most < 1 ? 1 : most > MaxShown ? MaxShown : most, perLine);
+        }
+
+        /// <summary>How far over the row height a row hangs, at its own size: nothing when not raised; else
+        /// <see cref="RaiseLines"/> lines (<paramref name="size"/> + <paramref name="gap"/> each) and one
+        /// <paramref name="groupGap"/>, so the air between a row and the raised one beside it is a group's, not a line's:
+        /// two rows that overlap read as two.</summary>
+        public static float RaiseHeight(bool raised, int most, int perLine, float size, float gap, float groupGap) =>
+            raised ? RaiseLines(true, most, perLine) * (size + gap) + groupGap : 0f;
+
+        /// <summary>Whether the forearm band is drawn with its middle <paramref name="distance"/> m from the eyes: a shown
+        /// one until it is nearer than <paramref name="hide"/> (it cannot be read there and only blocks the view), a hidden
+        /// one again from <see cref="BandBackShare"/> times that. Always with no hiding distance; a distance that is not a
+        /// number keeps what it was.</summary>
+        public static bool BandShown(float distance, float hide, bool shown) {
+            if (!(hide > 0f) || float.IsInfinity(hide)) return true;
+            if (float.IsNaN(distance)) return shown;
+            return shown ? distance >= hide : distance >= hide * BandBackShare - 1e-6f;
         }
 
         /// <summary>The <paramref name="i"/>-th of <paramref name="n"/> places round a forearm, in radians: 0 on top, going

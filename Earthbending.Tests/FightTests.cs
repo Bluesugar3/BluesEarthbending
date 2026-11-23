@@ -369,14 +369,84 @@ internal static class FightTests {
         Check("pips: the first stone is at the low end", FightPips.RowOffset(0, 20, size, gap, groupGap) < 0f && FightPips.RowOffset(19, 20, size, gap, groupGap) > 0f);
         Check("pips: no stones, or a place that is not in the row, is 0", FightPips.RowOffset(0, 0, size, gap, groupGap) == 0f && FightPips.RowOffset(0, -3, size, gap, groupGap) == 0f
             && FightPips.RowOffset(-1, 5, size, gap, groupGap) == 0f && FightPips.RowOffset(5, 5, size, gap, groupGap) == 0f);
-        Check("pips: the constants", FightPips.MaxShown == 40 && FightPips.Group == 5 && FightPips.PerLine == 20 && FightPips.PerLine % FightPips.Group == 0);
+        Check("pips: the constants", FightPips.MaxShown == 40 && FightPips.Group == 5 && FightPips.PerLine == 20 && FightPips.PerLine % FightPips.Group == 0
+            && FightPips.PerLineFar == 10 && FightPips.PerLineFar % FightPips.Group == 0 && FightPips.PerLine % FightPips.PerLineFar == 0);
 
         // more than a line's worth goes on in a second line above the first
-        Check("pips: 20 stones are one line", FightPips.Lines(20) == 1 && FightPips.Lines(1) == 1 && FightPips.Lines(0) == 0 && FightPips.Lines(-2) == 0);
-        Check("pips: 21 to 40 are two lines", FightPips.Lines(21) == 2 && FightPips.Lines(40) == 2);
-        Check("pips: stone 19 is on line 0, stone 20 on line 1", FightPips.LineOf(19) == 0 && FightPips.LineOf(20) == 1 && FightPips.LineOf(39) == 1 && FightPips.LineOf(-1) == 0);
-        Check("pips: the first line of 27 holds 20, the second 7", FightPips.InLine(0, 27) == 20 && FightPips.InLine(1, 27) == 7 && FightPips.InLine(2, 27) == 0
-            && FightPips.InLine(0, 12) == 12 && FightPips.InLine(1, 12) == 0 && FightPips.InLine(-1, 12) == 0 && FightPips.InLine(0, 0) == 0);
+        const int L = FightPips.PerLine, S = FightPips.PerLineFar;
+        Check("pips: 20 stones are one line", FightPips.Lines(20, L) == 1 && FightPips.Lines(1, L) == 1 && FightPips.Lines(0, L) == 0 && FightPips.Lines(-2, L) == 0);
+        Check("pips: 21 to 40 are two lines", FightPips.Lines(21, L) == 2 && FightPips.Lines(40, L) == 2);
+        Check("pips: stone 19 is on line 0, stone 20 on line 1", FightPips.LineOf(19, L) == 0 && FightPips.LineOf(20, L) == 1 && FightPips.LineOf(39, L) == 1 && FightPips.LineOf(-1, L) == 0);
+        Check("pips: the first line of 27 holds 20, the second 7", FightPips.InLine(0, 27, L) == 20 && FightPips.InLine(1, 27, L) == 7 && FightPips.InLine(2, 27, L) == 0
+            && FightPips.InLine(0, 12, L) == 12 && FightPips.InLine(1, 12, L) == 0 && FightPips.InLine(-1, 12, L) == 0 && FightPips.InLine(0, 0, L) == 0);
+
+        // from afar (review I-1): two lines of ten, so a grown row is no wider than a body and a half
+        Check("far lines: 20 stones are two lines of ten", FightPips.Lines(20, S) == 2 && FightPips.InLine(0, 20, S) == 10 && FightPips.InLine(1, 20, S) == 10 && FightPips.InLine(2, 20, S) == 0);
+        Check("far lines: stone 9 is on line 0, stone 10 on line 1, stone 19 on line 1", FightPips.LineOf(9, S) == 0 && FightPips.LineOf(10, S) == 1 && FightPips.LineOf(19, S) == 1);
+        Check("far lines: 13 stones are ten and three; 7 are one line", FightPips.Lines(13, S) == 2 && FightPips.InLine(0, 13, S) == 10 && FightPips.InLine(1, 13, S) == 3 && FightPips.Lines(7, S) == 1 && FightPips.InLine(0, 7, S) == 7);
+        Check("far lines: more than 20, the same rule per 20 (40 stones are four lines of ten)", FightPips.Lines(40, S) == 4 && FightPips.Lines(21, S) == 3 && FightPips.InLine(3, 40, S) == 10 && FightPips.LineOf(39, S) == 3);
+        Check("far lines: a line length that is not one counts as 20", FightPips.Lines(20, 0) == 1 && FightPips.Lines(20, -3) == 1 && FightPips.LineOf(19, 0) == 0 && FightPips.InLine(0, 27, 0) == 20);
+        bool groups = true;   // the groups of five are kept in a line of ten
+        for (int i = 0; i + 1 < 10; i++) {
+            float step = FightPips.RowOffset(i + 1, 10, size, gap, groupGap) - FightPips.RowOffset(i, 10, size, gap, groupGap);
+            groups &= Near(step, i == 4 ? pitch + groupGap : pitch);
+        }
+        Check("far lines: a line of ten is two groups of five", groups);
+        float one = FightPips.RowWidth(20, L, size, gap, groupGap), two = FightPips.RowWidth(20, S, size, gap, groupGap);
+        Check($"far lines: a row of 20 in one line is 1.018 m wide ({one})", Math.Abs(one - 1.018f) < 1e-3f && Near(one, width));
+        Check($"far lines: in two lines of ten 0.488 m ({two})", Math.Abs(two - 0.488f) < 1e-3f);
+        Check($"far lines: grown 2.5 times a row of 20 is at most 1.3 m wide ({two * 2.5f})", two * 2.5f <= 1.3f && two * 2.5f > 1.1f);
+        Check("far lines: the width is the widest line's (27 in lines of 20; 3 alone)", Near(FightPips.RowWidth(27, L, size, gap, groupGap), one) && Near(FightPips.RowWidth(3, S, size, gap, groupGap), 2 * pitch + size)
+            && Near(FightPips.RowWidth(13, S, size, gap, groupGap), two) && FightPips.RowWidth(0, L, size, gap, groupGap) == 0f && Near(FightPips.RowWidth(1, L, size, gap, groupGap), size));
+        // the switch, with a little slack either side of 1.5 so a watcher standing at the switching distance sees no flicker
+        Check("far lines: under 1.45 one line, over 1.55 two", FightPips.PerLineAt(1f, L) == L && FightPips.PerLineAt(1.44f, S) == L && FightPips.PerLineAt(1.56f, L) == S && FightPips.PerLineAt(2.5f, L) == S);
+        Check("far lines: between them a row keeps the lines it has", FightPips.PerLineAt(1.5f, L) == L && FightPips.PerLineAt(1.5f, S) == S && FightPips.PerLineAt(1.46f, S) == S && FightPips.PerLineAt(1.54f, L) == L);
+        int flips = 0, lines = L;
+        for (int k = 0; k < 200; k++) {   // a watcher swaying 0.2 m about the switching distance (scale 1.5 +- 0.033)
+            int next = FightPips.PerLineAt(1.5f + 0.033f * (float)Math.Sin(k * 0.7), lines);
+            if (next != lines) flips++;
+            lines = next;
+        }
+        Check($"far lines: swaying at the switching distance never flips the row ({flips})", flips == 0);
+        flips = 0;
+        lines = L;
+        for (int k = 0; k <= 100; k++) {   // walking away from scale 1 to 2.5 and back: one switch each way
+            float sc = k <= 50 ? 1f + 1.5f * k / 50f : 2.5f - 1.5f * (k - 50) / 50f;
+            int next = FightPips.PerLineAt(sc, lines);
+            if (next != lines) flips++;
+            lines = next;
+        }
+        Check($"far lines: walking away and back switches once each way ({flips})", flips == 2 && lines == L);
+        Check("far lines: a scale that is not a number, or lines that are not a length, keep or give one line", FightPips.PerLineAt(float.NaN, S) == S && FightPips.PerLineAt(float.NaN, L) == L && FightPips.PerLineAt(1.5f, 7) == L);
+
+        // every second fighter's row hangs higher (review I-1): by account, so every game agrees
+        var accounts = new[] { 30, 10, 20, 0, 0 };
+        Check("order: the rank is how many fighters have a lower account", FightPips.Rank(10, accounts, 3) == 0 && FightPips.Rank(20, accounts, 3) == 1 && FightPips.Rank(30, accounts, 3) == 2);
+        var shuffled = new[] { 20, 30, 10 };
+        Check("order: the same whatever order they were heard in", FightPips.Rank(10, shuffled, 3) == 0 && FightPips.Rank(20, shuffled, 3) == 1 && FightPips.Rank(30, shuffled, 3) == 2);
+        Check("order: only the first count entries are fighters; none, rank 0", FightPips.Rank(30, accounts, 2) == 1 && FightPips.Rank(30, accounts, 0) == 0 && FightPips.Rank(30, accounts, -1) == 0 && FightPips.Rank(30, accounts, 99) == 4);
+        Check("order: every second fighter is raised", !FightPips.Raised(0) && FightPips.Raised(1) && !FightPips.Raised(2) && FightPips.Raised(3) && !FightPips.Raised(-1));
+        var duel = new[] { 77001, 5 };
+        Check("order: of two fighters exactly one is raised, the higher account", FightPips.Raised(FightPips.Rank(77001, duel, 2)) && !FightPips.Raised(FightPips.Rank(5, duel, 2)));
+        // raised by a whole row's lines, so its lowest line is over the other's highest: one line near, two from afar
+        Check("order: a raised row of 20 hangs one line higher near, two from afar", FightPips.RaiseLines(true, 20, L) == 1 && FightPips.RaiseLines(true, 20, S) == 2);
+        Check("order: a row that is not raised hangs at the row height", FightPips.RaiseLines(false, 20, L) == 0 && FightPips.RaiseLines(false, 40, S) == 0);
+        Check("order: by the most points heard, not a fighter's own (7 left of 20)", FightPips.RaiseLines(true, 20, S) == FightPips.Lines(20, S) && FightPips.RaiseLines(true, 40, L) == 2 && FightPips.RaiseLines(true, 40, S) == 4);
+        Check("order: nothing heard yet, or more than is drawn: one line at least, the drawn 40 at most", FightPips.RaiseLines(true, 0, L) == 1 && FightPips.RaiseLines(true, -4, S) == 1 && FightPips.RaiseLines(true, 250, S) == 4);
+
+        Check("order: a raised row's height: its lines and a group gap (0.077 m near, 0.124 m from afar), none when not raised",
+            Near(FightPips.RaiseHeight(true, 20, L, size, gap, groupGap), pitch + groupGap) && Near(FightPips.RaiseHeight(true, 20, S, size, gap, groupGap), 2 * pitch + groupGap)
+            && FightPips.RaiseHeight(false, 20, S, size, gap, groupGap) == 0f);
+        // two rows of 20 from afar, one raised: the raised one's lowest stone is a group gap and a stone gap over the other's highest
+        float topOfLow = (FightPips.Lines(20, S) - 1) * pitch + size * 0.5f, bottomOfRaised = FightPips.RaiseHeight(true, 20, S, size, gap, groupGap) - size * 0.5f;
+        Check($"order: the air between a row and the raised one over it is 0.042 m at their own size ({bottomOfRaised - topOfLow})", Near(bottomOfRaised - topOfLow, gap + groupGap));
+
+        // the band hides near the eyes (review I-2): under 0.2 m it only blocks the view; back at 0.25 m
+        Check("near: a shown band stays to 0.2 m", FightPips.BandShown(0.3f, 0.2f, true) && FightPips.BandShown(0.2f, 0.2f, true) && !FightPips.BandShown(0.19f, 0.2f, true));
+        Check("near: a hidden band is back at 0.25 m", !FightPips.BandShown(0.21f, 0.2f, false) && !FightPips.BandShown(0.249f, 0.2f, false) && FightPips.BandShown(0.25f, 0.2f, false) && FightPips.BandShown(0.4f, 0.2f, false));
+        Check("near: the slack is a quarter of the distance", Near(FightPips.BandBackShare, 1.25f) && FightPips.BandShown(0.5f, 0.4f, false) && !FightPips.BandShown(0.49f, 0.4f, false));
+        Check("near: no hiding distance, the band is always shown", FightPips.BandShown(0.01f, 0f, false) && FightPips.BandShown(0.01f, -1f, true) && FightPips.BandShown(0.01f, float.NaN, false));
+        Check("near: a distance that is not a number keeps what it was", FightPips.BandShown(float.NaN, 0.2f, true) && !FightPips.BandShown(float.NaN, 0.2f, false));
 
         // round the forearm
         Check("band: the first place is on top", FightPips.BandAngle(0, 20) == 0f);
@@ -403,6 +473,7 @@ internal static class FightTests {
         Check("band: too few places, or a stone that is not one, is place 0", FightPips.BandPlace(1, 0) == 0 && FightPips.BandPlace(2, -1) == 0 && FightPips.BandPlace(-1, 14) == 0
             && FightPips.BandPlace(3, 1) == 0);
         Check("band: places round a forearm of 0.07 m for stones 0.0295 m apart: 14", FightPips.BandPlaces(0.07f, 0.0295f) == 14);
+        Check("band: the defaults (0.055 m out, stones 0.018 m and their share of the gap apart): 14 places", FightPips.BandPlaces(0.055f, 0.018f + 0.012f * 0.018f / 0.035f) == 14);
         Check("band: never fewer places than a row of five needs", FightPips.BandPlaces(0.01f, 0.05f) == FightPips.Group && FightPips.BandPlaces(0f, 0.03f) == FightPips.Group
             && FightPips.BandPlaces(0.07f, 0f) == FightPips.Group && FightPips.BandPlaces(float.NaN, 0.03f) == FightPips.Group && FightPips.BandPlaces(0.07f, float.NaN) == FightPips.Group);
         Check("band: never more places than 360", FightPips.BandPlaces(10f, 0.001f) == 360);

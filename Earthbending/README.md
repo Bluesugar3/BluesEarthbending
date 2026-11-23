@@ -133,7 +133,7 @@ A duel with stakes and no death. On a ring:
 - **A fight ends when anyone leaves the ring** (flung, fallen, pushed or walked off, after 0.3 s off it): everyone still on it goes back to 20. Whoever left has none until they step back on, which gives them 20 again. Leaving the server, dying or being downed counts as leaving.
 - **Watchers are safe:** stones ignore anyone in the arena round the ring (the rim, the pit), and anyone on the ring with no points (the one just flung, still over it): no damage, no knockback, the stone does not break on them. Blasts leave them alone too.
 - **Off every ring** a stone takes power / 20 of your real health, and can really kill.
-- **What you see:** each fighter's points as a row of small stones over their head, one per point, in groups of five, turned toward you (from far off the row grows, so it still reads from the rim). Your own: the same count in rows of five on your left forearm, on the side facing your eyes. A lost point's stone is gone; a refill brings them all back. A test ring is drawn on the ground as a dotted circle; the arena's own ring is not.
+- **What you see:** each fighter's points as a row of small stones over their head, one per point, in groups of five, turned toward you. From far off the row grows, so it still reads from the rim, and is then two lines of ten; every second fighter's row hangs higher, so two rows never run together. At most 40 stones are drawn for a fighter. Your own: the same count in rows of five on your forearm (the left, or `FightBandHand`), on the side facing your eyes; it hides while it is closer than 0.2 m to your eyes, and `FightBand = false` removes it alone. A lost point's stone is gone; a refill brings them all back. A test ring is drawn on the ground as a dotted circle; the arena's own ring is not.
 
 A **ring** is a centre on the floor, the ring's radius (the fighting floor: up to 1 m under it and 8 m over it, so a Jump is still on the ring) and the arena's radius round it (6 m under the floor to 25 m over). There is at most one. It comes from the arena mod (`Arena.SetRing`), else the console (`earth ring`), else `[EarthFight] Ring`. A ring set, moved or removed ends every fight at once.
 
@@ -304,11 +304,14 @@ Effects and sounds are the game's own, by name; several names split by `;` are t
 | `FightStones` | true | Fight health as small stones (off: none; a drawn ring and the knock-out's blast stay). |
 | `FightPipSize` | 0.035 | One stone of a row over a head, m. |
 | `FightPipGap`, `FightGroupGap` | 0.012, 0.03 | The space between two stones, and the extra space between two groups of five, m. |
-| `FightRowHeight` | 0.35 | A row floats this far over its fighter's head, m. |
-| `FightRowFarMetres`, `FightRowFarScale` | 6, 2.5 | Further away than the first, a row grows with the distance, at most the second times its size (0 or 1: never). |
-| `FightBandPipSize` | 0.022 | One stone on your own forearm, m. |
-| `FightBandRadius` | 0.07 | Your own stones sit this far from your left forearm's middle line, m. |
-| `FightBandUp` | 0.12 | ... starting this far from the left controller toward the elbow, m. |
+| `FightRowHeight` | 0.35 | A row floats this far over its fighter's head, m. Every second fighter's (by account) hangs a row's lines higher. |
+| `FightRowFarMetres`, `FightRowFarScale` | 6, 2.5 | Further away than the first, a row grows with the distance, at most the second times its size (0 or 1: never). Grown past 1.5 times it is two lines of ten. |
+| `FightBand` | true | Your own stones on your forearm (off: none there; the rows over other heads stay). |
+| `FightBandHand` | `left` | The forearm that carries them: `left` or `right`. |
+| `FightBandPipSize` | 0.018 | One stone on your own forearm, m. |
+| `FightBandRadius` | 0.055 | Your own stones sit this far from the forearm's middle line, m. |
+| `FightBandUp` | 0.12 | ... starting this far from the hand toward the elbow, m (0.04 m above the wrist). |
+| `FightBandHideMetres` | 0.2 | They hide while nearer your eyes than this, and are back a quarter further out (0: never). |
 | `FightRingWidth`, `FightRingColour` | 0.04, `#EDE6D2C0` | A drawn test ring's dashes. |
 
 ### [EarthLog] (each machine)

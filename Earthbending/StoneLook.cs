@@ -153,12 +153,24 @@ namespace Earthbending {
         // ---- fight health (FightLook.cs draws it; these two are all it needs of this file)
         static bool knockedOutFailed;
 
+        const float OwnHeadMetres = 0.6f;   // a knock-out this near the local camera is the local player's own
+
         // The server's Applied(KnockedOut): a fighter's fight health reached 0 at this place (their head). The Explode
-        // blast's effect and sound, as spec 3.3 of the fight health design asks.
+        // blast's effect and sound, as spec 3.3 of the fight health design asks. On the loser's own game the place is their
+        // own eyes, so the effect plays at their feet instead (a shockwave born inside the camera fills the view); the
+        // sound stays where it was sent.
         static void KnockedOut(Vector3 at) {
             try {
-                Play(explodeEffect, explodeEffectEntry, explodeSound, explodeSoundEntry, at);
-                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: a fighter was knocked out; the blast plays at {at}");
+                Vector3 effectAt = at;
+                PlayerController pc = PlayerController.Current;
+                Camera? cam = pc != null ? pc.Camera : null;
+                bool own = pc != null && cam != null && (cam.transform.position - at).sqrMagnitude < OwnHeadMetres * OwnHeadMetres;
+                if (own) effectAt = pc!.RealFeetPosition;
+                PooledObjectDefinition? fx = explodeEffect.Get(explodeEffectEntry?.Value);
+                if (fx != null) fx.Get(effectAt);
+                SoundEffectSet? s = explodeSound.Get(explodeSoundEntry?.Value);
+                if (s != null) s.PlayAtPosition(at);
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: a fighter was knocked out at {at}; the blast plays {(own ? $"at this player's own feet, {effectAt}" : "there")}");
             }
             catch (Exception e) {
                 if (!knockedOutFailed) { knockedOutFailed = true; MelonLogger.Warning($"[Earth] Looks: the knock-out look failed (said once): {e}"); }
@@ -166,8 +178,9 @@ namespace Earthbending {
         }
 
         /// <summary>Games: the boulder's mesh and its own materials, as the stones wear them (shared with the game: never
-        /// change either). False when this game has none. The prefab is looked for ONCE per game, at the first call from
-        /// anywhere, so only call this once the game's prefabs are loaded (a body is in the world).</summary>
+        /// change either). False when this game has none. The prefab is looked for once per game, at the first call from
+        /// anywhere (the game's PrefabManager.GetPrefab prepares its prefabs itself, so any time is safe; that first call
+        /// walks every prefab).</summary>
         internal static bool Boulder(out Mesh? mesh, out Material[] materials) {
             bool found = FindBoulder() && boulderMesh != null;
             mesh = boulderMesh;

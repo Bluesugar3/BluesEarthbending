@@ -238,6 +238,10 @@ namespace Earthbending {
             return null;
         }
 
+        /// <summary>Game: whether this game listens to a server now (it joined one and that connection is not closed). What
+        /// the server said of a fight is forgotten when it is not (FightLook.cs).</summary>
+        internal static bool Connected => server != null && !server.IsDisposed;
+
         // ---------------------------------------------------------------- receiving
 
         [HarmonyPatch(typeof(ServerHandler), "ConnectionCreated")]
