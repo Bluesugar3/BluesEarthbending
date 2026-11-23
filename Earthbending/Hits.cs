@@ -26,8 +26,8 @@ namespace Earthbending {
     //     comes toward the player hits them (StoneRules.Approaching, this step's velocity or the last one's, so a bounce off
     //     the player's own collider in between still counts): one that slides away from a player touching it, as its owner
     //     who just pushed it, does not. Its owner CAN be hit by it otherwise (ruling 25); the player holding it (Task 13) or
-    //     flicking it (Task 14) never is (ruling C16). With HurtPlayers off, stones ignore players entirely: no damage, no knockback, no break
-    //     (StoneRules.HitsPlayer; the capsule test does not even run).
+    //     flicking it (Task 14) never is (ruling C16). With HurtPlayers off, stones ignore players entirely: no damage, no
+    //     knockback, no break (StoneRules.HitsPlayer; the capsule test does not even run).
     //   - The hit: DamagePerPower x power (Blunt) and CripplePerPower x power, one plain ImpactHit (no tool, so never the
     //     game's PvP gate) through the health object's DetectImpact, as Explosive.Trigger does; the game's own multipliers,
     //     armour, damage protection and spawn invincibility still apply. The wielder is the stone owner's PlayerController
