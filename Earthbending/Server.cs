@@ -34,10 +34,13 @@ namespace Earthbending {
     // reach of the SERVER's copy of the head and feet looking along the claimed yaw, with [EarthModifiers] Reach, MaxHeight and
     // RangeSlackMetres, and the modifier applies in the stone's state. Then StoneBody.Apply, pushed along the claimed yaw. A
     // refusal is one Debug line naming the reason. Task 11: Kick, Stomp and Uppercut too; their [EarthModifiers] numbers go to
-    // StoneRules (SetImpulses), and MaxStoneSpeed holds every modifier's push (ruling C10).
+    // StoneRules (SetImpulses), and MaxStoneSpeed holds every modifier's push (ruling C10). Task 12: Parry (a stone floats for
+    // ParrySeconds, or until it moves faster than ParryBreakSpeed) and Explode (it marks the stone; a marked stone that breaks
+    // blasts everything within ExplodeRadius with ExplodeForce: Hits.Explode), and a second Straight claim on one stone within
+    // DoubleStraightSeconds of the last bursts it at once (rulings C8, C9). The server's quit breaks every stone with no blast.
     internal static class Server {
         const float DefaultLife = 60f, DefaultHeadSlack = 1f, DefaultCooldownSlack = 0.1f;
-        const float DefaultStraightGrounded = 2300f, DefaultStraightFree = 1800f, DefaultRangeSlack = 0.5f, DefaultDoubleStraight = 0.4f, DefaultSlideDeceleration = 4f;
+        const float DefaultStraightGrounded = 2300f, DefaultStraightFree = 1800f, DefaultRangeSlack = 0.5f, DefaultSlideDeceleration = 4f;
         const int DefaultMaxPerPlayer = 8, DefaultMaxTotal = 64;
         const int StoneLayers = 1 << 0;   // our stones sit on layer 0 (Default: Prefabs never sets one)
 
@@ -60,6 +63,7 @@ namespace Earthbending {
 
         static MelonPreferences_Entry<float>? straightGroundedEntry, straightFreeEntry, rangeSlackEntry, doubleStraightEntry, slideDecelerationEntry;
         static MelonPreferences_Entry<float>? kickUpEntry, stompDownEntry, uppercutFreeEntry, uppercutGroundedEntry, uppercutSpinEntry, maxStoneSpeedEntry;
+        static MelonPreferences_Entry<float>? parrySecondsEntry, parryBreakSpeedEntry, explodeRadiusEntry, explodeForceEntry;
 
         static bool[] enabled = new bool[StoneTable.Count];
         static int maxPerPlayer = DefaultMaxPerPlayer, maxTotal = DefaultMaxTotal;
@@ -71,14 +75,22 @@ namespace Earthbending {
         internal static float StraightGrounded { get; private set; } = DefaultStraightGrounded;
         /// <summary>[EarthModifiers] StraightFree: Straight's impulse in N s on every other stone.</summary>
         internal static float StraightFree { get; private set; } = DefaultStraightFree;
-        /// <summary>[EarthModifiers] DoubleStraightSeconds: read only, for Task 12 (two Straights on one stone this close
-        /// together explode it); StoneBody.LastStraightAt keeps each stone's last.</summary>
-        internal static float DoubleStraightSeconds { get; private set; } = DefaultDoubleStraight;
+        /// <summary>[EarthModifiers] DoubleStraightSeconds (rulings C8, C9): a Straight claim on a stone within this many
+        /// seconds of its last one (StoneBody.LastStraightAt) bursts it at once (StoneRules.DoubleStraight).</summary>
+        internal static float DoubleStraightSeconds { get; private set; } = StoneRules.DefaultDoubleStraightSeconds;
         /// <summary>[EarthModifiers] SlideDeceleration: how fast a sliding stone slows, in m/s every second.</summary>
         internal static float SlideDeceleration { get; private set; } = DefaultSlideDeceleration;
         /// <summary>[EarthModifiers] MaxStoneSpeed (ruling C10): no modifier leaves a stone faster than this, in m/s
         /// (StoneRules.Pushed).</summary>
         internal static float MaxStoneSpeed { get; private set; } = StoneRules.DefaultMaxStoneSpeed;
+        /// <summary>[EarthModifiers] ParrySeconds: a parried (Floating) stone falls again after this many seconds.</summary>
+        internal static float ParrySeconds { get; private set; } = StoneRules.DefaultParrySeconds;
+        /// <summary>[EarthModifiers] ParryBreakSpeed: a parried stone falls again once it moves faster than this, in m/s.</summary>
+        internal static float ParryBreakSpeed { get; private set; } = StoneRules.DefaultParryBreakSpeed;
+        /// <summary>[EarthModifiers] ExplodeRadius: a marked stone's blast reaches this many metres from its centre.</summary>
+        internal static float ExplodeRadius { get; private set; } = StoneRules.DefaultExplodeRadius;
+        /// <summary>[EarthModifiers] ExplodeForce: the blast's push on stones and loose rigidbodies, in N s (x its share).</summary>
+        internal static float ExplodeForce { get; private set; } = StoneRules.DefaultExplodeForce;
 
         /// <summary>From Main.OnInitializeMelon on the dedicated server only, after Prefabs.Init (which made [EarthStones]).</summary>
         internal static void Init() {
@@ -99,20 +111,24 @@ namespace Earthbending {
             discLiftEntry = cat.CreateEntry("DiscLift", SpawnPlan.DefaultDiscLift, description: "Server. A summoned Disc is pushed straight up with this impulse as it appears, in N s (a 100 kg Disc: 300 is 3 m/s). 0 or more.");
             discPushEntry = cat.CreateEntry("DiscPush", SpawnPlan.DefaultDiscPush, description: "Server. DiscPushDelaySeconds after its lift, a summoned Disc is pushed along the look with this impulse, in N s (a 100 kg Disc: 1400 is 14 m/s). A modifier on the Disc, or its break, before then cancels this push. 0 or more.");
             discPushDelayEntry = cat.CreateEntry("DiscPushDelaySeconds", SpawnPlan.DefaultDiscPushDelay, description: "Server. The time from a summoned Disc's lift to its push, in seconds (counted in the server's physics steps: the push lands in the first step at least this long after the lift). 0 or more.");
-            ballLaunchEntry = cat.CreateEntry("BallLaunchSpeed", SpawnPlan.DefaultBallLaunchSpeed, description: "Server. A summoned Ball rises out of the ground over BallRiseSeconds, then is loose and thrown straight up at this speed, in m/s (5: about 1.6 m higher with the game's gravity). 0: it stands still where it rose.");
+            ballLaunchEntry = cat.CreateEntry("BallLaunchSpeed", SpawnPlan.DefaultBallLaunchSpeed, description: "Server. A summoned Ball rises out of the ground over BallRiseSeconds, then is loose and thrown straight up at this speed, in m/s (5: about 1.6 m higher with the game's gravity). 0: it is loose where it rose, not thrown.");
             summonUnderEntry = cat.CreateEntry("SummonUnderLift", SpawnPlan.DefaultSummonUnderLift, description: "Server. A stone summoned where another stands (still, sliding or stomped) sets that one loose and throws it up at this speed, in m/s. 0: it is set loose but not thrown.");
             MelonPreferences_Category mods = Cfg.Category("EarthModifiers");   // Reach and MaxHeight are ReachSettings' (both sides)
             straightGroundedEntry = mods.CreateEntry("StraightGrounded", DefaultStraightGrounded, description: "Server. Straight pushes a stone anchored to the ground (standing still, rising or sliding) along the look with this impulse, in N s (a 275 kg Pillar: 2300 is 8.4 m/s); it slides along the ground until it stops. 0 or more.");
             straightFreeEntry = mods.CreateEntry("StraightFree", DefaultStraightFree, description: "Server. Straight pushes any other stone (loose, in the air) along the look with this impulse, in N s. 0 or more.");
             rangeSlackEntry = mods.CreateEntry("RangeSlackMetres", DefaultRangeSlack, description: "Server. A modifier's stone is checked against Reach and MaxHeight from the server's copy of the head and feet, which lags the player: both get this many metres more on the server. 0 or more.");
-            doubleStraightEntry = mods.CreateEntry("DoubleStraightSeconds", DefaultDoubleStraight, description: "Server. Two Straights on one stone within this many seconds will explode it (not in this build yet). 0 or more.");
+            doubleStraightEntry = mods.CreateEntry("DoubleStraightSeconds", StoneRules.DefaultDoubleStraightSeconds, description: "Server. A Straight on a stone within this many seconds of the last Straight on it (by anyone) bursts the stone at once instead of pushing it: it breaks and blasts as a stone marked by Explode does (ExplodeRadius, ExplodeForce), even while it rises. The game's own Straight cooldown is 0.5 s, so one player needs more than that. 0 or more (0: only two Straights in the same server frame).");
             slideDecelerationEntry = mods.CreateEntry("SlideDeceleration", DefaultSlideDeceleration, description: "Server. A stone sliding along the ground after a Straight slows by this many m/s every second while it touches ground (it slides on a frictionless material, so the ground itself does not slow it), and stands still again under 0.1 m/s (8.4 m/s with 4: about 9 m on level ground; uphill shorter, downhill longer). 0: only a rise or what it hits stops it.");
             kickUpEntry = mods.CreateEntry("KickUp", StoneRules.DefaultKickUp, description: "Server. Kick pushes a stone straight up with this impulse, in N s (a 300 kg Cube: 1500 is 5 m/s); a stone anchored to the ground (standing still, sliding or stomped) is set loose first. 0 or more.");
             stompDownEntry = mods.CreateEntry("StompDown", StoneRules.DefaultStompDown, description: "Server. Stomp on a loose stone: from then on it moves only up and down (no sideways, no turning) and is pushed down with this impulse, in N s (a 150 kg Ball: 1500 is 10 m/s); where it lands (on the ground, a floor or another stone's top) it stands still, with a slam. Stomp on a stone anchored to the ground does nothing. 0 or more.");
             uppercutFreeEntry = mods.CreateEntry("UppercutFree", StoneRules.DefaultUppercutFree, description: "Server. Uppercut on a loose stone pushes it with this impulse forward along the look and as much up, in N s (a 150 kg Ball: 900 is 6 m/s each way). 0 or more.");
             uppercutGroundedEntry = mods.CreateEntry("UppercutGrounded", StoneRules.DefaultUppercutGrounded, description: "Server. Uppercut on a stone anchored to the ground (standing still, sliding or stomped) sets it loose and pushes it with this impulse forward along the look and as much up, in N s, and spins it (UppercutSpin) (a 275 kg Pillar: 1300 is 4.7 m/s each way). 0 or more.");
             uppercutSpinEntry = mods.CreateEntry("UppercutSpin", StoneRules.DefaultUppercutSpin, description: "Server. Uppercut on a stone anchored to the ground also spins it this many radians a second about the axis across the look, its top tipping forward (5: about 0.8 turns a second). 0 or more.");
-            maxStoneSpeedEntry = mods.CreateEntry("MaxStoneSpeed", StoneRules.DefaultMaxStoneSpeed, description: "Server. No modifier (Straight, Kick, Stomp, Uppercut) leaves a stone faster than this, in m/s: each push adds its impulse over the stone's mass to the speed it already has, and the sum is held to this (a flying Disc Straighted again stops at 20). Above 0.");
+            maxStoneSpeedEntry = mods.CreateEntry("MaxStoneSpeed", StoneRules.DefaultMaxStoneSpeed, description: "Server. No modifier (Straight, Kick, Stomp, Uppercut) and no blast leaves a stone faster than this, in m/s: each push adds its impulse over the stone's mass to the speed it already has, and the sum is held to this (a flying Disc Straighted again stops at 20). A blast adds no more than this to a loose object's speed either. Above 0.");
+            parrySecondsEntry = mods.CreateEntry("ParrySeconds", StoneRules.DefaultParrySeconds, description: "Server. Parry stops a stone dead where it is and makes it float, with no gravity (a stone anchored to the ground or stomped is set loose first). It falls again after this many seconds, or as soon as anything moves it faster than ParryBreakSpeed (a Straight on a floating stone sends it flying; Kick and Uppercut set it loose; Stomp stomps it). Parry again starts the time over. 0 or more.");
+            parryBreakSpeedEntry = mods.CreateEntry("ParryBreakSpeed", StoneRules.DefaultParryBreakSpeed, description: "Server. A floating (parried) stone falls again once it moves faster than this, in m/s. 0 or more.");
+            explodeRadiusEntry = mods.CreateEntry("ExplodeRadius", StoneRules.DefaultExplodeRadius, description: "Server. Explode marks a stone. When a marked stone breaks (a hit, a clash, its life running out, its owner leaving, a ninth stone; not at the server's quit or by earth clear) it blasts everything within this many metres of its centre, all of it within half this distance and falling to a quarter at its edge: players are knocked back away from it ([EarthDamage] KnockbackSpeed, only with HurtPlayers), creatures are staggered (cripple 1, no damage), loose objects and stones are pushed away (ExplodeForce; anchored stones are set loose first, rising ones are left alone). A blast never breaks a stone. 0 or more (0: no blast).");
+            explodeForceEntry = mods.CreateEntry("ExplodeForce", StoneRules.DefaultExplodeForce, description: "Server. A blast pushes each stone and loose object in it away from its centre with this impulse, in N s, times its share (a 300 kg Cube in the middle: 1000 is 3.3 m/s); never past MaxStoneSpeed. 0 or more.");
             Apply();
             Cfg.Changed += Apply;
             Hits.Init();   // [EarthDamage]: what a moving stone does to creatures, players and other stones (Task 8)
@@ -139,7 +155,7 @@ namespace Earthbending {
             StraightGrounded = Cfg.NotNegative(straightGroundedEntry, "EarthModifiers", "StraightGrounded", DefaultStraightGrounded);
             StraightFree = Cfg.NotNegative(straightFreeEntry, "EarthModifiers", "StraightFree", DefaultStraightFree);
             rangeSlack = Cfg.NotNegative(rangeSlackEntry, "EarthModifiers", "RangeSlackMetres", DefaultRangeSlack);
-            DoubleStraightSeconds = Cfg.NotNegative(doubleStraightEntry, "EarthModifiers", "DoubleStraightSeconds", DefaultDoubleStraight);
+            DoubleStraightSeconds = Cfg.NotNegative(doubleStraightEntry, "EarthModifiers", "DoubleStraightSeconds", StoneRules.DefaultDoubleStraightSeconds);
             SlideDeceleration = Cfg.NotNegative(slideDecelerationEntry, "EarthModifiers", "SlideDeceleration", DefaultSlideDeceleration);
             StoneRules.SetImpulses(
                 kickUp: Cfg.NotNegative(kickUpEntry, "EarthModifiers", "KickUp", StoneRules.DefaultKickUp),
@@ -148,6 +164,10 @@ namespace Earthbending {
                 uppercutGrounded: Cfg.NotNegative(uppercutGroundedEntry, "EarthModifiers", "UppercutGrounded", StoneRules.DefaultUppercutGrounded),
                 uppercutSpin: Cfg.NotNegative(uppercutSpinEntry, "EarthModifiers", "UppercutSpin", StoneRules.DefaultUppercutSpin));
             MaxStoneSpeed = Cfg.Positive(maxStoneSpeedEntry, "EarthModifiers", "MaxStoneSpeed", StoneRules.DefaultMaxStoneSpeed);
+            ParrySeconds = Cfg.NotNegative(parrySecondsEntry, "EarthModifiers", "ParrySeconds", StoneRules.DefaultParrySeconds);
+            ParryBreakSpeed = Cfg.NotNegative(parryBreakSpeedEntry, "EarthModifiers", "ParryBreakSpeed", StoneRules.DefaultParryBreakSpeed);
+            ExplodeRadius = Cfg.NotNegative(explodeRadiusEntry, "EarthModifiers", "ExplodeRadius", StoneRules.DefaultExplodeRadius);
+            ExplodeForce = Cfg.NotNegative(explodeForceEntry, "EarthModifiers", "ExplodeForce", StoneRules.DefaultExplodeForce);
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
                 SpawnPlan.Set(k, Cfg.NotNegative(aheadEntries[i], "EarthStones", k + "AheadMetres", SpawnPlan.DefaultAhead(k)),
@@ -165,6 +185,7 @@ namespace Earthbending {
             MelonLogger.Msg($"[Earth] Stones: summons of {(on.Count == 0 ? "no stone" : string.Join(", ", on.ToArray()))}; at most {maxPerPlayer} a player and {maxTotal} in all, each for {life:0.#} s");
             MelonLogger.Msg($"[Earth] Modifiers: Straight {StraightGrounded:0.#} N s on an anchored stone (it slides, slowing {SlideDeceleration:0.##} m/s every second), {StraightFree:0.#} on a loose one; reach {ReachSettings.Reach:0.##} m, at most {ReachSettings.MaxHeight:0.##} m above the feet, {rangeSlack:0.##} m of slack on the server");
             MelonLogger.Msg($"[Earth] Modifiers: Kick {StoneRules.KickUp:0.#} N s up; Stomp {StoneRules.StompDown:0.#} down on a loose stone; Uppercut {StoneRules.UppercutFree:0.#} forward and up on a loose stone, {StoneRules.UppercutGrounded:0.#} each way and {StoneRules.UppercutSpin:0.##} rad/s of spin on an anchored one; no push leaves a stone faster than {MaxStoneSpeed:0.##} m/s");
+            MelonLogger.Msg($"[Earth] Modifiers: Parry floats a stone {ParrySeconds:0.##} s (or until it moves faster than {ParryBreakSpeed:0.##} m/s); a stone marked by Explode, or Straighted twice within {DoubleStraightSeconds:0.##} s, blasts {ExplodeRadius:0.##} m round it with {ExplodeForce:0.#} N s when it breaks");
         }
 
         static int AtLeastOne(MelonPreferences_Entry<int>? e, string key, int fallback) {
@@ -305,7 +326,7 @@ namespace Earthbending {
             StoneState was = b.State;
             b.Apply(c.Mod, p, c.Hand, U(SpawnPlan.Forward(c.Yaw)));
             if (Logs.Debug)
-                MelonLogger.Msg($"[Earth] Modify: {c.Mod} on {b.Kind} #{b.Id} of {b.OwnerName} by {NameOf(p)}: {was} -> {b.State}{(b.Queued != null ? " (held until it has risen)" : "")} along yaw {c.Yaw:0.#} (its box {Reach.Nearest(serverHead, V(box.min), V(box.max)):0.##} m from the server's head; heads {(c.Head - serverHead).Length:0.##} m apart)");
+                MelonLogger.Msg($"[Earth] Modify: {c.Mod} on {b.Kind} #{b.Id} of {b.OwnerName} by {NameOf(p)}: {was} -> {(b.Broken ? "burst (a double Straight)" : b.State.ToString())}{(b.Queued != null && !b.Broken ? " (held until it has risen)" : "")}{(c.Mod == Modifier.Explode ? " (marked)" : "")} along yaw {c.Yaw:0.#} (its box {Reach.Nearest(serverHead, V(box.min), V(box.max)):0.##} m from the server's head; heads {(c.Head - serverHead).Length:0.##} m apart)");
         }
 
         // One Debug line; nothing is built without [EarthLog] Debug.
@@ -423,14 +444,14 @@ namespace Earthbending {
             }
         }
 
-        /// <summary>At the server's quit (Main.OnApplicationQuit, and MelonLoader's definite quit): every stone breaks, and none
-        /// is spawned after. Nothing is ever saved anyway (SaveMode.Ignore).</summary>
+        /// <summary>At the server's quit (Main.OnApplicationQuit, and MelonLoader's definite quit): every stone breaks, with no
+        /// blast from a marked one (ruling C12), and none is spawned after. Nothing is ever saved anyway (SaveMode.Ignore).</summary>
         internal static void Shutdown() {
             if (shutDown) return;
             shutDown = true;
             try {
                 var all = new List<StoneBody>(Stones.Values);
-                foreach (StoneBody b in all) if (b != null) b.Break("the server quits");
+                foreach (StoneBody b in all) if (b != null) b.Break("the server quits", explode: false);
                 Stones.Clear();
                 if (all.Count > 0) MelonLogger.Msg($"[Earth] Stones: broke {all.Count} stone(s) at the server's quit");
             }

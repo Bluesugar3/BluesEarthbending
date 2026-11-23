@@ -18,33 +18,42 @@ namespace Earthbending {
     // stomped stone landing, plays StompEffect and StompSound where it landed. Each is the game's own pooled effect or sound
     // set, by name (several names split by ; are tried in order, the first loaded one is used). One that is not loaded is one
     // warning and nothing is played; it is looked for again every 10 s without a warning.
+    //
+    // Task 12 (rulings C11, C12): the server's Applied(Explode), a stone marked by Explode, plays ExplodeMarkEffect once at the
+    // stone (no sound; a lasting crack look is Task 10's), and its Applied(Exploded), a marked stone's blast, plays
+    // ExplodeEffect and ExplodeSound at the blast's centre (as well as the Broke look the same stone's break sends).
     internal static class StoneLook {
         const string BoulderPrefab = "Stone Boulder 01";
         const float BlockBevel = 0.05f;
         const string DefaultRiseEffect = "Digging Dirt Spray Effect;Digging Dirt Smoke Puff Effect", DefaultRiseSound = "Digging DirtFall Sound Set";
         const string DefaultBreakEffect = "Destroyed Rock", DefaultBreakSound = "Rock Destroyed Sounds;Boulder Breaking Sounds";
         const string DefaultStompEffect = "Turabada Ground Slam Effect", DefaultStompSound = "Heavy Turabada Step Sounds";
+        const string DefaultExplodeMarkEffect = "Mining Successful", DefaultExplodeEffect = "Shockwave Impact", DefaultExplodeSound = "Shockwave Sounds";
 
-        static bool searched, warnedModel, riseFailed, breakFailed, stompFailed;
+        static bool searched, warnedModel, riseFailed, breakFailed, stompFailed, markFailed, explodeFailed;
         static Mesh? boulderMesh;
         static Material[] boulderMaterials = new Material[0];
         static UvRect boulderUv = new UvRect(0f, 0f, 1f, 1f);
         static readonly Dictionary<Vector3, Mesh> blocks = new Dictionary<Vector3, Mesh>();
 
         static MelonPreferences_Entry<string>? riseEffectEntry, riseSoundEntry, breakEffectEntry, breakSoundEntry, stompEffectEntry, stompSoundEntry;
+        static MelonPreferences_Entry<string>? explodeMarkEffectEntry, explodeEffectEntry, explodeSoundEntry;
         static readonly LookAsset<PooledObjectDefinition> riseEffect = new LookAsset<PooledObjectDefinition>("RiseEffect", "effect", EffectNamed);
         static readonly LookAsset<PooledObjectDefinition> breakEffect = new LookAsset<PooledObjectDefinition>("BreakEffect", "effect", EffectNamed);
         static readonly LookAsset<PooledObjectDefinition> stompEffect = new LookAsset<PooledObjectDefinition>("StompEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> explodeMarkEffect = new LookAsset<PooledObjectDefinition>("ExplodeMarkEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> explodeEffect = new LookAsset<PooledObjectDefinition>("ExplodeEffect", "effect", EffectNamed);
         static readonly LookAsset<SoundEffectSet> riseSound = new LookAsset<SoundEffectSet>("RiseSound", "sound set", SoundNamed);
         static readonly LookAsset<SoundEffectSet> breakSound = new LookAsset<SoundEffectSet>("BreakSound", "sound set", SoundNamed);
         static readonly LookAsset<SoundEffectSet> stompSound = new LookAsset<SoundEffectSet>("StompSound", "sound set", SoundNamed);
+        static readonly LookAsset<SoundEffectSet> explodeSound = new LookAsset<SoundEffectSet>("ExplodeSound", "sound set", SoundNamed);
 
         // a pooled effect is named as its definition or as its prefab; a sound set as itself
         static bool EffectNamed(PooledObjectDefinition d, string n) => d.name == n || (d.Prefab != null && d.Prefab.name == n);
         static bool SoundNamed(SoundEffectSet s, string n) => s.name == n;
 
-        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise, break and stomp settings, and the server's
-        /// Applied events.</summary>
+        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise, break, stomp and explode settings, and the
+        /// server's Applied events.</summary>
         internal static void Init() {
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
             riseEffectEntry = looks.CreateEntry("RiseEffect", DefaultRiseEffect, description: "Per game. The game's pooled effect played where a stone comes out of the ground (its name; several names split by ; are tried in order, the first loaded one is used; empty: none).");
@@ -53,9 +62,12 @@ namespace Earthbending {
             breakSoundEntry = looks.CreateEntry("BreakSound", DefaultBreakSound, description: "Per game. The game's sound set played where a stone breaks (names as RiseEffect).");
             stompEffectEntry = looks.CreateEntry("StompEffect", DefaultStompEffect, description: "Per game. The game's pooled effect played where a stomped stone lands (names as RiseEffect).");
             stompSoundEntry = looks.CreateEntry("StompSound", DefaultStompSound, description: "Per game. The game's sound set played where a stomped stone lands (names as RiseEffect).");
-            // a Net whose static initialiser failed (Main says so) throws on every touch: no break or stomp looks, the rest still starts
+            explodeMarkEffectEntry = looks.CreateEntry("ExplodeMarkEffect", DefaultExplodeMarkEffect, description: "Per game. The game's pooled effect played once at a stone when Explode marks it (names as RiseEffect). No sound.");
+            explodeEffectEntry = looks.CreateEntry("ExplodeEffect", DefaultExplodeEffect, description: "Per game. The game's pooled effect played where a marked stone blasts as it breaks (names as RiseEffect).");
+            explodeSoundEntry = looks.CreateEntry("ExplodeSound", DefaultExplodeSound, description: "Per game. The game's sound set played where a marked stone blasts as it breaks (names as RiseEffect).");
+            // a Net whose static initialiser failed (Main says so) throws on every touch: no break, stomp or explode looks, the rest still starts
             try { Net.AppliedReceived += OnApplied; }
-            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break or stomp looks (message 19 is not set up: {e.GetType().Name})"); }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break, stomp or explode looks (message 19 is not set up: {e.GetType().Name})"); }
         }
 
         /// <summary>Games: a stone appeared; the dirt and the sound at its top.</summary>
@@ -91,11 +103,31 @@ namespace Earthbending {
                     if (!stompFailed) { stompFailed = true; MelonLogger.Warning($"[Earth] Looks: the stomp look failed (said once): {e}"); }
                 }
             }
+            else if (evt == (byte)Modifier.Explode) {   // the server sends a stone's mark once (ruling C11)
+                try {
+                    Play(explodeMarkEffect, explodeMarkEffectEntry, null, null, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} was marked by Explode; its mark plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!markFailed) { markFailed = true; MelonLogger.Warning($"[Earth] Looks: the explode mark look failed (said once): {e}"); }
+                }
+            }
+            else if (evt == Wire.Exploded) {
+                try {
+                    Play(explodeEffect, explodeEffectEntry, explodeSound, explodeSoundEntry, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} exploded; its blast plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!explodeFailed) { explodeFailed = true; MelonLogger.Warning($"[Earth] Looks: the explode look failed (said once): {e}"); }
+                }
+            }
         }
 
-        static void Play(LookAsset<PooledObjectDefinition> effect, MelonPreferences_Entry<string>? effectNames, LookAsset<SoundEffectSet> sound, MelonPreferences_Entry<string>? soundNames, Vector3 at) {
+        // The effect, then the sound (none: no sound), at a place.
+        static void Play(LookAsset<PooledObjectDefinition> effect, MelonPreferences_Entry<string>? effectNames, LookAsset<SoundEffectSet>? sound, MelonPreferences_Entry<string>? soundNames, Vector3 at) {
             PooledObjectDefinition? fx = effect.Get(effectNames?.Value);
             if (fx != null) fx.Get(at);   // no turn: the game plays its own dig effect at a place only (DiggingImpactorSettings.DigEffect)
+            if (sound == null) return;
             SoundEffectSet? s = sound.Get(soundNames?.Value);
             if (s != null) s.PlayAtPosition(at);
         }

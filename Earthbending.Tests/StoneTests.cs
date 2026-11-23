@@ -24,6 +24,104 @@ internal static class StoneTests {
         HitRules();
         OtherStones();
         Modifiers();
+        ParryAndExplode();
+    }
+
+    // Task 12: Parry, Explode and the double Straight (spec 2.3, 2.4, 2.6, 3.5, 3.7; rulings C8, C9, C11, C12)
+    static void ParryAndExplode() {
+        // the brief's checks
+        Check("parry on still -> floating", StoneRules.After(StoneState.Still, Modifier.Parry) == StoneState.Floating);
+        Check("parry on free -> floating", StoneRules.After(StoneState.Free, Modifier.Parry) == StoneState.Floating);
+        Check("parry ends: 3.1 s, 0.2 m/s, not 0.05 m/s", StoneRules.ParryEnds(3.1f, 0f, 3f, 0.1f) && StoneRules.ParryEnds(1f, 0.2f, 3f, 0.1f) && !StoneRules.ParryEnds(1f, 0.05f, 3f, 0.1f));
+        Check("explode share: 1 m of 3, 3 m of 3, 3.1 m of 3", StoneRules.ExplodeShare(1f, 3f) == 1f && StoneRules.ExplodeShare(3f, 3f) == 0.25f && StoneRules.ExplodeShare(3.1f, 3f) == 0f);
+        Check("double straight inside DoubleStraightSeconds", StoneRules.DoubleStraight(10.0, 10.6, StoneRules.DefaultDoubleStraightSeconds));
+
+        // the defaults (the settings' and ruling C9's)
+        Check("defaults: parry 3 s, 0.1 m/s", Near(StoneRules.DefaultParrySeconds, 3f) && Near(StoneRules.DefaultParryBreakSpeed, 0.1f));
+        Check("defaults: explode 3 m, 1000 N s, cripple 1", Near(StoneRules.DefaultExplodeRadius, 3f) && Near(StoneRules.DefaultExplodeForce, 1000f) && Near(StoneRules.ExplodeCripple, 1f));
+        Check("defaults: double straight 0.8 s (ruling C9)", Near(StoneRules.DefaultDoubleStraightSeconds, 0.8f));
+
+        // Parry: Floating from Free, Still, Sliding, Stomped, and Rising once it has risen (C6); Floating again restarts it;
+        // Held and Flicked are Tasks 13-14's (unchanged here)
+        Check("parry on sliding -> floating", StoneRules.After(StoneState.Sliding, Modifier.Parry) == StoneState.Floating);
+        Check("parry on stomped -> floating", StoneRules.After(StoneState.Stomped, Modifier.Parry) == StoneState.Floating);
+        Check("parry on rising -> floating once risen", StoneRules.After(StoneState.Rising, Modifier.Parry) == StoneState.Floating);
+        Check("parry on floating -> floating", StoneRules.After(StoneState.Floating, Modifier.Parry) == StoneState.Floating);
+        Check("parry on held, flicked: unchanged", StoneRules.After(StoneState.Held, Modifier.Parry) == StoneState.Held && StoneRules.After(StoneState.Flicked, Modifier.Parry) == StoneState.Flicked);
+        // the Floating row: Straight keeps it floating with the push (its speed then ends the float), Kick and Uppercut set it
+        // loose, Stomp stomps it, Explode only marks it
+        Check("floating: straight stays floating", StoneRules.After(StoneState.Floating, Modifier.Straight) == StoneState.Floating);
+        Check("floating: kick -> free", StoneRules.After(StoneState.Floating, Modifier.Kick) == StoneState.Free);
+        Check("floating: uppercut -> free", StoneRules.After(StoneState.Floating, Modifier.Uppercut) == StoneState.Free);
+        Check("floating: stomp -> stomped", StoneRules.After(StoneState.Floating, Modifier.Stomp) == StoneState.Stomped);
+        Check("floating: explode leaves it floating", StoneRules.After(StoneState.Floating, Modifier.Explode) == StoneState.Floating);
+        Check("floating is loose: free numbers", !StoneRules.IsGrounded(StoneState.Floating) && !StoneRules.Kinematic(StoneState.Floating) && !StoneRules.Continuous(StoneState.Floating));
+        // ruling C11: Explode marks the stone and leaves its state, in every state
+        bool marks = true;
+        foreach (StoneState s in AllStates) marks &= StoneRules.After(s, Modifier.Explode) == s;
+        Check("explode leaves every state", marks);
+
+        // Parry and Explode apply in every state; Hold and Flick are still Tasks 13-14's
+        bool parryAll = true, explodeAll = true, holdNone = true;
+        foreach (StoneState s in AllStates) {
+            parryAll &= StoneRules.CanApply(s, Modifier.Parry);
+            explodeAll &= StoneRules.CanApply(s, Modifier.Explode);
+            holdNone &= !StoneRules.CanApply(s, Modifier.Hold) && !StoneRules.CanApply(s, Modifier.Flick);
+        }
+        Check("parry applies in every state", parryAll);
+        Check("explode applies in every state", explodeAll);
+        Check("hold and flick not yet", holdNone);
+        Check("modify: explode on a still stone is allowed", ModifyCheck.Decide(Mod(Modifier.Explode, 9u, V3.Zero), true, StoneState.Still, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
+            V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("modify: parry on a rising stone is allowed (held until risen)", ModifyCheck.Decide(Mod(Modifier.Parry, 9u, V3.Zero), true, StoneState.Rising, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
+            V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("parry pushes nothing", StoneRules.Impulse(Modifier.Parry, false) == (0f, 0f, 0f) && StoneRules.Impulse(Modifier.Explode, true) == (0f, 0f, 0f));
+
+        // ParryEnds at its edges: older than ParrySeconds, or faster than ParryBreakSpeed (at either is not past it)
+        Check("parry ends: at 3 s it still floats", !StoneRules.ParryEnds(3f, 0f, 3f, 0.1f) && StoneRules.ParryEnds(3.001f, 0f, 3f, 0.1f));
+        Check("parry ends: at 0.1 m/s it still floats", !StoneRules.ParryEnds(1f, 0.1f, 3f, 0.1f) && StoneRules.ParryEnds(1f, 0.1001f, 3f, 0.1f));
+        Check("parry ends: just parried", !StoneRules.ParryEnds(0f, 0f, 3f, 0.1f));
+        Check("parry ends: not a number ends it", StoneRules.ParryEnds(float.NaN, 0f, 3f, 0.1f) && StoneRules.ParryEnds(1f, float.NaN, 3f, 0.1f));
+        Check("parry ends: from the settings", !StoneRules.ParryEnds(4f, 0.4f, 5f, 0.5f) && StoneRules.ParryEnds(5.1f, 0f, 5f, 0.5f) && StoneRules.ParryEnds(1f, 0.6f, 5f, 0.5f));
+        Check("parry ends: 0 s ends it at the first step", StoneRules.ParryEnds(0.02f, 0f, 0f, 0.1f));
+
+        // ExplodeShare: 1 within half the radius, falling linearly to 0.25 at the radius, 0 beyond or with nothing to go by
+        Check("explode share: at half the radius", StoneRules.ExplodeShare(1.5f, 3f) == 1f && StoneRules.ExplodeShare(0f, 3f) == 1f);
+        Check("explode share: three quarters of the radius", Near(StoneRules.ExplodeShare(2.25f, 3f), 0.625f));
+        Check("explode share: another radius", Near(StoneRules.ExplodeShare(4.5f, 6f), 0.625f) && StoneRules.ExplodeShare(6f, 6f) == 0.25f && StoneRules.ExplodeShare(2.9f, 6f) == 1f);
+        bool falls = true;
+        float prev = 1f;
+        for (int i = 0; i <= 30; i++) {
+            float sh = StoneRules.ExplodeShare(1.5f + 0.05f * i, 3f);
+            falls &= sh <= prev + 1e-6f && sh >= 0.25f - 1e-5f && sh <= 1f;
+            prev = sh;
+        }
+        Check("explode share: falls from 1 to 0.25 between half the radius and the radius", falls);
+        Check("explode share: a distance that is not a number", StoneRules.ExplodeShare(float.NaN, 3f) == 0f && StoneRules.ExplodeShare(float.PositiveInfinity, 3f) == 0f);
+        Check("explode share: a radius not above 0 or not a number", StoneRules.ExplodeShare(0f, 0f) == 0f && StoneRules.ExplodeShare(1f, -3f) == 0f
+            && StoneRules.ExplodeShare(1f, float.NaN) == 0f && StoneRules.ExplodeShare(1f, float.PositiveInfinity) == 0f);
+        Check("explode share: a distance below 0 is at the centre", StoneRules.ExplodeShare(-1f, 3f) == 1f);
+
+        // the double Straight (rulings C8, C9): the last Straight's claim within the window
+        Check("double straight: never straighted", !StoneRules.DoubleStraight(double.NegativeInfinity, 10.0, 0.8f));
+        Check("double straight: a last that is not a number", !StoneRules.DoubleStraight(double.NaN, 10.0, 0.8f));
+        Check("double straight: at the window", StoneRules.DoubleStraight(10.0, 10.5, 0.5f));
+        Check("double straight: past the window", !StoneRules.DoubleStraight(10.0, 10.5001, 0.5f) && !StoneRules.DoubleStraight(10.0, 11.0, 0.8f));
+        Check("double straight: a now that is not a number", !StoneRules.DoubleStraight(10.0, double.NaN, 0.8f));
+        Check("double straight: two from one player at the game's cooldown", StoneRules.DoubleStraight(20.0, 20.5, 0.8f) && StoneRules.DoubleStraight(20.0, 20.4, 0.8f));
+
+        // the blast's way on a player (spec 2.6, ruling C12): away from the centre, flat or 45 degrees up
+        float r = (float)System.Math.Sqrt(0.5);
+        Check("blast: beside the centre is flat", NearV(StoneRules.BlastDir(new V3(2f, 0.3f, 0f), V3.Zero), new V3(1f, 0f, 0f)));
+        Check("blast: above the side is 45 degrees", NearV(StoneRules.BlastDir(new V3(0f, 1f, -1f), V3.Zero), new V3(0f, r, -r)));
+        Check("blast: below the side is flat", NearV(StoneRules.BlastDir(new V3(0f, -1f, 2f), V3.Zero), new V3(0f, 0f, 1f)));
+        Check("blast: straight above takes the stone's heading, 45 degrees up", NearV(StoneRules.BlastDir(new V3(0f, 1f, 0f), new V3(0f, 0f, 6f)), new V3(0f, r, r)));
+        Check("blast: straight above with no heading goes straight up", NearV(StoneRules.BlastDir(new V3(0f, 1f, 0f), V3.Zero), new V3(0f, 1f, 0f))
+            && NearV(StoneRules.BlastDir(V3.Zero, V3.Zero), new V3(0f, 1f, 0f)));
+        Check("blast: at the centre takes the stone's heading, flat", NearV(StoneRules.BlastDir(V3.Zero, new V3(-3f, 0f, 0f)), new V3(-1f, 0f, 0f)));
+        Check("blast: straight below with no heading: none", NearV(StoneRules.BlastDir(new V3(0f, -1f, 0f), V3.Zero), V3.Zero));
+        Check("blast: not a number: none", NearV(StoneRules.BlastDir(new V3(float.NaN, 1f, 0f), V3.Zero), V3.Zero));
+        Check("blast: unit length", Near(StoneRules.BlastDir(new V3(3f, 2f, -4f), V3.Zero).Length, 1f));
     }
 
     static readonly StoneState[] AllStates = {
@@ -64,21 +162,20 @@ internal static class StoneTests {
         Check("kick on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Kick) == StoneState.Free);
         Check("uppercut on rising -> free once risen", StoneRules.After(StoneState.Rising, Modifier.Uppercut) == StoneState.Free);
         Check("stomp on rising -> still once risen", StoneRules.After(StoneState.Rising, Modifier.Stomp) == StoneState.Still);
-        // Floating, Held and Flicked are Tasks 12-14's: unchanged here
+        // Held and Flicked are Tasks 13-14's: unchanged here (Floating's row is Task 12's: ParryAndExplode)
         bool later = true;
-        foreach (StoneState s in new[] { StoneState.Floating, StoneState.Held, StoneState.Flicked })
+        foreach (StoneState s in new[] { StoneState.Held, StoneState.Flicked })
             foreach (Modifier m in new[] { Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
                 later &= StoneRules.After(s, m) == s;
-        Check("floating, held, flicked unchanged by kick, stomp, uppercut", later);
+        Check("held, flicked unchanged by kick, stomp, uppercut", later);
 
-        // they apply in every state; Parry, Hold, Flick and Explode are later tasks'
+        // they apply in every state; Hold and Flick are later tasks'
         bool every = true;
         foreach (StoneState s in AllStates)
             foreach (Modifier m in new[] { Modifier.Straight, Modifier.Kick, Modifier.Stomp, Modifier.Uppercut })
                 every &= StoneRules.CanApply(s, m);
         Check("straight, kick, stomp, uppercut apply in every state", every);
-        Check("parry, hold, explode not yet", !StoneRules.CanApply(StoneState.Free, Modifier.Parry) && !StoneRules.CanApply(StoneState.Free, Modifier.Hold)
-            && !StoneRules.CanApply(StoneState.Still, Modifier.Explode));
+        Check("hold not yet", !StoneRules.CanApply(StoneState.Free, Modifier.Hold));
         Check("modify: kick on a still stone is allowed", ModifyCheck.Decide(Mod(Modifier.Kick, 9u, V3.Zero), true, StoneState.Still, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f),
             V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
 

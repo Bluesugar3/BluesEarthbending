@@ -29,7 +29,14 @@ namespace Earthbending {
     /// every player (Hits.TestPlayers); each new contact goes to Hits.OnContact (a creature hit, a clash with another stone).
     /// Task 9 (rulings C1, C2, C4): <see cref="Launch"/> pushes a summoned Disc (spawned loose) at once and again after a
     /// delay, and a Ball once it has risen (then it is Free, not Still); <see cref="LiftOff"/> sets a standing stone loose and
-    /// throws it up when another is summoned where it stands. <see cref="Break"/> is the one way a stone is ended on purpose.</summary>
+    /// throws it up when another is summoned where it stands. <see cref="Break"/> is the one way a stone is ended on purpose.
+    /// Task 12: Parry (spec 2.3) stops it dead and makes it float (Floating: not kinematic, no gravity, nothing frozen,
+    /// Discrete collision; a grounded one set loose first) until StoneRules.ParryEnds ([EarthModifiers] ParrySeconds, or faster
+    /// than ParryBreakSpeed), then it is Free with gravity. Explode marks it (<see cref="Exploding"/>, ruling C11: at once,
+    /// even while it rises; the games play the mark look once), and a marked stone that breaks blasts round it (Hits.Explode)
+    /// unless it is the server's quit or `earth clear`. A Straight claim within [EarthModifiers] DoubleStraightSeconds of the
+    /// last one on it bursts it at once (rulings C8, C9): marked, and broken. <see cref="Blast"/> is another stone's blast
+    /// reaching this one.</summary>
     /// <remarks>Straight's own numbers are Server.StraightGrounded and StraightFree; Kick's, Stomp's and Uppercut's come from
     /// StoneRules.Push. None of them pushes the player back but Straight (on their own game, Bend.cs).</remarks>
     internal sealed class StoneBody : MonoBehaviour {
@@ -45,6 +52,9 @@ namespace Earthbending {
         /// <summary>When the last Straight claim on it was accepted, held while it rose or not (Time.unscaledTimeAsDouble; minus
         /// infinity: never). Task 12's double Straight reads it (ruling C8).</summary>
         internal double LastStraightAt = double.NegativeInfinity;
+        /// <summary>Ruling C11: marked by Explode (or burst by a double Straight); for good. When it breaks, it blasts round it
+        /// (Hits.Explode), but not at the server's quit or `earth clear`.</summary>
+        internal bool Exploding { get; private set; }
 
         Rigidbody? body;
         Collider? shape;
@@ -58,8 +68,9 @@ namespace Earthbending {
         int slideSteps;      // physics steps since the last push of a slide (the push's impulse lands in the first)
         bool touchedGround;  // a ground contact in the last physics step (set by the collision callbacks, read by Slide)
         double groundAt;     // Time.fixedTimeAsDouble of the last ground contact, or of the push
+        double floatAt;      // Time.fixedTimeAsDouble of the Parry that made it float
         bool broken;
-        static bool sendFailed, landSendFailed, destroyFailed, noBodyWarned;
+        static bool sendFailed, landSendFailed, destroyFailed, noBodyWarned, markSendFailed, explodeFailed;
         static PhysicMaterial? slideMaterial;
 
         /// <summary>It broke, or was destroyed: it takes no more modifiers, and hits and clashes no more.</summary>
@@ -83,6 +94,12 @@ namespace Earthbending {
         /// <summary>Its world box (the collider's bounds), what a modifier's reach is judged on; a point at its place without a
         /// collider.</summary>
         internal Bounds Box => shape != null ? shape.bounds : new Bounds(transform.position, Vector3.zero);
+
+        /// <summary>Its rigidbody's centre of mass in the world (its place without one): where a blast pushes it from (Hits.Explode).</summary>
+        internal Vector3 CentreOfMass => body != null ? body.worldCenterOfMass : transform.position;
+
+        /// <summary>Its rigidbody's speed now (0 while kinematic or without one), for the Debug lines.</summary>
+        internal float Speed => body != null && !body.isKinematic ? body.velocity.magnitude : 0f;
 
         internal void Init(NetworkEntity entity, StoneKind kind, ulong owner, string ownerName, StoneState state, Vector3 from, Vector3 to, float rise, double born) {
             Entity = entity;
@@ -108,6 +125,7 @@ namespace Earthbending {
                 Do(q.m, q.by, q.hand, q.flatForward);
             }
             else if (State == StoneState.Sliding) Slide();
+            else if (State == StoneState.Floating) Hover();
             if (pushLater != null) PushLater();
             LastVelocity = Velocity;
             bool moved = body != null && !body.isKinematic;
@@ -348,17 +366,25 @@ namespace Earthbending {
 
         /// <summary>Server: applies a modifier the server checked (ModifyCheck) for <paramref name="by"/>, whose pose's A hand is
         /// <paramref name="hand"/> (0 right, 1 left), pushed along <paramref name="flatForward"/> (the claimed yaw's flat
-        /// direction, length 1). A modifier this build does not apply (StoneRules.CanApply) does nothing. A Straight stamps
-        /// <see cref="LastStraightAt"/> now, held or not (ruling C8). On a Rising stone every modifier is held until the rise
-        /// has ended (ruling C6), then applied as if it had just arrived; a later claim replaces a held one (also in the one
-        /// physics step between the rise's end and the held one's turn).</summary>
+        /// direction, length 1). A modifier this build does not apply (StoneRules.CanApply) does nothing. Explode only marks
+        /// the stone (<see cref="Mark"/>, ruling C11), at once in any state: it holds nothing, replaces nothing and cancels no
+        /// launch. A Straight stamps <see cref="LastStraightAt"/> now, held or not (ruling C8), and one within
+        /// [EarthModifiers] DoubleStraightSeconds of the last bursts the stone at once instead (<see cref="Burst"/>, ruling C9),
+        /// even while it rises. On a Rising stone every other modifier is held until the rise has ended (ruling C6), then
+        /// applied as if it had just arrived; a later claim replaces a held one (also in the one physics step between the
+        /// rise's end and the held one's turn).</summary>
         internal void Apply(Modifier m, Player by, int hand, Vector3 flatForward) {
             if (broken || !StoneRules.CanApply(State, m)) return;
+            if (m == Modifier.Explode) { Mark(by); return; }
+            if (m == Modifier.Straight) {
+                double now = Time.unscaledTimeAsDouble, last = LastStraightAt;
+                LastStraightAt = now;
+                if (StoneRules.DoubleStraight(last, now, Server.DoubleStraightSeconds)) { Burst(by, now - last); return; }
+            }
             if (pushLater != null) {   // ruling C1: a modifier before the Disc's second push cancels it
                 pushLater = null;
                 if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} came before its launch's second push, which is dropped");
             }
-            if (m == Modifier.Straight) LastStraightAt = Time.unscaledTimeAsDouble;
             if (queued is { } old && Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName}: {m} replaces the {old.m} it took while rising");
             queued = null;
             if (State == StoneState.Rising) queued = (m, by, hand, flatForward);   // spec 2.3: a rising stone is half in the ground
@@ -372,7 +398,9 @@ namespace Earthbending {
         /// grounded stone is set loose first (Free), and a grounded Uppercut adds its spin. Stomp on a loose stone: it moves only
         /// up and down from now on (x, z and its turn frozen, its sideways speed and spin gone) and is pushed down until it
         /// lands (<see cref="Land"/>); on a grounded one nothing happens. A Stomped stone takes only the up and down part of any
-        /// push. One Debug line.</summary>
+        /// push. Parry (Task 12): it floats (<see cref="Float"/>), its time starting over when it already does. A Floating stone
+        /// takes Straight's StraightFree and floats on (its speed then ends the float), Kick's and Uppercut's loose numbers
+        /// (set loose first: gravity back) and Stomp's. One Debug line.</summary>
         void Do(Modifier m, Player by, int hand, Vector3 flatForward) {
             if (broken || !StoneRules.CanApply(State, m)) return;
             if (body == null) {
@@ -380,6 +408,11 @@ namespace Earthbending {
                 return;
             }
             StoneState was = State, next = StoneRules.After(was, m);
+            if (m == Modifier.Parry) {
+                if (next == StoneState.Floating) Float(was);
+                else if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Parry on {Kind} #{Id} of {OwnerName}: {was}, nothing to do yet");
+                return;
+            }
             bool grounded = StoneRules.IsGrounded(was);
             Vector3 impulse, spin = Vector3.zero;
             if (m == Modifier.Straight) impulse = flatForward * (grounded ? Server.StraightGrounded : Server.StraightFree);
@@ -427,10 +460,95 @@ namespace Earthbending {
             }
         }
 
+        // ---------------------------------------------------------------- Task 12: Parry, Explode, the double Straight
+
+        /// <summary>Parry (spec 2.3): it stops dead and floats where it is: not kinematic (a Still one is set loose), no
+        /// gravity, nothing frozen, Discrete collision (a Stomped one's ContinuousDynamic off), its own material back, no
+        /// velocity or spin. Its kept velocities are zeroed too, so the speed it had before the Parry hits no player in the
+        /// next step (Hits.TestPlayers reads the last step's). Its float's time starts now.</summary>
+        void Float(StoneState was) {
+            if (body == null) return;
+            float speed = body.isKinematic ? 0f : body.velocity.magnitude;
+            body.isKinematic = false;
+            Detection(StoneState.Floating);
+            body.useGravity = false;
+            body.constraints = RigidbodyConstraints.None;
+            EndSlideMaterial();
+            body.velocity = Vector3.zero;
+            body.angularVelocity = Vector3.zero;
+            body.WakeUp();   // NetworkRigidbody sends its new state while it is awake
+            Velocity = Vector3.zero;
+            LastVelocity = Vector3.zero;
+            AngularVelocity = Vector3.zero;
+            floatAt = Time.fixedTimeAsDouble;
+            State = StoneState.Floating;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Parry on {Kind} #{Id} of {OwnerName}: {was} -> Floating at {transform.position} (stopped from {speed:0.##} m/s); it falls again after {Server.ParrySeconds:0.##} s, or once it moves faster than {Server.ParryBreakSpeed:0.##} m/s");
+        }
+
+        // Each physics step of a float, before the step: once StoneRules.ParryEnds (it floated ParrySeconds, or something moved
+        // it faster than ParryBreakSpeed: a Straight, a blast, a bump), it is Free with gravity, woken (a body that hung still
+        // for seconds is asleep, and gravity alone does not wake it).
+        void Hover() {
+            if (body == null) return;
+            float age = (float)(Time.fixedTimeAsDouble - floatAt), speed = body.velocity.magnitude;
+            if (!StoneRules.ParryEnds(age, speed, Server.ParrySeconds, Server.ParryBreakSpeed)) return;
+            body.useGravity = true;
+            body.WakeUp();
+            State = StoneState.Free;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} stops floating at {transform.position} after {age:0.##} s ({(speed <= Server.ParryBreakSpeed ? "its time ran out" : $"moved at {speed:0.##} m/s")}) and is loose");
+        }
+
+        /// <summary>Explode (ruling C11): the stone is marked for good, its state and motion unchanged. Only the first mark tells
+        /// the games within 80 m (Applied(Explode) at its place: they play [EarthLooks] ExplodeMarkEffect once).</summary>
+        void Mark(Player by) {
+            if (Exploding) {
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Explode on {Kind} #{Id} of {OwnerName} by {Server.NameOf(by)}: already marked ({State})");
+                return;
+            }
+            Exploding = true;
+            Vector3 at = transform.position;
+            int games = 0;
+            try { games = Net.SendApplied(Id, (byte)Modifier.Explode, at); }
+            catch (Exception e) {
+                if (!markSendFailed) { markSendFailed = true; MelonLogger.Warning($"[Earth] Stones: telling the games a stone was marked failed (said once): {e.Message}"); }
+            }
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Explode on {Kind} #{Id} of {OwnerName} by {Server.NameOf(by)}: marked ({State}) at {at}; it blasts {Server.ExplodeRadius:0.##} m round it when it breaks; the mark goes to {games} game(s)");
+        }
+
+        /// <summary>Rulings C8, C9: a second Straight claim <paramref name="since"/> seconds after the last one on this stone,
+        /// within DoubleStraightSeconds: it is marked and breaks at once, so it blasts (no mark look first: the blast is its look).</summary>
+        void Burst(Player by, double since) {
+            Exploding = true;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: Straight on {Kind} #{Id} of {OwnerName} by {Server.NameOf(by)} came {since:0.###} s after the last one on it (within [EarthModifiers] DoubleStraightSeconds {Server.DoubleStraightSeconds:0.##}): a double Straight, it bursts ({State})");
+            Break(Logs.Debug ? $"a double Straight ({since:0.###} s apart)" : "a double Straight");
+        }
+
+        /// <summary>Server (ruling C12): another stone's blast (Hits.Explode) reaches this one with <paramref name="impulse"/>
+        /// (N s, away from the blast's centre, its share in). A Rising one is left alone (half in the ground: ruling C6). A
+        /// grounded one (Still, Sliding, Stomped) is set loose first (<see cref="Loosen"/>, Free; <paramref name="loosened"/>).
+        /// Then its velocity is StoneRules.Pushed (its velocity + the impulse over its mass, held to [EarthModifiers]
+        /// MaxStoneSpeed), as every modifier's push; a Floating one floats on with it, and its speed ends the float. A blast never
+        /// breaks a stone. False, and nothing changes, when it is broken, Rising or has no rigidbody.</summary>
+        internal bool Blast(Vector3 impulse, out bool loosened) {
+            loosened = false;
+            if (broken || body == null || State == StoneState.Rising) return false;
+            if (StoneRules.IsGrounded(State)) {
+                Loosen();
+                State = StoneState.Free;
+                loosened = true;
+            }
+            if (body.isKinematic) return false;   // no state leaves it kinematic here
+            body.WakeUp();
+            body.velocity = U(StoneRules.Pushed(V(body.velocity), V(impulse), body.mass, Server.MaxStoneSpeed));
+            return true;
+        }
+
         /// <summary>Server: the stone breaks. It stops colliding at once and holds still where it is; the games within 80 m get
         /// Applied(Broke) at its place (they play the break), then the entity is destroyed. One Debug line with
-        /// <paramref name="why"/>. Twice is once.</summary>
-        internal void Break(string why) {
+        /// <paramref name="why"/>. Twice is once. A marked stone (<see cref="Exploding"/>) then blasts round its place
+        /// (Hits.Explode with [EarthModifiers] ExplodeRadius and ExplodeForce, ruling C12), unless <paramref name="explode"/>
+        /// is false (the server's quit, `earth clear`). The blast never throws into the break.</summary>
+        internal void Break(string why, bool explode = true) {
             if (broken) return;
             broken = true;
             Server.Forget(this);
@@ -446,7 +564,14 @@ namespace Earthbending {
             catch (Exception e) {
                 if (!sendFailed) { sendFailed = true; MelonLogger.Warning($"[Earth] Stones: telling the games a stone broke failed (said once): {e.Message}"); }
             }
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} broke at {at}: {why}");
+            bool blast = explode && Exploding;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} broke at {at}: {why}{(Exploding ? blast ? "; it was marked: it blasts" : "; it was marked, but no blast (it was not broken in play)" : "")}");
+            if (blast) {
+                try { Hits.Explode(at, Server.ExplodeRadius, Server.ExplodeForce, this); }   // never throws; a guard all the same
+                catch (Exception e) {
+                    if (!explodeFailed) { explodeFailed = true; MelonLogger.Warning($"[Earth] Stones: a marked stone's blast failed (said once): {e.Message}"); }
+                }
+            }
             try {
                 if (Entity != null && !Entity.IsBeingDestroyed) Entity.SceneDestroy();
             }

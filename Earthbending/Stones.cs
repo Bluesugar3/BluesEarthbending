@@ -12,6 +12,9 @@ using System.Globalization;
 // (HitLedger); Hits.cs runs them. Task 9: the Disc's and the Ball's launch (SpawnPlan.Launch) and what a stone standing where
 // another is summoned does (StoneRules.SummonUnder). Task 11: Kick, Stomp and Uppercut (StoneRules.After, CanApply, Impulse,
 // Push, Landed), every modifier's capped push (StoneRules.Pushed) and the state a stone is in once risen (StoneRules.Risen).
+// Task 12: Parry and Explode in After and CanApply, when a parried stone falls again (StoneRules.ParryEnds), how much of an
+// explosion reaches what (ExplodeShare), the way it knocks a player (BlastDir) and the double Straight (DoubleStraight);
+// StoneBody.cs and Hits.Explode run them.
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -139,8 +142,8 @@ namespace Earthbending {
         public static bool Kinematic(StoneState s) => s == StoneState.Rising || s == StoneState.Still;
 
         /// <summary>Ruling C4: what a stone standing where another is summoned does. Still, Sliding and Stomped are lifted off:
-        /// Free, thrown up at <see cref="SpawnPlan.SummonUnderLift"/> m/s (a velocity change; 0 leaves it as it is). Every other
-        /// state stays, lift 0: a loose stone is pushed aside by physics, and a Rising one is half in the ground.</summary>
+        /// Free, thrown up at <see cref="SpawnPlan.SummonUnderLift"/> m/s (a velocity change; 0 sets it loose without a throw).
+        /// Every other state stays, lift 0: a loose stone is pushed aside by physics, and a Rising one is half in the ground.</summary>
         public static (StoneState state, float lift) SummonUnder(StoneState s) =>
             s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped ? (StoneState.Free, SpawnPlan.SummonUnderLift) : (s, 0f);
 
@@ -149,27 +152,34 @@ namespace Earthbending {
         /// <summary>The state a modifier leaves a stone in (spec 2.3, 3.5). A Rising stone counts as the Still one it becomes:
         /// StoneBody holds every modifier taken while it rises until the rise ends (ruling C6), then applies it as if it had
         /// just arrived (a Ball, loose once up, is Free by then). Straight: a Still stone slides; every other state stays (Free
-        /// flies, Sliding slides on, Stomped falls on, Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still,
-        /// Sliding, Stomped) is set loose, Free; Free stays Free. Stomp: a Free stone is Stomped; a grounded one stays as it
-        /// is. Floating, Held and Flicked stay for Kick, Stomp and Uppercut (Tasks 12-14 give theirs). A modifier this build
-        /// does not apply leaves the state as it is.</summary>
+        /// flies, Sliding slides on, Stomped falls on, Floating floats on with the push, whose speed then ends the float,
+        /// Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still, Sliding, Stomped) and a Floating one are set
+        /// loose, Free; Free stays Free. Stomp: a Free or Floating stone is Stomped; a grounded one stays as it is. Parry (Task
+        /// 12): Free, Still, Sliding, Stomped and Floating (its time starts over) float, Floating. Held and Flicked stay for
+        /// every modifier (Tasks 13-14 give theirs). Explode only marks the stone (StoneBody.Exploding): every state stays; so
+        /// does it for a modifier this build does not apply.</summary>
         public static StoneState After(StoneState s, Modifier m) {
-            if (m > Modifier.Uppercut) return s;
+            if (m > Modifier.Parry) return s;
             if (s == StoneState.Rising) s = StoneState.Still;
+            bool loose = s == StoneState.Free || s == StoneState.Floating;
+            bool anchored = s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped;
             switch (m) {
                 case Modifier.Straight:
                     return s == StoneState.Still ? StoneState.Sliding : s;
                 case Modifier.Kick:
                 case Modifier.Uppercut:
-                    return s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped || s == StoneState.Free ? StoneState.Free : s;
-                default:   // Stomp
-                    return s == StoneState.Free ? StoneState.Stomped : s;
+                    return anchored || loose ? StoneState.Free : s;
+                case Modifier.Stomp:
+                    return loose ? StoneState.Stomped : s;
+                default:   // Parry
+                    return anchored || loose ? StoneState.Floating : s;
             }
         }
 
-        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight, Kick, Stomp and
-        /// Uppercut, to a stone in any state; Parry, Hold, Flick and Explode are refused (later tasks add theirs).</summary>
-        public static bool CanApply(StoneState s, Modifier m) => m <= Modifier.Uppercut;
+        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight, Kick, Stomp,
+        /// Uppercut, Parry and Explode, to a stone in any state (Parry on Held or Flicked does nothing yet: After); Hold and
+        /// Flick are refused (Tasks 13-14 add theirs).</summary>
+        public static bool CanApply(StoneState s, Modifier m) => m <= Modifier.Parry || m == Modifier.Explode;
 
         /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once its flat speed is under this while it touches
         /// ground, in m/s.</summary>
@@ -397,6 +407,56 @@ namespace Earthbending {
         /// loose (Free; launched when its launch has a push, SpawnPlan.Launch), and so is the Disc (it never rises: it appears
         /// loose); the Pillar, Cube and Wall stand Still.</summary>
         public static StoneState Risen(StoneKind k) => k == StoneKind.Ball || k == StoneKind.Disc ? StoneState.Free : StoneState.Still;
+
+        // ---------------------------------------------------------------- Task 12: Parry, Explode, the double Straight
+
+        /// <summary>[EarthModifiers] ParrySeconds' and ParryBreakSpeed's defaults (spec 2.3: a parried stone floats 3 s, or
+        /// until it moves faster than 0.1 m/s).</summary>
+        public const float DefaultParrySeconds = 3f, DefaultParryBreakSpeed = 0.1f;
+        /// <summary>[EarthModifiers] ExplodeRadius' (m) and ExplodeForce's (N s) defaults (spec 3.5).</summary>
+        public const float DefaultExplodeRadius = 3f, DefaultExplodeForce = 1000f;
+        /// <summary>Ruling C9: [EarthModifiers] DoubleStraightSeconds' default (spec 3.5's 0.4 is under the game's own 0.5 s
+        /// Straight cooldown, so one player could never land two within it).</summary>
+        public const float DefaultDoubleStraightSeconds = 0.8f;
+        /// <summary>Ruling C12 (spec 3.7): an explosion staggers each living creature in it with this much cripple and no damage.</summary>
+        public const float ExplodeCripple = 1f;
+
+        /// <summary>Spec 2.3: whether a Floating (parried) stone falls again: once it has floated longer than
+        /// <paramref name="seconds"/> ([EarthModifiers] ParrySeconds) or moves faster than <paramref name="breakSpeed"/> m/s
+        /// (ParryBreakSpeed; a Straight on it, a blast, a bump). At either number it still floats. An age or a speed that is
+        /// not a number ends it.</summary>
+        public static bool ParryEnds(float age, float speed, float seconds, float breakSpeed) => !(age <= seconds) || !(speed <= breakSpeed);
+
+        /// <summary>Ruling C12: how much of an explosion reaches something <paramref name="dist"/> metres from its centre (to
+        /// its nearest point): all of it within half the <paramref name="radius"/>, falling in a straight line to a quarter at
+        /// the radius, none beyond. A distance below 0 is at the centre; 0 for a distance that is not a number (or infinite)
+        /// and for a radius not above 0 or not finite.</summary>
+        public static float ExplodeShare(float dist, float radius) {
+            if (!(radius > 0f) || float.IsInfinity(radius) || float.IsNaN(dist) || float.IsInfinity(dist)) return 0f;
+            float half = radius * 0.5f;
+            if (dist <= half) return 1f;
+            if (dist > radius) return 0f;
+            return 1f - 0.75f * (dist - half) / (radius - half);
+        }
+
+        /// <summary>Rulings C8, C9: a Straight claim at <paramref name="now"/> on a stone whose last accepted Straight claim was
+        /// at <paramref name="last"/> (minus infinity: never) is a double Straight when it came at most
+        /// <paramref name="window"/> seconds later ([EarthModifiers] DoubleStraightSeconds). Never for a last or a now that is
+        /// not a finite number.</summary>
+        public static bool DoubleStraight(double last, double now, float window) =>
+            !double.IsNaN(last) && !double.IsInfinity(last) && !double.IsNaN(now) && !double.IsInfinity(now) && now - last <= window;
+
+        /// <summary>Ruling C12 (spec 2.6): the way an explosion knocks a player, from <paramref name="away"/> (the blast's
+        /// centre to the player's nearest point): <see cref="KnockDir(V3, V3)"/>, flat or 45 degrees up. A player (nearly)
+        /// straight above or below the centre, or at it, takes the flat heading of <paramref name="fallback"/> (the exploding
+        /// stone's velocity), 45 degrees up when above. With no heading from either: straight up when above (or at) the centre,
+        /// none when below it or when <paramref name="away"/> is not a number. Length 1 or zero.</summary>
+        public static V3 BlastDir(V3 away, V3 fallback) {
+            if (!Finite(away)) return V3.Zero;
+            V3 d = KnockDir(away, fallback);
+            if (d.Length > 0.5f) return d;
+            return away.Y >= 0f ? new V3(0f, 1f, 0f) : V3.Zero;
+        }
     }
 
     /// <summary>What one physics step of a slide ends in (<see cref="StoneRules.Slide"/>): it slides on, it stands Still, or
