@@ -3,12 +3,15 @@ using System.Globalization;
 using Earthbending;
 using static Program;
 
-// Task 17b (Ruling 38): the Model's smooth, predicted place between the game's 10 syncs a second (Motion.cs).
-// Every case is a body whose true place is known at every moment; the "game" sees it only as a sync every 0.1 s, stamped
-// with the time of the first frame at or after the moment it was taken (as NetworkRigidbody's lastSyncTime is), and draws
-// at 90 frames a second. Each case prints what it measured (the report quotes these lines).
+// Task 17b (Ruling 38): the Model's smooth, predicted place between the game's syncs of a body (Motion.cs). The server sends
+// a body's place every second frame of its own, so the gap depends on the server's frame rate: the moving cases run at three
+// cadences, a slow server (a sync every 0.1 s, the hard case), a fast one (every 0.022 s, 45 a second) and an irregular one
+// (gaps alternating 0.02 and 0.07 s). Every case is a body whose true place is known at every moment; the "game" sees it only
+// as its syncs, each stamped with the time of the first frame at or after the moment it was taken (as NetworkRigidbody's
+// lastSyncTime is), and draws at 90 frames a second. Each case prints what it measured (the report quotes these lines).
 internal static class MotionTests {
-    const float Frame = 1f / 90f, SyncEvery = 0.1f, MinSpeed = 2f;
+    const float Frame = 1f / 90f, SyncEvery = 0.1f, MinSpeed = 2f;   // SyncEvery: a slow server, for the spin and the rise
+    static readonly float[] SlowServer = { 0.1f }, FastServer = { 0.022f }, Irregular = { 0.02f, 0.07f };
 
     delegate void Truth(float t, out V3 place, out V3 velocity);
 
@@ -17,34 +20,41 @@ internal static class MotionTests {
         Damping();
         Turns();
 
+        Moving("slow server, every 0.1 s", SlowServer);
+        Moving("fast server, every 0.022 s", FastServer);
+        Moving("irregular, 0.02 / 0.07 s", Irregular);
+
+        KinematicRise();
+        Snaps();
+        BadSteps();
+        StartsOnBody();
+    }
+
+    // the four moving bodies at one cadence (gaps between syncs, used in turn)
+    static void Moving(string cadence, float[] gaps) {
         // a body moving at a steady 10 m/s
-        Case("steady 10 m/s", (float t, out V3 p, out V3 v) => { v = new V3(10f, 0f, 0f); p = new V3(10f * t, 1f, 0f); },
+        Case(cadence, gaps, "steady 10 m/s", (float t, out V3 p, out V3 v) => { v = new V3(10f, 0f, 0f); p = new V3(10f * t, 1f, 0f); },
             kinematic: false, from: 0.3f, to: 2f, maxError: 0.15f, stepFrom: 0.3f, stepTo: 2f, maxStepRatio: 0.3f);
         // a slide that slows 4 m/s every second from 8 m/s (stops at 2 s). For a body whose speed changes the "mean step" is the
         // true step that frame, judged only while it moves 2 m/s or more (a step near a stop is a few millimetres)
-        Case("slide 8 m/s slowing 4 m/s/s", (float t, out V3 p, out V3 v) => {
+        Case(cadence, gaps, "slide 8 m/s slowing 4 m/s/s", (float t, out V3 p, out V3 v) => {
                 float tt = Math.Min(t, 2f);
                 v = new V3(8f - 4f * tt, 0f, 0f);
                 p = new V3(8f * tt - 2f * tt * tt, 0.5f, 0f);
             },
             kinematic: false, from: 0.3f, to: 2.5f, maxError: 0.2f, stepFrom: 0.3f, stepTo: 2.5f, maxStepRatio: 0.3f);
         // a body thrown up at 5 m/s under gravity 9.81 (the game's target has no gravity: live + velocity x age)
-        Case("thrown up 5 m/s", (float t, out V3 p, out V3 v) => {
+        Case(cadence, gaps, "thrown up 5 m/s", (float t, out V3 p, out V3 v) => {
                 v = new V3(0f, 5f - 9.81f * t, 0f);
                 p = new V3(0f, 5f * t - 0.5f * 9.81f * t * t, 0f);
             },
             kinematic: false, from: 0.3f, to: 1f, maxError: 0.2f, stepFrom: 0.3f, stepTo: 1f, maxStepRatio: 0.3f);
         // the same thrown up at 5 m/s while sliding sideways at 6 m/s: the step judged against the true step
-        Case("thrown 5 m/s up, 6 m/s across", (float t, out V3 p, out V3 v) => {
+        Case(cadence, gaps, "thrown 5 m/s up, 6 m/s across", (float t, out V3 p, out V3 v) => {
                 v = new V3(6f, 5f - 9.81f * t, 0f);
                 p = new V3(6f * t, 5f * t - 0.5f * 9.81f * t * t, 0f);
             },
             kinematic: false, from: 0.3f, to: 1f, maxError: 0.2f, stepFrom: 0.3f, stepTo: 1f, maxStepRatio: 0.3f);
-
-        KinematicRise();
-        Snaps();
-        BadSteps();
-        StartsOnBody();
     }
 
     static string F(float x) => x.ToString("0.0000", CultureInfo.InvariantCulture);
@@ -97,7 +107,7 @@ internal static class MotionTests {
         Check("q: (b * a) turns by a then b", NearV(p, want));
         Check("q: rotate 90 about y takes z to x", NearV(Q.FromRotVec(new V3(0f, (float)Math.PI / 2f, 0f)).Rotate(new V3(0f, 0f, 1f)), new V3(1f, 0f, 0f)));
 
-        // a body spinning at 3 rad/s about y, synced every 0.1 s: the shown turn within 2 degrees from 0.3 s on
+        // a body spinning at 3 rad/s about y, synced every 0.1 s (a slow server): the shown turn within 2 degrees from 0.3 s on
         var f = new MotionFollow();
         var m = MotionValues.Default;
         float worst = 0f;
@@ -126,12 +136,13 @@ internal static class MotionTests {
 
     // One body: the worst distance from the true place in [from, to], the worst |shown step - true step| / true step in
     // [stepFrom, stepTo] while the body moves at least MinSpeed.
-    static void Case(string name, Truth truth, bool kinematic, float from, float to, float maxError, float stepFrom, float stepTo, float maxStepRatio) {
+    static void Case(string cadence, float[] gaps, string name, Truth truth, bool kinematic, float from, float to, float maxError, float stepFrom, float stepTo, float maxStepRatio) {
         var f = new MotionFollow();
         var m = MotionValues.Default;
         float worstError = 0f, worstRatio = 0f;
         MotionSync sync = default;
         float nextSync = 0.005f;   // half a frame off the frames' clock, so float sums never flip which frame stamps a sync
+        int gap = 0;
         bool have = false;
         V3 prevShown = V3.Zero, prevTrue = V3.Zero;
         bool havePrev = false;
@@ -143,7 +154,7 @@ internal static class MotionTests {
                 truth(nextSync, out V3 at, out V3 vel);
                 sync = new MotionSync(at, Q.Identity, kinematic ? V3.Zero : vel, V3.Zero, now, kinematic);
                 have = true;
-                nextSync += SyncEvery;
+                nextSync += gaps[gap++ % gaps.Length];
             }
             V3 shown;
             if (!have) { f.Reset(); shown = truePlace; }   // before the first sync: on the rigidbody (here, the true place)
@@ -158,12 +169,13 @@ internal static class MotionTests {
             }
             prevShown = shown; prevTrue = truePlace; havePrev = true;
         }
+        name = $"{name} ({cadence})";
         Console.WriteLine($"MOTION {name}: worst error {F(worstError)} m, worst step ratio {F(worstRatio)}");
         Check($"motion: {name} within {maxError} m of the true place", worstError <= maxError);
         Check($"motion: {name} steps within {maxStepRatio:0%} of the true step", worstRatio <= maxStepRatio);
     }
 
-    // a kinematic rise of 1.8 m in 0.3 s, synced every 0.1 s (a kinematic sync carries no velocity)
+    // a kinematic rise of 1.8 m in 0.3 s, synced every 0.1 s (a slow server; a kinematic sync carries no velocity)
     static void KinematicRise() {
         var f = new MotionFollow();
         var m = MotionValues.Default;

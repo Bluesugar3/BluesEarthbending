@@ -1,8 +1,10 @@
 using System;
 
 // Unity-free, compiled by Earthbending.Tests, so only System.* in here. Task 17b (Ruling 38): where a game draws a stone's
-// "Model" between the game's syncs of its rigidbody. The game moves a server-owned body on a game 10 times a second toward the
-// LAST synced place (NetworkRigidbody.ClientUpdate), so a sliding stone stalls and jumps; the Model is instead drawn at a
+// "Model" between the game's syncs of its rigidbody. The server sends a body's place every second frame of its own
+// (NetworkScene.Update, serializationInterval 2), so the gap between syncs depends on the server's frame rate (at most 45 a
+// second; a slow server far fewer). Between syncs the game pulls its copy of the body toward the LAST synced place
+// (NetworkRigidbody.ClientUpdate), so a sliding stone stalls and jumps; the Model is instead drawn at a
 // predicted place (MotionFollow), and StoneView (StoneLook.cs) puts it there every LateUpdate. Tested in MotionTests.cs.
 //
 //   the target   from the last sync: not kinematic, live + velocity x age (the age held to PredictMaxSeconds), its turn

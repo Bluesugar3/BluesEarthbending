@@ -28,7 +28,8 @@ namespace Earthbending {
     // (StoneView.Shake, unscaled time), and back exactly there when the shake ends or the stone goes. Nothing on the server.
     //
     // Task 17b. Ruling 38: on a game the Model is no longer drawn on the game's copy of the body, which the game moves toward
-    // the last synced place 10 times a second (a sliding stone stalled and jumped), but at a place predicted from that sync and
+    // the last synced place at each sync (the server sends it every second frame of its own, so the gap depends on the
+    // server's frame rate; a sliding stone stalled and jumped), but at a place predicted from that sync and
     // eased there (Motion.cs, StoneMotion.cs; StoneView.LateUpdate), the shake on top; [EarthLooks] SmoothMotion off: as before.
     // Ruling 39: the blocks carry the boulder's atlas rectangle in their fourth UV set (the game's atlas shader reads it there),
     // their UV0 scaled by each face's size. A break and a blast try more of the game's effects (the archery mod's).
@@ -303,7 +304,7 @@ namespace Earthbending {
         internal Collider? Shape { get; private set; }
         internal Rigidbody? Body { get; private set; }
 
-        static bool warned, shakeWarned, followWarned;
+        static bool warned, shakeWarned, followWarned, measureWarned;
 
         Transform? model;    // the dressed "Model" child (games only), and where Dress put it
         Vector3 home;
@@ -315,6 +316,8 @@ namespace Earthbending {
         NetworkRigidbody? net;
         MotionFollow? follow;
         bool followed, followBroken;
+        float drawnOffset;            // the Model's distance from the body this frame, while followed
+        float seenSync; int seenWindow;   // [EarthLog] Debug's sync-gap measure (StoneMotion.Measure)
 
         void Start() {
             Entity = GetComponent<NetworkEntity>();
@@ -377,6 +380,12 @@ namespace Earthbending {
                 model.localPosition = home;
                 model.localRotation = homeTurn;
             }
+            if (Logs.Debug) {
+                try { StoneMotion.Measure(net, ref seenSync, ref seenWindow, followed ? drawnOffset : 0f); }
+                catch (Exception e) {
+                    if (!measureWarned) { measureWarned = true; MelonLogger.Warning($"[Earth] Motion: the sync gap could not be measured (said once): {e.Message}"); }
+                }
+            }
             if (!shaking) return;
             try {
                 if (Time.unscaledTime >= shakeUntil) { StopShake(); return; }
@@ -402,6 +411,7 @@ namespace Earthbending {
                 return false;
             }
             V3 s = f.Shown;
+            drawnOffset = (s - new V3(bp.x, bp.y, bp.z)).Length;
             Q q = f.ShownTurn;
             var turn = new Quaternion(q.X, q.Y, q.Z, q.W);
             m.SetPositionAndRotation(new Vector3(s.X, s.Y, s.Z) + turn * home, turn * homeTurn);

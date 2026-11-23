@@ -30,7 +30,7 @@ namespace Earthbending {
         /// <summary>From StoneLook.Init (games only).</summary>
         internal static void Init() {
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
-            smoothEntry = looks.CreateEntry("SmoothMotion", true, description: "Per game. On: a stone is drawn where it should be now, predicted from the server's last sync of it (the game syncs a moving body 10 times a second and between syncs pulls it toward the last synced place, so it stalls and jumps), and eased there. Off: the stone is drawn on the game's own copy of its body.");
+            smoothEntry = looks.CreateEntry("SmoothMotion", true, description: "Per game. On: a stone is drawn where it should be now, predicted from the server's last sync of it (the server sends a body's place every second frame of its own, so the gap depends on the server's frame rate, and between syncs the game pulls its copy toward the last synced place, so it stalls and jumps), and eased there. Off: the stone is drawn on the game's own copy of its body.");
             predictEntry = looks.CreateEntry("PredictMaxSeconds", MotionValues.DefaultPredictMaxSeconds, description: "Per game. With SmoothMotion: how far ahead of the last sync a moving stone is predicted (its synced velocity times the time since), at most this many seconds. 0 or more (0: drawn at the synced place, eased).");
             smoothSecondsEntry = looks.CreateEntry("SmoothSeconds", MotionValues.DefaultSmoothSeconds, description: "Per game. With SmoothMotion: the time constant in seconds of the easing that takes up each sync's correction (critically damped: most of it is gone after 3 of these). 0 or more (0: no easing, every correction shows as a jump).");
             snapEntry = looks.CreateEntry("SnapMetres", MotionValues.DefaultSnapMetres, description: "Per game. With SmoothMotion: a stone drawn further than this from where it should be (a teleport) is put there at once instead of eased. 0 or more.");
@@ -84,6 +84,56 @@ namespace Earthbending {
         static void Want(string name, Type type, List<string> missing) {
             FieldInfo f = typeof(NetworkRigidbody).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
             if (f == null || f.FieldType != type) missing.Add($"{type.Name} {name}");
+        }
+
+        // ---------------------------------------------------------------- the measured sync gap ([EarthLog] Debug only)
+        // The server sends a body's place every second frame of its own, so the real gap is measured, not assumed: every 5 s, while
+        // any stone moves (not kinematic) and at least 5 syncs of moving stones came, one line with the gaps and how far the Model
+        // is drawn from the game's own copy of the body. A sync is a change of lastSyncTime.
+        const float ReportSeconds = 5f;
+        const int ReportMinSyncs = 5;
+        static float windowStart = -1f, gapMin, gapMax, offsetMax;
+        static double gapSum, offsetSum;
+        static int window, syncs, gaps, offsets, moving;
+
+        /// <summary>Debug only, once per stone per frame (StoneView.LateUpdate): <paramref name="seenSync"/> and
+        /// <paramref name="seenWindow"/> are that stone's own memory; <paramref name="offset"/> the Model's distance from the
+        /// body this frame (0 while it rides the body).</summary>
+        internal static void Measure(NetworkRigidbody? body, ref float seenSync, ref int seenWindow, float offset) {
+            float now = Time.unscaledTime;
+            if (windowStart < 0f) Restart(now);
+            else if (now - windowStart >= ReportSeconds) {
+                if (syncs >= ReportMinSyncs && moving > 0)
+                    MelonLogger.Msg($"[Earth] Motion: {syncs} sync(s) in {now - windowStart:0.0} s over {moving} moving stone(s): gap min {(gaps > 0 ? gapMin * 1000f : 0f):0} / mean {(gaps > 0 ? gapSum / gaps * 1000.0 : 0.0):0} / max {gapMax * 1000f:0} ms; the model's offset from the game's own copy of the body: mean {(offsets > 0 ? offsetSum / offsets : 0.0):0.###} / max {offsetMax:0.###} m");
+                Restart(now);
+            }
+            if (body == null || !Read(body, out MotionSync s) || s.Kinematic) return;
+            if (seenWindow != window) { seenWindow = window; moving++; }
+            if (Q.IsFinite(offset)) {
+                offsetSum += offset;
+                offsets++;
+                if (offset > offsetMax) offsetMax = offset;
+            }
+            if (s.Time == seenSync) return;
+            if (seenSync != 0f) {
+                float gap = s.Time - seenSync;
+                if (gap > 0f) {
+                    if (gaps == 0 || gap < gapMin) gapMin = gap;
+                    if (gap > gapMax) gapMax = gap;
+                    gapSum += gap;
+                    gaps++;
+                }
+            }
+            seenSync = s.Time;
+            syncs++;
+        }
+
+        static void Restart(float now) {
+            windowStart = now;
+            window++;
+            syncs = gaps = offsets = moving = 0;
+            gapMin = gapMax = offsetMax = 0f;
+            gapSum = offsetSum = 0.0;
         }
 
         /// <summary>What <paramref name="body"/> last heard from the server; false before its first sync (or with no serializer
