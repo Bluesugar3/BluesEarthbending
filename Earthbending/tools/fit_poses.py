@@ -25,8 +25,9 @@ from datetime import datetime
 #
 # The design's starting poses (docs/superpowers/specs/2026-11-22-earthbending-design.md, section 3.3), in the order the
 # owner strikes them. Body frame: metres from the head, +Z ahead (head yaw only), +Y up, +X right. A is the right hand.
-# The fit only uses the palm and finger directions here, to decide which local axis of each controller is the palm and
-# which the fingers; poses.txt gets the owner's own measured places and directions. This is NOT Poses.cs's table, which
+# The fit only uses the palm and finger directions here, to find which direction in each controller's own space is the
+# palm and which the fingers (Ruling 36: any direction, not only the six signed axes); poses.txt gets the owner's own
+# measured places and directions. This is NOT Poses.cs's table, which
 # holds the owner's capture once Task 3 is done (the selftest checks it against the design doc instead).
 
 PX, NX, PY, NY, PZ, NZ = (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)
@@ -157,48 +158,109 @@ def read_capture(path):
     return snaps
 
 
-def axis_dir(hand, axis):
-    """The direction a signed local axis ("-y") of one snapshot's controller points in the body frame."""
-    v = hand[axis[1]]
+def axis_vector(axis):
+    """A signed local axis ("-y") as a direction in the controller's own space; a direction (three numbers) stays itself."""
+    if not isinstance(axis, str):
+        return axis
+    v = {"x": PX, "y": PY, "z": PZ}[axis[1]]
     return scale(v, -1.0) if axis[0] == "-" else v
 
 
-def choose(snaps, hand, part):
-    """The signed local axis of one hand's controller that agrees best with the spec's palm (part 1) or fingers (part 2)
-    over all the poses: the smallest mean angle. Ties go to the earlier axis of AXES."""
+def to_body(hand, local):
+    """A direction in one snapshot's controller's own space, in the body frame (what Transform.TransformDirection gives
+    the game, then the body frame): the controller's local X, Y and Z axes weighed by its three numbers."""
+    return add(add(scale(hand["x"], local[0]), scale(hand["y"], local[1])), scale(hand["z"], local[2]))
+
+
+def to_local(hand, d):
+    """A body-frame direction in one snapshot's controller's own space: its part along each local axis."""
+    return (dot(d, hand["x"]), dot(d, hand["y"]), dot(d, hand["z"]))
+
+
+def axis_dir(hand, axis):
+    """The direction a signed local axis ("-y"), or a direction in the controller's space, points in the body frame."""
+    return to_body(hand, axis_vector(axis))
+
+
+def agreement(snaps, hand, part, local):
+    """How well one direction in a hand's controller space agrees with the spec's palm (part 1) or fingers (part 2) over
+    the poses: the mean angle, the worst and its pose."""
     side = 1 if hand == "right" else 2
-    ranking = []
-    for axis in AXES:
-        angles = {}
-        for snap, spec in zip(snaps, SPEC):
-            ref = spec[side][part]
-            if checked(ref):
-                angles[spec[0]] = angle_deg(axis_dir(snap[hand], axis), ref)
-        worst = max(angles, key=angles.get)
-        ranking.append({"axis": axis, "mean": sum(angles.values()) / len(angles), "worst": angles[worst], "worst_pose": worst, "angles": angles})
-    ranking.sort(key=lambda r: r["mean"])
-    best = dict(ranking[0])
-    best["next_axis"], best["next_mean"] = ranking[1]["axis"], ranking[1]["mean"]
-    return best
+    angles = {}
+    for snap, spec in zip(snaps, SPEC):
+        ref = spec[side][part]
+        if checked(ref):
+            angles[spec[0]] = angle_deg(to_body(snap[hand], local), ref)
+    worst = max(angles, key=angles.get)
+    return {"mean": sum(angles.values()) / len(angles), "worst": angles[worst], "worst_pose": worst}
+
+
+def mean_direction(snaps, hand, part):
+    """Ruling 36: one hand's palm (part 1) or fingers (part 2) as a direction in its controller's own space: each pose's
+    design direction taken into that row's controller space, averaged over the poses and made length 1 (zero when the
+    rows cancel out)."""
+    side = 1 if hand == "right" else 2
+    total = (0.0, 0.0, 0.0)
+    for snap, spec in zip(snaps, SPEC):
+        ref = spec[side][part]
+        if checked(ref):
+            total = add(total, to_local(snap[hand], normalized(ref)))
+    return normalized(total)
+
+
+# the game's rule for a hand's two directions (HandAxes.Check in Poses.cs): within this many degrees of each other, or of
+# opposite, is no hand
+MIN_APART_DEG = 45.0
+
+
+def square_fingers(hand, palm, fingers):
+    """The fingers made square to the palm (the palm's part taken out, then length 1). Refused, as the game refuses the
+    settings, when either has no direction or the two are within 45 degrees of each other or of opposite."""
+    if not checked(palm) or not checked(fingers):
+        raise FitError("the %s hand's %s came out with no direction: the snapshots do not look like the 16 poses in order with"
+                       " A on the right hand" % (hand, "palm" if not checked(palm) else "fingers"))
+    apart = angle_deg(palm, fingers)
+    if not (MIN_APART_DEG < apart < 180.0 - MIN_APART_DEG):
+        raise FitError("the %s hand's palm and fingers came out %.0f degrees apart (they are square to each other, so 45 to 135"
+                       " is wanted): the snapshots do not look like the 16 poses in order with A on the right hand" % (hand, apart))
+    return normalized(sub(fingers, scale(palm, dot(fingers, palm))))
+
+
+def nearest_axis(local):
+    """The signed local axis closest to a direction in the controller's space (ties to the earlier of AXES)."""
+    return min(AXES, key=lambda a: angle_deg(axis_vector(a), local))
+
+
+def setting_text(local):
+    """A direction as the game's setting takes it: three numbers with 2 decimals (no -0.00)."""
+    return ",".join("0.00" if c == "-0.00" else c for c in ("%.2f" % v for v in local))
 
 
 def fit(snaps):
-    """The axes of both hands and the 16 measured poses. Refuses a capture of any count but 16, and one whose palm and
-    fingers come out on the same axis of a controller."""
+    """The palm and finger directions of both hands' controllers and the 16 measured poses. Refuses a capture of any count
+    but 16, and one whose palm and fingers come out with no direction or within 45 degrees of each other (or of opposite).
+    Each part's "dir" is the fit, "setting" the text the game is given (2 decimals) and "game" what the game reads from
+    it; the agreement ("mean", "worst"), the nearest signed axis ("axis", with its own "axis_mean") and poses.txt use the
+    game's."""
     if len(snaps) != len(SPEC):
         raise FitError("the capture has %d snapshot%s; the fit wants exactly %d, one per pose in this order: %s"
                        % (len(snaps), "" if len(snaps) == 1 else "s", len(SPEC), ", ".join(NAMES)))
     result = {}
     for h in HANDS:
-        palm, fingers = choose(snaps, h, 1), choose(snaps, h, 2)
-        if palm["axis"][1] == fingers["axis"][1]:
-            raise FitError("the %s hand's palm (%s) and fingers (%s) came out on the same axis of the controller: the snapshots"
-                           " do not look like the 16 poses in order with A on the right hand" % (h, palm["axis"], fingers["axis"]))
-        result[h] = {"palm": palm, "fingers": fingers}
+        palm = mean_direction(snaps, h, 1)
+        fingers = square_fingers(h, palm, mean_direction(snaps, h, 2))
+        result[h] = {}
+        for k, (part, d) in enumerate((("palm", palm), ("fingers", fingers))):
+            text = setting_text(d)
+            game = normalized(tuple(float(c) for c in text.split(",")))
+            axis = nearest_axis(game)
+            r = {"dir": d, "setting": text, "game": game, "axis": axis, "axis_mean": agreement(snaps, h, k + 1, axis_vector(axis))["mean"]}
+            r.update(agreement(snaps, h, k + 1, game))
+            result[h][part] = r
     result["poses"] = [
         dict({"name": name, "n": snap["n"]}, **{h: {"pos": snap[h]["pos"],
-                                                     "palm": axis_dir(snap[h], result[h]["palm"]["axis"]),
-                                                     "fingers": axis_dir(snap[h], result[h]["fingers"]["axis"])} for h in HANDS})
+                                                     "palm": normalized(to_body(snap[h], result[h]["palm"]["game"])),
+                                                     "fingers": normalized(to_body(snap[h], result[h]["fingers"]["game"]))} for h in HANDS})
         for snap, (name, _, _) in zip(snaps, SPEC)]
     return result
 
@@ -213,7 +275,7 @@ def format_poses(result, source):
     def hand(h):
         return "  ".join(" ".join(n3(c) for c in v) for v in (h["pos"], h["palm"], h["fingers"]))
 
-    axes = "; ".join("%s hand palm %s, fingers %s" % (h, result[h]["palm"]["axis"], result[h]["fingers"]["axis"]) for h in HANDS)
+    axes = "; ".join("%s hand palm %s, fingers %s" % (h, result[h]["palm"]["setting"], result[h]["fingers"]["setting"]) for h in HANDS)
     lines = [
         "# Blue's Earthbending poses: the owner's own, fitted by fit_poses.py from %s on %s (%s)."
         % (source, datetime.now().strftime("%Y-%m-%d %H:%M"), axes),
@@ -238,14 +300,16 @@ def write_poses(result, folder, source):
 
 
 def report(result):
-    """The agreement of the axes and each pose's distance from the design's, for the person running the fit."""
-    print("Axes (mean angle to spec 3.3's directions over the 16 poses; the worst pose; the next best axis):")
+    """The fitted directions with their agreement, and each pose's distance from the design's, for the person running the
+    fit."""
+    print("Directions in each controller's own space (the mean and worst angle to spec 3.3's directions over the 16 poses;"
+          " the nearest signed axis for reference, with its mean):")
     for h in HANDS:
         for part in ("palm", "fingers"):
             r = result[h][part]
-            print("  %-5s %-7s %s  %5.1f deg  (worst %5.1f, %s; next %s at %5.1f)"
-                  % (h, part, r["axis"], r["mean"], r["worst"], r["worst_pose"], r["next_axis"], r["next_mean"]))
-    print("Per pose, how far the owner's is from the design's (palm deg, fingers deg, place m; ! = outside the %g / %g degree"
+            print("  %-5s %-7s (%s)  mean %5.1f deg, worst %5.1f (%s); nearest signed axis %s, mean %5.1f"
+                  % (h, part, ", ".join("%5.2f" % c for c in r["game"]), r["mean"], r["worst"], r["worst_pose"], r["axis"], r["axis_mean"]))
+    print("Per pose, how far the owner's is from the design's with those directions (palm deg, fingers deg, place m; ! = outside the %g / %g degree"
           " cones or the place's zone, %g sideways, %g up/down, %g reach):" % ((PALM_DEG, FINGER_DEG) + ZONE))
     for k, (name, a, b) in enumerate(SPEC):
         cells = []
@@ -258,7 +322,7 @@ def report(result):
         print("  %2s %-9s %s   %s" % (result["poses"][k]["n"], name, cells[0], cells[1]))
     worst = max(result[h][part]["mean"] for h in HANDS for part in ("palm", "fingers"))
     if worst > 25.0:
-        print("WARNING: an axis agrees with the design only to %.1f degrees on average: check that the 16 snapshots are the"
+        print("WARNING: a fitted direction agrees with the design only to %.1f degrees on average: check that the 16 snapshots are the"
               " poses in order, with A on the right hand." % worst)
     return worst
 
@@ -349,17 +413,17 @@ def print_guess(g):
 # ----- the selftest ----------------------------------------------------------------------------------------------------
 
 def controller_axes(palm, fingers, palm_axis, finger_axis):
-    """The local X, Y and Z axes (as {'x':..,'y':..,'z':..}) of a controller whose palm is on palm_axis and fingers on
-    finger_axis (e.g. "-y", "+z"), turned so that its palm points along palm and its fingers along fingers. A Unity
-    transform's axes are a turn: right = up x forward, up = forward x right, forward = right x up."""
+    """The local X, Y and Z axes (as {'x':..,'y':..,'z':..}) of a controller whose palm is along palm_axis and fingers along
+    finger_axis in its own space (a signed axis such as "-y", or three numbers), turned so that its palm points along palm
+    and its fingers along fingers (each pair made square). The turn maps the local frame (palm, fingers, palm x fingers)
+    onto the body one, so the axes are a turn as a Unity transform's are: right = up x forward."""
+    pl = normalized(axis_vector(palm_axis))
+    fl = normalized(sub(axis_vector(finger_axis), scale(pl, dot(axis_vector(finger_axis), pl))))
+    tl = cross(pl, fl)
     n = normalized(palm)
     f = normalized(sub(fingers, scale(n, dot(fingers, n))))
-    cols = {palm_axis[1]: scale(n, -1.0 if palm_axis[0] == "-" else 1.0),
-            finger_axis[1]: scale(f, -1.0 if finger_axis[0] == "-" else 1.0)}
-    nxt = {"x": "y", "y": "z", "z": "x"}
-    third = ({"x", "y", "z"} - set(cols)).pop()
-    cols[third] = cross(cols[nxt[third]], cols[nxt[nxt[third]]])
-    return cols
+    t = cross(n, f)
+    return {c: add(add(scale(n, pl[j]), scale(f, fl[j])), scale(t, tl[j])) for j, c in enumerate("xyz")}
 
 
 def random_unit(rng):
@@ -376,8 +440,8 @@ REST = ("rest", ((0.25, -0.95, 0.05), NX, NY), ((-0.25, -0.95, 0.05), PX, NY))
 def synthetic_capture(seed, axes, pos_noise=0.03, turn_noise_deg=8.0, count=16, poses=None):
     """Rows of a capture of spec 3.3's poses (A on the right hand), as the recorder writes them: each hand's place moved
     up to pos_noise metres and the whole controller turned up to turn_noise_deg degrees about a random axis. axes is
-    {"right": (palm axis, finger axis), "left": (...)}. count other than 16 repeats or drops poses at the end; poses (a
-    list of SPEC-like entries) replaces the table."""
+    {"right": (palm axis, finger axis), "left": (...)}, each a signed axis or a direction in the controller's space. count
+    other than 16 repeats or drops poses at the end; poses (a list of SPEC-like entries) replaces the table."""
     rng = random.Random(seed)
     head, yaw = (rng.uniform(-500, 500), rng.uniform(150, 250), rng.uniform(-500, 500)), rng.uniform(-180, 180)
     poses = poses or [SPEC[i % len(SPEC)] for i in range(count)]
@@ -405,6 +469,7 @@ def write_capture(rows, path, columns=None):
         w.writerow(columns)
         for r in rows:
             w.writerow([("%.5f" % r[c]) if isinstance(r[c], float) else r[c] for c in columns])
+    return path
 
 
 def parse_poses(lines):
@@ -506,13 +571,63 @@ def selftest(out_dir):
                     check("%s, seed %d: the fit ran (%s: %s)" % (label, seed, type(e).__name__, e), False)
                     continue
                 got = {h: (result[h]["palm"]["axis"], result[h]["fingers"]["axis"]) for h in HANDS}
-                check("%s, seed %d: axes %s" % (label, seed, got), got == axes)
+                check("%s, seed %d: nearest signed axes %s" % (label, seed, got), got == axes)
+                off = max(angle_deg(result[h][part]["dir"], axis_vector(axes[h][k])) for h in HANDS for k, part in enumerate(("palm", "fingers")))
+                check("%s, seed %d: every fitted direction within 4 degrees of its axis (worst %.2f)" % (label, seed, off), off < 4.0)
+                square = max(abs(dot(result[h]["palm"]["dir"], result[h]["fingers"]["dir"])) for h in HANDS)
+                check("%s, seed %d: the fingers square to the palm" % (label, seed), square < 1e-9)
                 far = [(name, h) for (name, a, b), pose in zip(SPEC, result["poses"])
                        for h, spec_hand, fitted in (("right", a, pose["right"]), ("left", b, pose["left"]))
                        if not near_v(fitted["pos"], spec_hand[0], 0.05)]
                 check("%s, seed %d: every pose's place within 0.05 m of the spec's (far: %s)" % (label, seed, far), not far)
-                agree = all(result[h][part]["mean"] < 8.5 and result[h][part]["next_mean"] > 45.0 for h in HANDS for part in ("palm", "fingers"))
-                check("%s, seed %d: agreement under 8.5 degrees, the next axis over 45" % (label, seed), agree)
+                agree = all(result[h][part]["mean"] < 8.5 and result[h][part]["axis_mean"] < 8.5 for h in HANDS for part in ("palm", "fingers"))
+                check("%s, seed %d: agreement under 8.5 degrees, the fitted direction's and the nearest axis's" % (label, seed), agree)
+
+        # Ruling 36: fingers 21 degrees off the controller's -y, tilted toward +z, on both hands (the owner's): the fit finds
+        # the tilt within 2 degrees (each row's controller turned up to 4 degrees at random: at the usual 8 the mean of 16
+        # rows itself wanders up to about 2.4 degrees; at 4 the worst of 100 seeds was 1.2), the nearest signed axis is
+        # still -y, and the settings are printed as three numbers with 2 decimals that read back as the tilt
+        tilt = (0.0, -math.cos(math.radians(21.0)), math.sin(math.radians(21.0)))
+        tilted = {"right": ((-1.0, 0.0, 0.0), tilt), "left": ((1.0, 0.0, 0.0), tilt)}
+        worst = 0.0
+        for seed in range(20):
+            csv_path = os.path.join(tmp, "tilt-%d.csv" % seed)
+            write_capture(synthetic_capture(100 + seed, tilted, turn_noise_deg=4.0), csv_path)
+            result = fit(read_capture(csv_path))
+            worst = max([worst] + [angle_deg(result[h][part]["dir"], tilted[h][k]) for h in HANDS for k, part in enumerate(("palm", "fingers"))])
+            check("21-degree tilt, seed %d: the nearest signed axes are still -x/+x palm, -y fingers" % seed,
+                  all(result[h]["fingers"]["axis"] == "-y" for h in HANDS) and result["right"]["palm"]["axis"] == "-x" and result["left"]["palm"]["axis"] == "+x")
+            check("21-degree tilt, seed %d: the fitted directions beat the signed axes (%.1f against %.1f degrees on the fingers)"
+                  % (seed, result["right"]["fingers"]["mean"], result["right"]["fingers"]["axis_mean"]),
+                  all(result[h]["fingers"]["mean"] < result[h]["fingers"]["axis_mean"] for h in HANDS))
+        check("21-degree tilt: every fitted direction within 2 degrees of the tilt over 20 seeds (worst %.2f)" % worst, worst < 2.0)
+        exact = fit(read_capture(write_capture(synthetic_capture(7, tilted, pos_noise=0.0, turn_noise_deg=0.0), os.path.join(tmp, "tilt-exact.csv"))))
+        check("21-degree tilt without noise: the fit is exact (to the capture's 5 decimals)", all(angle_deg(exact[h][part]["dir"], tilted[h][k]) < 0.01 for h in HANDS for k, part in enumerate(("palm", "fingers"))))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([os.path.join(tmp, "tilt-exact.csv"), "--out", os.path.join(tmp, "tilt-out")])
+        settings = dict(re.findall(r'^  (\w+) = "([^"]*)"$', out.getvalue(), re.M))
+        three = re.compile(r"^-?\d\.\d\d,-?\d\.\d\d,-?\d\.\d\d$")
+        check("21-degree tilt: the command line prints the four settings as three numbers with 2 decimals (%s)" % settings,
+              code == 0 and sorted(settings) == ["FingerAxisLeft", "FingerAxisRight", "PalmAxisLeft", "PalmAxisRight"] and all(three.match(v) for v in settings.values()))
+        check("21-degree tilt: the printed fingers read back within 1 degree of the tilt (%s)" % settings.get("FingerAxisRight"),
+              all(angle_deg(tuple(float(c) for c in settings.get(k, "0,0,0").split(",")), tilt) < 1.0 for k in ("FingerAxisRight", "FingerAxisLeft")))
+        check("21-degree tilt: the printed palms read back as the palms (-x right, +x left)",
+              angle_deg(tuple(float(c) for c in settings.get("PalmAxisRight", "0,0,0").split(",")), (-1.0, 0.0, 0.0)) < 1.0
+              and angle_deg(tuple(float(c) for c in settings.get("PalmAxisLeft", "0,0,0").split(",")), (1.0, 0.0, 0.0)) < 1.0)
+        check("21-degree tilt: the report names the nearest signed axis for reference", "nearest signed axis -y" in out.getvalue())
+
+        # the game's rule for a hand's palm and fingers (HandAxes.Check): within 45 degrees of each other, or of opposite, is
+        # refused; otherwise the fingers are made square to the palm
+        for label, palm, fingers in (("30 degrees apart", (0.0, 0.0, 1.0), (0.0, 0.5, 0.866)), ("opposite", (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)),
+                                     ("the same", (1.0, 0.0, 0.0), (1.0, 0.0, 0.0)), ("no fingers", (1.0, 0.0, 0.0), (0.0, 0.0, 0.0))):
+            try:
+                square_fingers("right", palm, fingers)
+                check("a palm and fingers %s are refused" % label, False)
+            except FitError as e:
+                check("a palm and fingers %s are refused, naming the hand (%s)" % (label, e), "right" in str(e))
+        sq = square_fingers("left", (0.0, 0.0, 1.0), (0.0, 0.77, 0.64))
+        check("a palm and fingers 50 degrees apart: the fingers made square to the palm", abs(dot(sq, (0.0, 0.0, 1.0))) < 1e-9 and angle_deg(sq, (0.0, 1.0, 0.0)) < 1e-6)
 
         # poses.txt (of the brief's scenario): what is written reads back as written, in PoseLibrary.Parse's format
         result = fit(read_capture(os.path.join(tmp, "capture-0-0.csv")))
@@ -601,11 +716,13 @@ then each row is shown with the pose of the table it looks most like and the gam
 the axes found from the rows themselves), so the rows that are rests or slips, and the poses missing or struck twice,
 can be found. The same list follows the fit's warning when an axis agrees badly (the poses out of order).
 
-For each hand it picks the signed local axis of the controller (+x -x +y -y +z -z) that agrees best with the spec's
-palm over all 16 poses, and separately the one that agrees best with its fingers, and prints the agreement in degrees.
-It writes poses.txt from the measured places and directions (spec 3.3's tolerances: each place a zone of 0.25 m
-sideways, 0.20 m up/down and 0.30 m in reach; the palm and fingers within 60 degrees) and prints the four
-settings PalmAxisRight, FingerAxisRight, PalmAxisLeft and FingerAxisLeft.
+For each hand it fits the palm and the fingers as directions in the controller's own space (Ruling 36: any
+direction, not only +x -x +y -y +z -z): each pose's design direction taken into that snapshot's controller space,
+averaged over the 16 poses and made length 1, the fingers then made square to the palm. It prints each direction's
+mean and worst angle to the spec's over the poses, and the nearest signed axis for reference. It writes poses.txt
+from the measured places and the fitted directions (spec 3.3's tolerances: each place a zone of 0.25 m sideways,
+0.20 m up/down and 0.30 m in reach; the palm and fingers within 60 degrees) and prints the four settings
+PalmAxisRight, FingerAxisRight, PalmAxisLeft and FingerAxisLeft as three numbers with 2 decimals.
 
 poses.txt goes to <UserData folder>\\Earthbending\\poses.txt with --out, else beside the capture. An older poses.txt
 there is kept as poses.txt.bak.
@@ -644,10 +761,10 @@ def main(argv):
     folder = os.path.join(args.out, "Earthbending") if args.out else os.path.dirname(os.path.abspath(args.capture))
     path = write_poses(result, folder, os.path.basename(args.capture))
     print("Wrote " + path)
-    print("The four settings, [EarthPose] in UserData\\Earthbending.cfg:")
+    print("The four settings, [EarthPose] in UserData\\Earthbending.cfg (directions in each controller's own space):")
     for h, key in (("right", "Right"), ("left", "Left")):
-        print('  PalmAxis%s = "%s"' % (key, result[h]["palm"]["axis"]))
-        print('  FingerAxis%s = "%s"' % (key, result[h]["fingers"]["axis"]))
+        print('  PalmAxis%s = "%s"' % (key, result[h]["palm"]["setting"]))
+        print('  FingerAxis%s = "%s"' % (key, result[h]["fingers"]["setting"]))
     return 0
 
 

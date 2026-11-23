@@ -152,7 +152,6 @@ internal static class PoseTests {
         CaptureChecks();
         GameSideChecks();
         GuideChecks();
-        BodyScaleChecks();
 
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
@@ -412,43 +411,6 @@ internal static class PoseTests {
             }
     }
 
-    // the measured body scale ([EarthPose] BodyScale 0): standing eye height over 1.63 m, held to 0.7..1.3
-    static void BodyScaleChecks() {
-        const float frame = 1f / 90f;
-        static void Feed(BodyScaleEstimate e, double seconds, float height, bool grounded = true) {
-            for (int i = 0, n = (int)Math.Round(seconds * 90.0); i < n; i++) e.Step(1f / 90f, height, grounded);
-        }
-        var est = new BodyScaleEstimate();
-        Check("body scale: it starts at 1 (the design player's 1.63 m)", est.Scale == 1f && est.Height == 1.63f);
-        Feed(est, 30, 1.80f);
-        Check("body scale: standing at 1.80 m settles at about 1.10", Math.Abs(est.Scale - 1.80f / 1.63f) < 0.002f && Math.Abs(est.Scale - 1.10f) < 0.01f);
-        float settled = est.Scale;
-        Feed(est, 10, 1.20f);
-        Check("body scale: a crouch (under 85% of the estimate) does not lower it", est.Scale == settled);
-        Feed(est, 10, 2.6f, grounded: false);
-        Check("body scale: a sample in the air is ignored", est.Scale == settled);
-        for (int i = 0; i < 90; i++) { est.Step(frame, float.NaN, true); est.Step(frame, float.PositiveInfinity, true); est.Step(float.NaN, 2f, true); est.Step(-1f, 2f, true); }
-        Check("body scale: a NaN or infinite sample, or a broken frame time, is ignored", est.Scale == settled && !float.IsNaN(est.Scale));
-
-        var fresh = new BodyScaleEstimate();
-        fresh.Step(frame, 1.9f, true);
-        Check("body scale: one frame of a bad sample hardly moves it", Math.Abs(fresh.Scale - 1f) < 0.001f);
-        fresh.Step(30f, 1.9f, true);
-        Check("body scale: a long frame (a hitch) moves it no more than a short one would", Math.Abs(fresh.Scale - 1f) < 0.01f);
-        var climb = new BodyScaleEstimate();
-        Feed(climb, 1, 2.2f);
-        Check("body scale: it moves at most a few cm per second", climb.Height - 1.63f <= 0.05f && climb.Height > 1.63f);
-
-        var tall = new BodyScaleEstimate();
-        Feed(tall, 60, 2.6f);
-        Check("body scale: clamped at 1.3", tall.Scale == 1.3f);
-        var small = new BodyScaleEstimate();
-        for (int i = 0; i < 90 * 60; i++) small.Step(frame, Math.Max(0.9f, 1.63f - 0.02f * i * frame), true);   // getting smaller at 2 cm/s, each sample within 85%
-        Check("body scale: clamped at 0.7", small.Scale == 0.7f);
-        Feed(small, 60, 1.63f);
-        Check("body scale: from the floor of the clamp it comes back up to a standing 1.63 m", Math.Abs(small.Scale - 1f) < 0.002f);
-    }
-
     // the capture guide (Task 3b): the hand lines in the recorder's order, the next pose for a count, the card's text, the
     // body frame run backwards, and the easing
     static void GuideChecks() {
@@ -531,27 +493,69 @@ internal static class PoseTests {
         Check("axis: the six names parse, and print back", all);
         Check("axis: case and spaces do not matter", HandAxis.TryParse(" -Y ", out HandAxis my) && my.Index == 1 && my.Negative);
         Check("axis: anything else is refused", new[] { "x", "+w", "", "  ", "++x", "+x+", "1", "-", "x+" }.All(t => !HandAxis.TryParse(t, out _)) && !HandAxis.TryParse(null, out _));
-        Check("axis: Pick takes the named axis, turned round for -", NearV(new HandAxis(1, true).Pick(x, y, z), -y) && NearV(new HandAxis(2, false).Pick(x, y, z), z) && NearV(new HandAxis(0, true).Pick(x, y, z), -x));
-        Check("axis: the defaults are the OpenXR grip (right palm -x, left palm +x, fingers +z), each hand on two axes",
-            HandAxes.PalmRight.ToString() == "-x" && HandAxes.FingersRight.ToString() == "+z" && HandAxes.PalmLeft.ToString() == "+x" && HandAxes.FingersLeft.ToString() == "+z"
-            && HandAxes.PalmRight.Index != HandAxes.FingersRight.Index && HandAxes.PalmLeft.Index != HandAxes.FingersLeft.Index);
+        Check("axis: Direction is the named axis in the controller's own space, turned round for -",
+            NearV(new HandAxis(1, true).Direction, -y) && NearV(new HandAxis(2, false).Direction, z) && NearV(new HandAxis(0, true).Direction, -x));
+
+        // Ruling 36: an axis setting is a signed axis or any direction as three numbers, made length 1
+        static bool Dir(string? text, out V3 v) => HandAxes.TryParse(text, out v, out _);
+        Check("axis direction: -y and 0,-1,0 are the same direction", Dir("-y", out V3 ny) && Dir("0,-1,0", out V3 ny3) && NearV(ny, ny3) && NearV(ny, -y));
+        Check("axis direction: every signed axis reads as its axis", Dir("+x", out V3 dx) && NearV(dx, x) && Dir("-z", out V3 dz) && NearV(dz, -z) && Dir(" +Y ", out V3 dy) && NearV(dy, y));
+        V3 tilt = new V3(0f, -0.93f, 0.36f);
+        Check("axis direction: 0,-0.93,0.36 comes out length 1, the same way", Dir("0,-0.93,0.36", out V3 t1) && Near(t1.Length, 1f) && NearV(t1, tilt * (1f / tilt.Length)));
+        Check("axis direction: spaces round the numbers are allowed, and any length", Dir(" 0 , -0.93 ,0.36 ", out V3 t2) && NearV(t2, t1) && Dir("0,-9.3,3.6", out V3 t3) && NearV(t3, t1)
+            && Dir("1e-1, 0, 0", out V3 t4) && NearV(t4, x));
+        Check("axis direction: garbage, no direction, a count other than three, a number that is none are refused",
+            new[] { "garbage", "0,0,0", "0, 0 ,0", "", "  ", "1,2", "1,2,3,4", "1,,2", "NaN,0,1", "0,Infinity,0", "1e40,0,0", "x,y,z", "(0,-1,0)", "-y,0,0" }.All(t => !Dir(t, out _)) && !Dir(null, out _));
+        Check("axis direction: a comma decimal is refused", !Dir("0,-0,93,0,36", out _) && !Dir("0 -0,93 0,36", out _) && !Dir("0;-0,93;0,36", out _));
+        Check("axis direction: a refusal says why", !HandAxes.TryParse("0,0,0", out _, out string whyZero) && whyZero.Length > 0 && !HandAxes.TryParse("garbage", out _, out string whyBad) && whyBad.Length > 0);
+        var cultureNow = System.Globalization.CultureInfo.CurrentCulture;
+        bool sameInGerman;
+        try {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            sameInGerman = Dir("0,-0.93,0.36", out V3 tg) && NearV(tg, t1) && !Dir("0,-0,93,0,36", out _);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = cultureNow; }
+        Check("axis direction: read in the invariant culture whatever the game's culture", sameInGerman);
+        Check("axis direction: Describe names a signed axis, else three numbers that read back",
+            HandAxes.Describe(-x) == "-x" && HandAxes.Describe(z) == "+z" && Dir(HandAxes.Describe(t1), out V3 back) && Math.Abs(back.X - t1.X) < 1e-3f && Math.Abs(back.Y - t1.Y) < 1e-3f && Math.Abs(back.Z - t1.Z) < 1e-3f);
+
+        Check("axis: the defaults are the OpenXR grip (right palm -x, left palm +x, fingers +z)",
+            NearV(HandAxes.PalmRight, -x) && NearV(HandAxes.FingersRight, z) && NearV(HandAxes.PalmLeft, x) && NearV(HandAxes.FingersLeft, z)
+            && HandAxes.Describe(HandAxes.PalmRight) == "-x" && HandAxes.Describe(HandAxes.FingersRight) == "+z" && HandAxes.Describe(HandAxes.PalmLeft) == "+x" && HandAxes.Describe(HandAxes.FingersLeft) == "+z");
         var warnings = new List<string>();
-        HandAxes.Check("PalmAxisRight", "+y", "FingerAxisRight", "-z", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p1, out HandAxis f1, warnings);
-        Check("axis check: a good pair is kept, no warning", p1.ToString() == "+y" && f1.ToString() == "-z" && warnings.Count == 0);
-        warnings.Clear();
-        HandAxes.Check("PalmAxisRight", "+q", "FingerAxisRight", "+y", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p2, out HandAxis f2, warnings);
-        Check("axis check: a bad name falls back to its default with one warning naming it", p2.ToString() == "-x" && f2.ToString() == "+y" && warnings.Count == 1
-            && warnings[0].Contains("PalmAxisRight") && warnings[0].Contains("+q") && warnings[0].Contains("-x"));
-        warnings.Clear();
-        HandAxes.Check("PalmAxisLeft", "+y", "FingerAxisLeft", "-y", HandAxes.PalmLeft, HandAxes.FingersLeft, out HandAxis p3, out HandAxis f3, warnings);
-        Check("axis check: palm and fingers on the same axis: the hand falls back to both defaults, one warning", p3.ToString() == "+x" && f3.ToString() == "+z" && warnings.Count == 1
-            && warnings[0].Contains("PalmAxisLeft") && warnings[0].Contains("FingerAxisLeft"));
-        warnings.Clear();
-        HandAxes.Check("PalmAxisRight", "", "FingerAxisRight", "+x", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p4, out HandAxis f4, warnings);
-        Check("axis check: a bad palm whose default meets the fingers' axis: both defaults, a warning for each", p4.ToString() == "-x" && f4.ToString() == "+z" && warnings.Count == 2);
-        warnings.Clear();
-        HandAxes.Check("PalmAxisRight", null, "FingerAxisRight", "sideways", HandAxes.PalmRight, HandAxes.FingersRight, out HandAxis p5, out HandAxis f5, warnings);
-        Check("axis check: both bad: both defaults, two warnings", p5.ToString() == "-x" && f5.ToString() == "+z" && warnings.Count == 2);
+        void Hand(string? palm, string? fingers, out V3 p, out V3 f, bool left = false) {
+            warnings.Clear();
+            if (left) HandAxes.Check("PalmAxisLeft", palm, "FingerAxisLeft", fingers, HandAxes.PalmLeft, HandAxes.FingersLeft, out p, out f, warnings);
+            else HandAxes.Check("PalmAxisRight", palm, "FingerAxisRight", fingers, HandAxes.PalmRight, HandAxes.FingersRight, out p, out f, warnings);
+        }
+        bool Defaults(V3 p, V3 f, bool left = false) => NearV(p, left ? HandAxes.PalmLeft : HandAxes.PalmRight) && NearV(f, left ? HandAxes.FingersLeft : HandAxes.FingersRight);
+        Hand("-x", "+z", out V3 p0, out V3 f0);
+        Hand("+x", "+z", out V3 p0l, out V3 f0l, left: true);
+        Check("axis check: the defaults pass", Defaults(p0, f0) && Defaults(p0l, f0l, left: true) && warnings.Count == 0);
+        Hand("+y", "-z", out V3 p1, out V3 f1);
+        Check("axis check: a good pair of signed axes is kept, no warning", NearV(p1, y) && NearV(f1, -z) && warnings.Count == 0);
+        Hand("-1.00,0.07,0.05", "-0.05,-0.93,0.36", out V3 p2, out V3 f2);
+        Check("axis check: the owner's fitted directions are kept, made length 1, no warning", warnings.Count == 0 && Near(p2.Length, 1f) && Near(f2.Length, 1f)
+            && NearV(p2, new V3(-1f, 0.07f, 0.05f).Normalized) && NearV(f2, new V3(-0.05f, -0.93f, 0.36f).Normalized));
+        Hand("+x", "0,-0.94,0.34", out V3 p3, out V3 f3, left: true);
+        Check("axis check: a signed axis and three numbers together", warnings.Count == 0 && NearV(p3, x) && NearV(f3, new V3(0f, -0.94f, 0.34f).Normalized));
+        Hand("garbage", "0,-0.93,0.36", out V3 p4, out V3 f4);
+        Check("axis check: an unreadable palm: the hand falls back to its defaults, one warning naming the setting, what it said and what is used",
+            Defaults(p4, f4) && warnings.Count == 1 && warnings[0].Contains("PalmAxisRight") && warnings[0].Contains("garbage") && warnings[0].Contains("-x") && warnings[0].Contains("+z"));
+        Hand("+x", "0,0,0", out V3 p5, out V3 f5, left: true);
+        Check("axis check: fingers of zero length: the hand falls back to its defaults, one warning", Defaults(p5, f5, left: true) && warnings.Count == 1 && warnings[0].Contains("FingerAxisLeft") && warnings[0].Contains("0,0,0"));
+        Hand("0,0,1", "0,0.5,0.866", out V3 p6, out V3 f6);
+        Check("axis check: a palm 30 degrees from its fingers: the hand falls back to its defaults, one warning naming both", Defaults(p6, f6) && warnings.Count == 1
+            && warnings[0].Contains("PalmAxisRight") && warnings[0].Contains("FingerAxisRight") && warnings[0].Contains("30"));
+        Hand("+y", "+y", out V3 p7, out V3 f7, left: true);
+        Check("axis check: palm and fingers the same: the hand falls back to its defaults, one warning", Defaults(p7, f7, left: true) && warnings.Count == 1);
+        Hand("+y", "-y", out V3 p8, out V3 f8, left: true);
+        Check("axis check: palm and fingers opposite (on one axis, as before 0.4.3): the hand falls back to its defaults, one warning", Defaults(p8, f8, left: true) && warnings.Count == 1);
+        Hand("0,0,1", "0,0.77,0.64", out V3 p9, out V3 f9);   // 50 degrees apart
+        Check("axis check: 50 degrees apart is kept (only within 45 falls back)", warnings.Count == 0 && NearV(p9, z) && NearV(f9, new V3(0f, 0.77f, 0.64f).Normalized));
+        Hand(null, "sideways", out V3 p10, out V3 f10);
+        Check("axis check: both unreadable: the hand falls back to its defaults, one warning naming both", Defaults(p10, f10) && warnings.Count == 1
+            && warnings[0].Contains("PalmAxisRight") && warnings[0].Contains("FingerAxisRight") && warnings[0].Contains("sideways"));
 
         // the two-frame empty test: one full frame is not "full" (it would start every pose over), two in a row are
         var gate = new EmptyGate();

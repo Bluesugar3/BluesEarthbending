@@ -8,8 +8,8 @@ using UnityEngine;
 namespace Earthbending {
     // Games only: the local player's head and hands (spec 3.1), and the pose recorder (Task 3). What the pose machine is fed
     // (Task 5, Bend.cs): Hands.Read (both hands in the body frame: each controller's place, and its palm and fingers as the
-    // local axes the four [EarthPose] axis settings name, through BodyFrame.ToBody at the body scale Bend gives it: [EarthPose]
-    // BodyScale when above 0, else the measured one, BodyScaleEstimate in Poses.cs), Hands.Empty
+    // directions in its own space the four [EarthPose] axis settings give, turned into the world by TransformDirection
+    // (Ruling 36), through BodyFrame.ToBody at [EarthPose] BodyScale, a fixed number: Ruling 35), Hands.Empty
     // (neither hand interacting with anything: a pickup, a climbing hold, a bow string) and Hands.GroundState (the game's
     // grounded flag, and the natural-ground test under the feet).
     //
@@ -26,16 +26,16 @@ namespace Earthbending {
         // the double buzz of a snapshot: feedback of a one-off tool, so not settings
         const float BuzzStrength = 0.6f, BuzzSeconds = 0.06f, BuzzGapSeconds = 0.15f;
         const float DefaultStillMetres = 0.01f, DefaultStillSeconds = 0.6f, DefaultMoveMetres = 0.2f, DefaultRestBelowMetres = 0.7f;
-        const float DefaultBodyScale = 0f;   // measured
+        const float DefaultBodyScale = 1f;   // fixed, never measured (Ruling 35)
 
         static MelonPreferences_Entry<bool>? capture;
         static MelonPreferences_Entry<float>? stillMetres, stillSeconds, moveMetres, restBelowMetres, bodyScaleEntry;
 
-        /// <summary>[EarthPose] PalmAxisRight, FingerAxisRight, PalmAxisLeft, FingerAxisLeft: which local axis of each
-        /// controller's transform (one of <c>+x -x +y -y +z -z</c>) points out of the palm and along the fingers. Checked on
-        /// every load (HandAxes.Check) into the four below, which Hands.Read uses.</summary>
+        /// <summary>[EarthPose] PalmAxisRight, FingerAxisRight, PalmAxisLeft, FingerAxisLeft: the direction in each
+        /// controller's own space (a signed axis, or three numbers) that points out of the palm and along the fingers.
+        /// Checked on every load (HandAxes.Check) into the four below, which Hands.Read uses.</summary>
         internal static MelonPreferences_Entry<string>? PalmAxisRight, FingerAxisRight, PalmAxisLeft, FingerAxisLeft;
-        static HandAxis palmR = HandAxes.PalmRight, fingersR = HandAxes.FingersRight, palmL = HandAxes.PalmLeft, fingersL = HandAxes.FingersLeft;
+        static Vector3 palmR = U(HandAxes.PalmRight), fingersR = U(HandAxes.FingersRight), palmL = U(HandAxes.PalmLeft), fingersL = U(HandAxes.FingersLeft);
         static float bodyScale = DefaultBodyScale;
 
         // the recorder; on = Capture, read on every settings load, so a frame with it off costs one bool test
@@ -55,11 +55,11 @@ namespace Earthbending {
             stillSeconds = cat.CreateEntry("CaptureStillSeconds", DefaultStillSeconds, description: "Per game. The pose recorder: both hands still this many seconds take a snapshot.");
             moveMetres = cat.CreateEntry("CaptureMoveMetres", DefaultMoveMetres, description: "Per game. The pose recorder: after a snapshot, the next one waits until either hand has moved this many metres from where it was, or the hands have rested at the sides. Before the first, from where the hands were when the capture started.");
             restBelowMetres = cat.CreateEntry("CaptureRestBelowMetres", DefaultRestBelowMetres, description: "Per game. The pose recorder: both hands held still more than this many metres under the head is a rest (arms at the sides), never a snapshot; it arms the next one. Every pose keeps a hand at most 0.55 m under the head (Base, Stomp), so 0.7 refuses no pose; never set it to 0.55 or less.");
-            PalmAxisRight = cat.CreateEntry("PalmAxisRight", HandAxes.PalmRight.ToString(), description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture. Anything else, or the same axis as FingerAxisRight, uses the defaults (-x, +z) and says so in the log.");
-            FingerAxisRight = cat.CreateEntry("FingerAxisRight", HandAxes.FingersRight.ToString(), description: "Per game. The local axis of the right controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
-            PalmAxisLeft = cat.CreateEntry("PalmAxisLeft", HandAxes.PalmLeft.ToString(), description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points out of the palm. fit_poses.py prints it from the pose capture. Anything else, or the same axis as FingerAxisLeft, uses the defaults (+x, +z) and says so in the log.");
-            FingerAxisLeft = cat.CreateEntry("FingerAxisLeft", HandAxes.FingersLeft.ToString(), description: "Per game. The local axis of the left controller (+x -x +y -y +z -z) that points along the fingers. fit_poses.py prints it from the pose capture.");
-            bodyScaleEntry = cat.CreateEntry("BodyScale", DefaultBodyScale, description: "Per game. Your size against the player the poses were made for: every pose's hand places are this many times as far from the head. 0 (the default): measured, your standing eye height (head over feet while on the ground; crouching does not count) over the design player's 1.63 m, held to 0.7 to 1.3, followed a few cm a second. Above 0: that number, fixed (a 1.60 m player: 0.91; poses.txt from the pose capture are the capturer's own, so 1 for them). 0 or more.");
+            PalmAxisRight = cat.CreateEntry("PalmAxisRight", HandAxes.Describe(HandAxes.PalmRight), description: "Per game. The direction in the right controller's own space that points out of the palm: a signed axis (+x -x +y -y +z -z) or three numbers \"a,b,c\" (a dot decimal, made length 1). fit_poses.py prints it from the pose capture. Something unreadable, of zero length, or within 45 degrees of FingerAxisRight (or of its opposite) gives this hand its defaults (-x, +z) and says so in the log.");
+            FingerAxisRight = cat.CreateEntry("FingerAxisRight", HandAxes.Describe(HandAxes.FingersRight), description: "Per game. The direction in the right controller's own space that points along the fingers: a signed axis or three numbers \"a,b,c\", as PalmAxisRight. fit_poses.py prints it from the pose capture (a hand's fingers are often not on one axis: the owner's sit about 21 degrees off -y, toward +z).");
+            PalmAxisLeft = cat.CreateEntry("PalmAxisLeft", HandAxes.Describe(HandAxes.PalmLeft), description: "Per game. The direction in the left controller's own space that points out of the palm: a signed axis (+x -x +y -y +z -z) or three numbers \"a,b,c\" (a dot decimal, made length 1). fit_poses.py prints it from the pose capture. Something unreadable, of zero length, or within 45 degrees of FingerAxisLeft (or of its opposite) gives this hand its defaults (+x, +z) and says so in the log.");
+            FingerAxisLeft = cat.CreateEntry("FingerAxisLeft", HandAxes.Describe(HandAxes.FingersLeft), description: "Per game. The direction in the left controller's own space that points along the fingers: a signed axis or three numbers \"a,b,c\", as PalmAxisLeft. fit_poses.py prints it from the pose capture.");
+            bodyScaleEntry = cat.CreateEntry("BodyScale", DefaultBodyScale, description: "Per game. Your size against the player the poses were made for: every pose's hand places are this many times as far from the head. A fixed number, 1 by default (poses.txt from the pose capture are the capturer's own, so 1 for them). It is not measured: the game raises every player's view to the avatar's eye height while the hands track at their real distance from the head, so eye height says nothing of reach (measured, it stretched every pose about 22% too far). Above 0; 0 or less, or not a number, is used as 1 and said in the log.");
             Apply();
             Cfg.Changed += Apply;
         }
@@ -93,22 +93,17 @@ namespace Earthbending {
             return Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg;
         }
 
-        /// <summary>[EarthPose] BodyScale as the game uses it: above 0 a fixed body scale, 0 the measured one (Bend.cs).</summary>
-        internal static float FixedBodyScale => bodyScale;
-
         /// <summary>Both hands in the body frame (spec 3.3), from what <see cref="Raw"/> gave: each controller's place, and its
-        /// palm and fingers as the local axes the [EarthPose] axis settings name, through BodyFrame.ToBody at
-        /// <paramref name="scale"/>. Allocates nothing.</summary>
-        internal static void Read(Vector3 head, float yawDeg, Transform r, Transform l, float scale, out HandSample right, out HandSample left) {
+        /// palm and fingers as the directions in its own space the [EarthPose] axis settings give, turned into the world by
+        /// <c>Transform.TransformDirection</c>, through BodyFrame.ToBody at [EarthPose] BodyScale. Allocates nothing.</summary>
+        internal static void Read(Vector3 head, float yawDeg, Transform r, Transform l, out HandSample right, out HandSample left) {
             V3 h = V(head);
-            right = Sample(h, yawDeg, r, palmR, fingersR, scale);
-            left = Sample(h, yawDeg, l, palmL, fingersL, scale);
+            right = Sample(h, yawDeg, r, palmR, fingersR);
+            left = Sample(h, yawDeg, l, palmL, fingersL);
         }
 
-        static HandSample Sample(V3 head, float yawDeg, Transform t, HandAxis palm, HandAxis fingers, float scale) {
-            V3 x = V(t.right), y = V(t.up), z = V(t.forward);
-            return BodyFrame.ToBody(head, yawDeg, V(t.position), palm.Pick(x, y, z), fingers.Pick(x, y, z), scale);
-        }
+        static HandSample Sample(V3 head, float yawDeg, Transform t, Vector3 palm, Vector3 fingers) =>
+            BodyFrame.ToBody(head, yawDeg, V(t.position), V(t.TransformDirection(palm)), V(t.TransformDirection(fingers)), bodyScale);
 
         /// <summary>The local player's hands are both empty: neither controller's Interactor is interacting with anything (a
         /// pickup, a climbing hold, a bow string). False with no local player.</summary>
@@ -148,10 +143,14 @@ namespace Earthbending {
         internal static int CaptureTaken => taken;
 
         static void Apply() {
-            bodyScale = Cfg.NotNegative(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
+            bodyScale = Cfg.Positive(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
             var warnings = new List<string>();
-            HandAxes.Check("PalmAxisRight", PalmAxisRight?.Value, "FingerAxisRight", FingerAxisRight?.Value, HandAxes.PalmRight, HandAxes.FingersRight, out palmR, out fingersR, warnings);
-            HandAxes.Check("PalmAxisLeft", PalmAxisLeft?.Value, "FingerAxisLeft", FingerAxisLeft?.Value, HandAxes.PalmLeft, HandAxes.FingersLeft, out palmL, out fingersL, warnings);
+            HandAxes.Check("PalmAxisRight", PalmAxisRight?.Value, "FingerAxisRight", FingerAxisRight?.Value, HandAxes.PalmRight, HandAxes.FingersRight, out V3 pr, out V3 fr, warnings);
+            HandAxes.Check("PalmAxisLeft", PalmAxisLeft?.Value, "FingerAxisLeft", FingerAxisLeft?.Value, HandAxes.PalmLeft, HandAxes.FingersLeft, out V3 pl, out V3 fl, warnings);
+            palmR = U(pr);
+            fingersR = U(fr);
+            palmL = U(pl);
+            fingersL = U(fl);
             foreach (string w in warnings) MelonLogger.Warning("[Earth] Settings: [EarthPose] " + w);
 
             float s = Cfg.Positive(stillMetres, "EarthPose", "CaptureStillMetres", DefaultStillMetres);
@@ -256,5 +255,6 @@ namespace Earthbending {
         }
 
         static V3 V(Vector3 v) => new V3(v.x, v.y, v.z);
+        static Vector3 U(V3 v) => new Vector3(v.X, v.Y, v.Z);
     }
 }

@@ -7,9 +7,8 @@ using UnityEngine;
 
 namespace Earthbending {
     // Games only: the pose machine in the game (spec 3.2, 3.3, 3.6). Every frame (Main.OnUpdate) Bend.Tick reads the local
-    // player's head (Hands.Raw), feeds the measured body scale (BodyScaleEstimate: the head's height over the feet and the
-    // game's grounded flag; [EarthPose] BodyScale above 0 is used instead, fixed), reads the hands in the body frame at that
-    // scale (Hands.Read), whether they may bend (Bender.CanBend, through the two-frame EmptyGate),
+    // player's head (Hands.Raw), the hands in the body frame at [EarthPose] BodyScale, a fixed number (Hands.Read; Ruling 35:
+    // the size is not measured), whether they may bend (Bender.CanBend, through the two-frame EmptyGate),
     // the ground (Hands.GroundState, through the GroundGrace of [EarthPose] GroundGraceSeconds: ruling 16) and the hitstun,
     // and steps the PoseMachine. A fired move gives one haptic tick on both hands ([EarthLooks] PoseHaptic, PoseHapticSeconds),
     // does what it does (Jump: Moves.Push straight up at [EarthMovement] JumpSpeed, and Moves.Dust at the feet; an armed
@@ -52,11 +51,6 @@ namespace Earthbending {
         static readonly EmptyGate emptyGate = new EmptyGate();
         static readonly GroundGrace grace = new GroundGrace(DefaultGroundGraceSeconds);
         static bool idle = true, failed, buzzFailed;
-
-        // the measured body scale, kept across rebuilds and players (the same person); the scale last said in the Debug log
-        static readonly BodyScaleEstimate measured = new BodyScaleEstimate();
-        static float saidScale = 1f;
-        const float SayScaleChange = 0.02f;
 
         /// <summary>A move fired: the move, and whether A (the pose's first hand, e.g. Hold's holding hand) is the right hand.
         /// Raised after the move's own effect (Jump's push and dust). Each handler runs in its own try.</summary>
@@ -188,7 +182,7 @@ namespace Earthbending {
                 idle = false;
                 double now = Time.unscaledTimeAsDouble;
                 Hands.GroundState(out bool grounded, out bool natural);
-                Hands.Read(head, yawDeg, rightHand, leftHand, BodyScale(pc, head, grounded), out HandSample right, out HandSample left);
+                Hands.Read(head, yawDeg, rightHand, leftHand, out HandSample right, out HandSample left);
                 bool canBend = emptyGate.Step(Bender.CanBend(pc));
                 bool standing = grace.Step(now, grounded, natural, out bool onNatural);
                 bool stunned = Moves.Stunned || pc.IsDowned || !pc.IsAlive;
@@ -200,22 +194,6 @@ namespace Earthbending {
                 failed = true;
                 MelonLogger.Warning($"[Earth] Bend: the pose machine's frame failed (said once until the next settings reload): {e}");
             }
-        }
-
-        /// <summary>The body scale the hands are read at this frame: [EarthPose] BodyScale when above 0; else the measured one,
-        /// fed this frame's sample first (the head's height over the feet, PlayerController.RealFeetPosition, whose y is the
-        /// player's own floor; and the game's grounded flag, not the grace's). With [EarthLog] Debug, one line each time it has
-        /// moved more than 0.02 since the last one said.</summary>
-        static float BodyScale(PlayerController pc, Vector3 head, bool grounded) {
-            float fixedScale = Hands.FixedBodyScale;
-            if (fixedScale > 0f) return fixedScale;
-            measured.Step(Time.unscaledDeltaTime, head.y - pc.RealFeetPosition.y, grounded);
-            float s = measured.Scale;
-            if (Math.Abs(s - saidScale) > SayScaleChange) {
-                saidScale = s;
-                if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: body scale now {s:0.00} (standing eye height measured {measured.Height:0.00} m, over the design's {BodyScaleEstimate.DesignEyeHeight} m)");
-            }
-            return s;
         }
 
         /// <summary>No local player, or the recorder is on: every pose, the arming and both gates start over (once).</summary>

@@ -8,8 +8,9 @@ using System.Globalization;
 // PoseLibrary holds the sixteen poses and reads and writes poses.txt; PoseMachine turns every frame's matches into moves (the
 // hold, the entry, the rearm, the cooldowns, the base pose arming a structure, the ground rules and the priority). Bend.cs
 // feeds it the hands every frame, through the rules at the end of this file (Task 5): HandAxis and HandAxes (the axis
-// settings), EmptyGate (the two-frame empty test), GroundGrace (ruling 16), PoseLibrary.Merge (poses.txt over the defaults)
-// and PushRule (a push's velocity, ruling 14). The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot
+// settings: a signed axis or any direction in the controller's own space, Ruling 36), EmptyGate (the two-frame empty
+// test), GroundGrace (ruling 16), PoseLibrary.Merge (poses.txt over the defaults) and PushRule (a push's velocity,
+// ruling 14). The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot
 // is taken) and PoseCapture (what its CSV row holds); Hands.cs runs them, Earthbending/tools/fit_poses.py reads the file.
 // The capture guide's words and rules (Task 3b) as well: PoseGuide (each pose's hand lines, the next pose for a count, the
 // card's text, the easing) and BodyFrame.ToWorld (the body frame run backwards); CaptureGuide.cs draws them.
@@ -18,7 +19,8 @@ namespace Earthbending {
     internal enum Move : byte { None, Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash }
 
     /// <summary>One hand as the game reads it, in the body frame: <see cref="Pos"/> in metres from the head (already divided by
-    /// the body scale), <see cref="Palm"/> out of the palm and <see cref="Fingers"/> along the fingers, both length 1.</summary>
+    /// <c>[EarthPose] BodyScale</c>, a fixed number: Ruling 35), <see cref="Palm"/> out of the palm and <see cref="Fingers"/>
+    /// along the fingers, both length 1.</summary>
     internal struct HandSample {
         public V3 Pos, Palm, Fingers;
 
@@ -80,42 +82,6 @@ namespace Earthbending {
             double r = yawDeg * Math.PI / 180.0;
             float c = (float)Math.Cos(r), s = (float)Math.Sin(r);
             return new V3(bodyDir.X * c + bodyDir.Z * s, bodyDir.Y, -bodyDir.X * s + bodyDir.Z * c);
-        }
-    }
-
-    /// <summary>The measured body scale (<c>[EarthPose] BodyScale</c> 0, spec 3.3): the player's standing eye height over the
-    /// design player's, <see cref="DesignEyeHeight"/> 1.63 m, held to <see cref="MinScale"/>..<see cref="MaxScale"/>. Fed one
-    /// sample a frame (Bend.cs): the head's height over the feet and whether the game has the player on the ground. The
-    /// standing height is a slow running average of the grounded samples (time constant <see cref="AverageSeconds"/>) that
-    /// never moves more than <see cref="MaxMetresPerSecond"/> (a frame counts at most <see cref="MaxStepSeconds"/>), so a bad
-    /// frame cannot jump it. A sample under <see cref="IgnoreBelow"/> of the estimate (a crouch, a lean), in the air, or not a
-    /// number is ignored. It starts at the design height, so the scale starts at 1. Allocates nothing.</summary>
-    internal sealed class BodyScaleEstimate {
-        public const float DesignEyeHeight = 1.63f, MinScale = 0.7f, MaxScale = 1.3f, IgnoreBelow = 0.85f;
-        public const float AverageSeconds = 2f, MaxMetresPerSecond = 0.04f, MaxStepSeconds = 0.1f;
-
-        static readonly float MinHeight = MinScale * DesignEyeHeight, MaxHeight = MaxScale * DesignEyeHeight;
-
-        float height = DesignEyeHeight;
-
-        /// <summary>The standing eye height as measured so far, in metres.</summary>
-        public float Height => height;
-
-        /// <summary><see cref="Height"/> over <see cref="DesignEyeHeight"/>, within <see cref="MinScale"/>..<see cref="MaxScale"/>.</summary>
-        public float Scale => height <= MinHeight ? MinScale : height >= MaxHeight ? MaxScale : height / DesignEyeHeight;
-
-        /// <summary>One frame of <paramref name="dt"/> seconds: the head's height over the feet, and whether the player is on
-        /// the ground. A frame time that is not above 0 or not a number moves nothing.</summary>
-        public void Step(float dt, float eyeHeight, bool grounded) {
-            if (!grounded || !(dt > 0f) || float.IsNaN(eyeHeight) || float.IsInfinity(eyeHeight)) return;
-            if (eyeHeight < IgnoreBelow * height) return;
-            if (dt > MaxStepSeconds) dt = MaxStepSeconds;
-            float toward = (eyeHeight - height) * (1f - (float)Math.Exp(-dt / AverageSeconds));
-            float most = MaxMetresPerSecond * dt;
-            if (toward > most) toward = most;
-            else if (toward < -most) toward = -most;
-            float next = height + toward;
-            height = next < MinHeight ? MinHeight : next > MaxHeight ? MaxHeight : next;
         }
     }
 
@@ -796,7 +762,7 @@ namespace Earthbending {
     // Hands.cs and Bend.cs read the game every frame and feed the machine; these are the rules of that feeding that need no
     // Unity (the axis settings, the two-frame empty test, the ground grace) and Moves.Push's velocity.
 
-    /// <summary>One signed local axis of a controller's transform, as an <c>[EarthPose]</c> axis setting names it: one of
+    /// <summary>One signed local axis of a controller's transform, as an <c>[EarthPose]</c> axis setting may name it: one of
     /// <c>+x -x +y -y +z -z</c> (x the transform's right, y its up, z its forward).</summary>
     internal readonly struct HandAxis {
         /// <summary>0 x, 1 y, 2 z.</summary>
@@ -816,40 +782,90 @@ namespace Earthbending {
             return true;
         }
 
-        /// <summary>The named one of the three axes, turned round for <c>-</c>.</summary>
-        public V3 Pick(V3 x, V3 y, V3 z) {
-            V3 v = Index == 0 ? x : Index == 1 ? y : z;
-            return Negative ? -v : v;
+        /// <summary>The axis as a direction in the controller's own space: (1, 0, 0) for +x, (0, -1, 0) for -y, ...</summary>
+        public V3 Direction {
+            get {
+                float s = Negative ? -1f : 1f;
+                return Index == 0 ? new V3(s, 0f, 0f) : Index == 1 ? new V3(0f, s, 0f) : new V3(0f, 0f, s);
+            }
         }
 
         public override string ToString() => (Negative ? "-" : "+") + "xyz"[Index];
     }
 
-    /// <summary>The four axis settings' defaults and their check.</summary>
+    /// <summary>The four axis settings (Ruling 36): each is a direction in its controller's own space, which Hands.Read turns
+    /// into the world with <c>Transform.TransformDirection</c>. A setting is a signed axis (<c>-y</c>, <see cref="HandAxis"/>)
+    /// or three numbers <c>a,b,c</c> (the invariant culture: a dot decimal, a comma between the numbers, spaces allowed),
+    /// made length 1. fit_poses.py prints the owner's from a capture (their fingers sit about 21 degrees off -y, toward +z).</summary>
     internal static class HandAxes {
-        // Ruling 3, until the owner's capture says otherwise: the OpenXR grip pose as Unity sees it (the palm faces the other
-        // hand, the fingers point ahead of the grip)
-        public static readonly HandAxis PalmRight = new HandAxis(0, true), FingersRight = new HandAxis(2, false),
-            PalmLeft = new HandAxis(0, false), FingersLeft = new HandAxis(2, false);
+        /// <summary>A hand's palm and fingers within this many degrees of each other, or of opposite, are no hand: the two are
+        /// square to each other (the rule before 0.4.3, one axis for both, refused +y with +y and +y with -y alike).</summary>
+        public const float MinApartDegrees = 45f;
 
-        /// <summary>One hand's two settings as the game uses them. A text that is not one of the six falls back to its
-        /// default; then a palm and fingers on the same axis (they are square to each other, so never along one axis) both
-        /// fall back to the defaults. Each fall-back adds one line to <paramref name="warnings"/>, naming the setting, what it
-        /// said and what is used. The defaults must name two axes.</summary>
-        public static void Check(string palmKey, string? palmText, string fingerKey, string? fingerText, HandAxis palmDefault, HandAxis fingerDefault,
-            out HandAxis palm, out HandAxis fingers, List<string> warnings) {
-            if (!HandAxis.TryParse(palmText, out palm)) {
-                palm = palmDefault;
-                warnings.Add(palmKey + " '" + palmText + "' is not one of +x -x +y -y +z -z; using " + palmDefault);
+        // Ruling 3, until the owner's capture says otherwise: the OpenXR grip pose as Unity sees it (the palm faces the other
+        // hand, the fingers point ahead of the grip). The owner's fitted directions go in their cfg, not here
+        public static readonly V3 PalmRight = new V3(-1f, 0f, 0f), FingersRight = new V3(0f, 0f, 1f),
+            PalmLeft = new V3(1f, 0f, 0f), FingersLeft = new V3(0f, 0f, 1f);
+
+        /// <summary>A setting's text as a direction of length 1: a signed axis, or three numbers. False, with
+        /// <paramref name="why"/>, for anything else: neither form (a comma decimal makes more than three numbers), a number
+        /// that is not finite, or no direction (zero length).</summary>
+        public static bool TryParse(string? text, out V3 direction, out string why) {
+            direction = V3.Zero;
+            why = "";
+            if (HandAxis.TryParse(text, out HandAxis axis)) {
+                direction = axis.Direction;
+                return true;
             }
-            if (!HandAxis.TryParse(fingerText, out fingers)) {
-                fingers = fingerDefault;
-                warnings.Add(fingerKey + " '" + fingerText + "' is not one of +x -x +y -y +z -z; using " + fingerDefault);
+            string[] parts = (text ?? "").Split(',');
+            var n = new float[3];
+            bool numbers = parts.Length == 3;
+            for (int i = 0; numbers && i < 3; i++)
+                numbers = float.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out n[i]) && !float.IsNaN(n[i]) && !float.IsInfinity(n[i]);
+            if (!numbers) {
+                why = "is neither a signed axis (+x -x +y -y +z -z) nor three numbers a,b,c with a dot decimal";
+                return false;
             }
-            if (palm.Index != fingers.Index) return;
-            warnings.Add(palmKey + " " + palm + " and " + fingerKey + " " + fingers + " name the same axis (the palm and the fingers are square to each other); using " + palmDefault + " and " + fingerDefault);
+            direction = new V3(n[0], n[1], n[2]).Normalized;
+            if (V3.Dot(direction, direction) > 0f) return true;
+            why = "has no direction (zero length)";
+            return false;
+        }
+
+        /// <summary>A direction as a setting's text: the signed axis it is exactly, else three numbers (invariant culture).</summary>
+        public static string Describe(V3 v) {
+            for (int i = 0; i < 6; i++) {
+                var a = new HandAxis(i / 2, i % 2 == 1);
+                V3 d = a.Direction;
+                if (v.X == d.X && v.Y == d.Y && v.Z == d.Z) return a.ToString();
+            }
+            return string.Format(CultureInfo.InvariantCulture, "{0:0.###},{1:0.###},{2:0.###}", v.X, v.Y, v.Z);
+        }
+
+        /// <summary>One hand's two settings as the game uses them, each length 1. A setting that <see cref="TryParse"/>
+        /// refuses, or a palm and fingers within <see cref="MinApartDegrees"/> of each other or of opposite, gives the hand
+        /// both its defaults and adds one line to <paramref name="warnings"/>, naming each setting at fault, what it said and
+        /// what is used. The defaults must pass.</summary>
+        public static void Check(string palmKey, string? palmText, string fingerKey, string? fingerText, V3 palmDefault, V3 fingerDefault,
+            out V3 palm, out V3 fingers, List<string> warnings) {
+            bool palmOk = TryParse(palmText, out palm, out string palmWhy), fingersOk = TryParse(fingerText, out fingers, out string fingersWhy);
+            string fault;
+            if (!palmOk || !fingersOk) {
+                var bad = new List<string>(2);
+                if (!palmOk) bad.Add(palmKey + " '" + palmText + "' " + palmWhy);
+                if (!fingersOk) bad.Add(fingerKey + " '" + fingerText + "' " + fingersWhy);
+                fault = string.Join("; ", bad);
+            }
+            else {
+                float apart = PoseMatch.Angle(palm, fingers);
+                if (apart > MinApartDegrees && apart < 180f - MinApartDegrees) return;
+                fault = palmKey + " " + Describe(palm) + " and " + fingerKey + " " + Describe(fingers) + " are " + apart.ToString("0", CultureInfo.InvariantCulture)
+                    + " degrees apart (the palm and the fingers are square to each other: " + MinApartDegrees.ToString("0", CultureInfo.InvariantCulture)
+                    + " to " + (180f - MinApartDegrees).ToString("0", CultureInfo.InvariantCulture) + " wanted)";
+            }
             palm = palmDefault;
             fingers = fingerDefault;
+            warnings.Add(fault + "; this hand uses its defaults, " + palmKey + " " + Describe(palmDefault) + " and " + fingerKey + " " + Describe(fingerDefault));
         }
     }
 
