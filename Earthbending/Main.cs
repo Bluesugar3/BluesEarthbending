@@ -31,7 +31,10 @@ namespace Earthbending {
     //   Hits.cs       the server: a moving stone hits creatures (its collisions) and players (their capsules), knocks
     //                 players back, stuns creatures, two stones clash, and Explode's blast; [EarthDamage]
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone, StoneView.Live), the rise, break and
-    //                 stomp looks
+    //                 stomp looks; the Model drawn at its smooth, predicted place in StoneView.LateUpdate
+    //   Motion.cs     Unity-free: the Model's follow between the game's syncs (the predicted target, the critically damped
+    //                 easing, the snap), and the turn maths it needs (Q)
+    //   StoneMotion.cs games: NetworkRigidbody's last sync read by reflection; [EarthLooks] SmoothMotion and its numbers
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
     //   Moves.cs      games: pushing the local player (Straight's pushback too), the hitstun after a knockback, the
     //                 movement moves' dust, the game's grounded flag
