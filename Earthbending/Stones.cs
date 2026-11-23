@@ -149,11 +149,21 @@ namespace Earthbending {
         /// any state; every other modifier is refused (later tasks add theirs).</summary>
         public static bool CanApply(StoneState s, Modifier m) => m == Modifier.Straight;
 
-        /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once it is slower than this, in m/s.</summary>
+        /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once its flat speed is under this while it touches
+        /// ground, in m/s.</summary>
         public const float SlideStopSpeed = 0.1f;
 
-        /// <summary>A sliding stone's speed after <paramref name="dt"/> seconds of slowing by <paramref name="deceleration"/> m/s every second
-        /// (never below 0; a speed that is not a number is 0). Its height is frozen, so the ground has no weight on it to grip:
+        /// <summary>Ruling 22: a sliding stone that has touched no ground for this long (it slid off a drop) is Free, in seconds.</summary>
+        public const float SlideAirSeconds = 0.2f;
+
+        /// <summary>A contact is ground when its normal (out of the other collider, toward the stone) points at least this much
+        /// up: a slope of at most 60 degrees. A wall or a stone beside it is not ground.</summary>
+        public const float GroundNormalY = 0.5f;
+
+        public static bool IsGroundContact(float normalY) => normalY >= GroundNormalY;
+
+        /// <summary>A sliding stone's speed after <paramref name="dt"/> seconds of slowing by <paramref name="deceleration"/> m/s
+        /// every second (never below 0; a speed that is not a number is 0). It slides on a frictionless material (ruling 22), so
         /// this is what slows it.</summary>
         public static float SlideSpeed(float speed, float deceleration, float dt) {
             if (!(speed > 0f) || float.IsInfinity(speed)) return 0f;
@@ -163,7 +173,22 @@ namespace Earthbending {
 
         /// <summary>Whether a sliding stone at this speed stands still again (under <see cref="SlideStopSpeed"/>, or not a number).</summary>
         public static bool SlideStops(float speed) => !(speed >= SlideStopSpeed);
+
+        /// <summary>One physics step of a slide (ruling 22). Touching ground in the last step (<paramref name="touching"/>): it
+        /// stands Still once the push has landed (<paramref name="pushLanded"/>: the impulse is in the velocity only after the
+        /// step that follows the push) and its flat speed stops (<see cref="SlideStops"/>), else it slides on. Not touching: it
+        /// slides on until <paramref name="sinceGround"/> (seconds since it last touched ground, or was pushed while standing on
+        /// it) reaches <see cref="SlideAirSeconds"/>, then it is Free (a time that is not a number is Free). It is never Still in
+        /// the air.</summary>
+        public static SlideStep Slide(bool touching, double sinceGround, float flatSpeed, bool pushLanded) {
+            if (touching) return pushLanded && SlideStops(flatSpeed) ? SlideStep.Still : SlideStep.Slides;
+            return sinceGround < SlideAirSeconds - 1e-6 ? SlideStep.Slides : SlideStep.Free;   // a step landing on 0.2 s reaches it
+        }
     }
+
+    /// <summary>What one physics step of a slide ends in (<see cref="StoneRules.Slide"/>): it slides on, it stands Still, or
+    /// it is Free (it left the ground).</summary>
+    internal enum SlideStep : byte { Slides, Still, Free }
 
     /// <summary>The server's cooldowns, per player and move (keyed as <c>(int)Move.X</c>). The game keeps its own cooldowns
     /// (PoseMachine); this one only stops a game that sends claims faster than a pose machine can fire them.</summary>

@@ -86,6 +86,18 @@ internal static class StoneTests {
         Check("slide: 0 deceleration keeps it", Near(StoneRules.SlideSpeed(8f, 0f, 0.5f), 8f));
         Check("slide: a speed that is not a number stops", Near(StoneRules.SlideSpeed(float.NaN, 4f, 0.02f), 0f));
         Check("slide: stops under 0.1 m/s", StoneRules.SlideStops(0.09f) && !StoneRules.SlideStops(0.1f) && !StoneRules.SlideStops(3f) && StoneRules.SlideStops(float.NaN));
+        // ruling 22: each physics step of a slide, from whether it touched ground in the last step, how long since it last did
+        // (or was pushed), its flat speed and whether the push has landed (the step after the push)
+        Check("slide step: slow and touching -> still", StoneRules.Slide(true, 0.02, 0.05f, true) == SlideStep.Still);
+        Check("slide step: fast and touching slides", StoneRules.Slide(true, 0.02, 3f, true) == SlideStep.Slides);
+        Check("slide step: before the push lands it slides", StoneRules.Slide(true, 0.02, 0f, false) == SlideStep.Slides);
+        Check("slide step: a moment off the ground slides on", StoneRules.Slide(false, 0.19, 3f, true) == SlideStep.Slides);
+        Check("slide step: slow in the air is never still", StoneRules.Slide(false, 0.1, 0.05f, true) == SlideStep.Slides);
+        Check("slide step: 0.2 s with no ground -> free", StoneRules.Slide(false, 0.2, 3f, true) == SlideStep.Free && StoneRules.Slide(false, 1.0, 0.05f, true) == SlideStep.Free);
+        Check("slide step: no time -> free", StoneRules.Slide(false, double.NaN, 3f, true) == SlideStep.Free);
+        Check("slide step: touching never frees", StoneRules.Slide(true, 5.0, 3f, true) == SlideStep.Slides);
+        Check("slide step: 0.2 s and 60 degrees", Near(StoneRules.SlideAirSeconds, 0.2f) && Near(StoneRules.GroundNormalY, 0.5f));
+        Check("ground contact: up-facing normals", StoneRules.IsGroundContact(1f) && StoneRules.IsGroundContact(0.5f) && !StoneRules.IsGroundContact(0.49f) && !StoneRules.IsGroundContact(-1f) && !StoneRules.IsGroundContact(float.NaN));
 
         // the server's check of a Modify claim (its own head and feet, the claimed yaw)
         var still = (StoneState?)StoneState.Still;

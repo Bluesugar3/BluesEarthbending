@@ -11,9 +11,12 @@ namespace Earthbending {
     /// WakeUp, because NetworkRigidbody sends a body's place only while it is awake: ruling 21; NetworkRigidbody carries the
     /// place and the kinematic flag to the games), then it is Still. <see cref="Apply"/> takes a modifier the server checked
     /// (Task 7: Straight; one taken while Rising waits for the rise to end, since a rising stone cannot move sideways, spec
-    /// 2.3). A Sliding stone (spec 2.3, 3.4) is not kinematic, its height and turn are frozen
-    /// (FreezePositionY | FreezeRotation), it slows by [EarthModifiers] SlideDeceleration (a frozen height gives the ground no
-    /// weight to grip it) and is anchored again (Still: kinematic, no velocity) once slower than 0.1 m/s.
+    /// 2.3). A Sliding stone (spec 2.3, 3.4, ruling 22) is not kinematic, has gravity, only its turn frozen
+    /// (FreezeRotation), and while it slides its collider wears a frictionless material, so it follows slopes and the ground
+    /// does not stop it: [EarthModifiers] SlideDeceleration slows it while it touches ground. Each physics step
+    /// (StoneRules.Slide) it stands Still again (kinematic, no velocity, its own material back) once its flat speed is under
+    /// 0.1 m/s while touching ground, and is Free (its own material back, nothing frozen) after 0.2 s touching no ground (it
+    /// slid off a drop). Ground is any contact whose normal points at most 60 degrees from up (OnCollisionEnter/Stay).
     /// <see cref="Break"/> is the one way a stone is ended on purpose.</summary>
     internal sealed class StoneBody : MonoBehaviour {
         internal StoneKind Kind;
@@ -31,12 +34,16 @@ namespace Earthbending {
 
         Rigidbody? body;
         Collider? shape;
+        PhysicMaterial? ownMaterial;   // the collider's material before the slide put the frictionless one on
         Vector3? queued;   // a Straight taken while Rising
         Vector3 start, end;
         float riseSeconds, risen;
-        int slideSteps;   // physics steps since the last push of a slide (the push's impulse lands in the first)
+        int slideSteps;      // physics steps since the last push of a slide (the push's impulse lands in the first)
+        bool touchedGround;  // a ground contact in the last physics step (set by the collision callbacks, read by Slide)
+        double groundAt;     // Time.fixedTimeAsDouble of the last ground contact, or of the push
         bool broken;
         static bool sendFailed, destroyFailed, noBodyWarned;
+        static PhysicMaterial? slideMaterial;
 
         /// <summary>It broke, or was destroyed: it takes no more modifiers.</summary>
         internal bool Broken => broken;
@@ -85,30 +92,78 @@ namespace Earthbending {
             Straight(dir);
         }
 
-        // Called before each physics step, so the first step after a push still reads the speed from before it: the stop test
-        // waits for the second.
+        // Called before each physics step (its collision callbacks come after it), so the first step after a push still reads
+        // the velocity from before it: the stop test waits for the second (pushLanded). While touching ground the slide slows
+        // along its own way (on a slope too), as friction would; for a moment in the air, gravity alone.
         void Slide() {
             if (body == null) return;
             slideSteps++;
+            bool touching = touchedGround;
+            touchedGround = false;
             Vector3 v = body.velocity;
-            float speed = Mathf.Sqrt(v.x * v.x + v.z * v.z);
-            if (slideSteps > 1 && StoneRules.SlideStops(speed)) {
-                Anchor(speed);
-                return;
-            }
+            float flat = Mathf.Sqrt(v.x * v.x + v.z * v.z);
+            SlideStep step = StoneRules.Slide(touching, Time.fixedTimeAsDouble - groundAt, flat, slideSteps > 1);
+            if (step == SlideStep.Still) { Anchor(flat); return; }
+            if (step == SlideStep.Free) { LetGo(); return; }
+            if (!touching) return;
+            float speed = v.magnitude;
             float next = StoneRules.SlideSpeed(speed, Server.SlideDeceleration, Time.fixedDeltaTime);
-            if (speed > 0f && next < speed) body.velocity = new Vector3(v.x * (next / speed), v.y, v.z * (next / speed));
+            if (speed > 0f && next < speed) body.velocity = v * (next / speed);
         }
 
-        /// <summary>Back to Still where it is: no velocity, kinematic, the slide's constraints off.</summary>
+        void OnCollisionEnter(Collision c) => Touched(c);
+        void OnCollisionStay(Collision c) => Touched(c);
+
+        // Only a sliding stone looks; one up-facing contact point is enough.
+        void Touched(Collision c) {
+            if (State != StoneState.Sliding || touchedGround || c == null) return;
+            for (int i = 0; i < c.contactCount; i++) {
+                if (!StoneRules.IsGroundContact(c.GetContact(i).normal.y)) continue;
+                touchedGround = true;
+                groundAt = Time.fixedTimeAsDouble;
+                return;
+            }
+        }
+
+        /// <summary>Back to Still where it is: no velocity, kinematic, the slide's constraint and material off.</summary>
         void Anchor(float speed) {
             if (body == null) return;
             body.velocity = Vector3.zero;
             body.angularVelocity = Vector3.zero;
             body.isKinematic = true;
             body.constraints = RigidbodyConstraints.None;
+            EndSlideMaterial();
             State = StoneState.Still;
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} stopped sliding at {transform.position} ({speed:0.###} m/s) and stands still");
+        }
+
+        /// <summary>It slid off the ground: Free, normal physics (nothing frozen, gravity, its own material back).</summary>
+        void LetGo() {
+            if (body == null) return;
+            body.constraints = RigidbodyConstraints.None;
+            body.useGravity = true;
+            EndSlideMaterial();
+            State = StoneState.Free;
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: {Kind} #{Id} of {OwnerName} slid off the ground at {transform.position} (no ground for {StoneRules.SlideAirSeconds:0.##} s) and is loose");
+        }
+
+        /// <summary>The frictionless material a slide puts on the collider (ruling 22): friction 0, combined by the minimum, so
+        /// whatever it slides on has no grip on it. The mod's own, made once.</summary>
+        static PhysicMaterial SlideMaterial() {
+            if (slideMaterial == null)
+                slideMaterial = new PhysicMaterial("Earth slide") { dynamicFriction = 0f, staticFriction = 0f, frictionCombine = PhysicMaterialCombine.Minimum };
+            return slideMaterial;
+        }
+
+        void StartSlideMaterial() {
+            if (shape == null) return;
+            PhysicMaterial slide = SlideMaterial();
+            if (shape.sharedMaterial != slide) ownMaterial = shape.sharedMaterial;
+            shape.sharedMaterial = slide;
+        }
+
+        void EndSlideMaterial() {
+            if (shape != null && slideMaterial != null && shape.sharedMaterial == slideMaterial) shape.sharedMaterial = ownMaterial;
         }
 
         /// <summary>A Straight taken while Rising waits here (its flat direction) until the rise ends.</summary>
@@ -136,8 +191,12 @@ namespace Earthbending {
             float impulse = StoneRules.IsGrounded(was) ? Server.StraightGrounded : Server.StraightFree;
             if (next == StoneState.Sliding) {
                 body.isKinematic = false;
-                body.constraints = RigidbodyConstraints.FreezePositionY | RigidbodyConstraints.FreezeRotation;
+                body.useGravity = true;
+                body.constraints = RigidbodyConstraints.FreezeRotation;
+                StartSlideMaterial();
                 slideSteps = 0;
+                touchedGround = false;
+                groundAt = Time.fixedTimeAsDouble;   // it stood on the ground at the push
             }
             State = next;
             body.WakeUp();

@@ -57,7 +57,7 @@ namespace Earthbending {
         static bool[] enabled = new bool[StoneTable.Count];
         static int maxPerPlayer = DefaultMaxPerPlayer, maxTotal = DefaultMaxTotal;
         static float life = DefaultLife, headSlack = DefaultHeadSlack, cooldownSlack = DefaultCooldownSlack, rangeSlack = DefaultRangeSlack;
-        static bool shutDown, tickFailed, summonFailed, modifyFailed;
+        static bool shutDown, tickFailed, summonFailed, modifyFailed, unspawnableWarned;
 
         /// <summary>[EarthModifiers] StraightGrounded: Straight's impulse in N s on an anchored stone (Rising, Still,
         /// Sliding), which then slides.</summary>
@@ -89,7 +89,7 @@ namespace Earthbending {
             straightFreeEntry = mods.CreateEntry("StraightFree", DefaultStraightFree, description: "Server. Straight pushes any other stone (loose, in the air) along the look with this impulse, in N s. 0 or more.");
             rangeSlackEntry = mods.CreateEntry("RangeSlackMetres", DefaultRangeSlack, description: "Server. A modifier's stone is checked against Reach and MaxHeight from the server's copy of the head and feet, which lags the player: both get this many metres more on the server. 0 or more.");
             doubleStraightEntry = mods.CreateEntry("DoubleStraightSeconds", DefaultDoubleStraight, description: "Server. Two Straights on one stone within this many seconds will explode it (not in this build yet). 0 or more.");
-            slideDecelerationEntry = mods.CreateEntry("SlideDeceleration", DefaultSlideDeceleration, description: "Server. A stone sliding along the ground after a Straight slows by this many m/s every second (its height is held, so the ground does not slow it), and stands still again under 0.1 m/s (8.4 m/s with 4: about 9 m). 0: only what it hits stops it.");
+            slideDecelerationEntry = mods.CreateEntry("SlideDeceleration", DefaultSlideDeceleration, description: "Server. A stone sliding along the ground after a Straight slows by this many m/s every second while it touches ground (it slides on a frictionless material, so the ground itself does not slow it), and stands still again under 0.1 m/s (8.4 m/s with 4: about 9 m on level ground; uphill shorter, downhill longer). 0: only a rise or what it hits stops it.");
             Apply();
             Cfg.Changed += Apply;
             // a Net whose static initialiser failed (Main says so) throws on every touch: no summons, the rest still starts
@@ -178,7 +178,8 @@ namespace Earthbending {
 
             // what Spawn needs (a registered prefab, a chunk at the end point) BEFORE the caps break anyone's stone for it
             if (!Spawnable(c.Kind, U(plan.end), out _, out _, out string cannot)) {
-                MelonLogger.Warning($"[Earth] Summon: refused {c.Kind} for {NameOf(p)}: {cannot}");
+                if (!unspawnableWarned) { unspawnableWarned = true; MelonLogger.Warning($"[Earth] Summon: refused {c.Kind} for {NameOf(p)}: {cannot} (said once; later ones are Debug lines)"); }
+                else if (Logs.Debug) MelonLogger.Msg($"[Earth] Summon: refused {c.Kind} for {NameOf(p)}: {cannot}");
                 return;
             }
 
