@@ -136,6 +136,7 @@ It loaded if `MelonLoader\Latest.log` has `[Earth] Blue's Earthbending v... star
 
 - **Never on a Quest server.** Quest has no SyncLib, so a server running it locks Quest players out. Run it as a separate PC server.
 - **A game without the mod** is turned away at the join by SyncLib (missing prefabs).
+- **If no pose fires**, the default hand axes (fingers along the controller's +z) do not fit your controllers: on the owner's, the fingers sit about 21° off -y toward +z, beyond the 60° a pose allows. Run the capture (see Your own poses) and put the four axis settings `fit_poses.py` prints (`PalmAxisRight`, `FingerAxisRight`, `PalmAxisLeft`, `FingerAxisLeft`) in that game's `[EarthPose]`.
 - **Stones hurt players everywhere, town included, whatever the server's PvP setting** (the game's spawn invincibility still applies). On a public server set `[EarthDamage] HurtPlayers = false`.
 
 ## Settings
