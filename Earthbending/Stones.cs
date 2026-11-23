@@ -135,7 +135,8 @@ namespace Earthbending {
 
     // ==================================================================== Task 6: summoning
 
-    /// <summary>What a stone is doing (spec 2.3). Rising, Still, Sliding and Stomped are grounded (+1 power, spec 3.4).</summary>
+    /// <summary>What a stone is doing (spec 2.3). Rising, Still, Sliding and Stomped are grounded; Still and Sliding add 1 to
+    /// its power (spec 3.4, ruling C35).</summary>
     internal enum StoneState : byte { Rising, Still, Sliding, Free, Stomped, Floating, Held, Flicked }
 
     internal static class StoneRules {
@@ -279,12 +280,14 @@ namespace Earthbending {
         static readonly float Tan22 = (float)Math.Tan(22.5 * Math.PI / 180.0);   // half way between flat and 45 degrees up
         static readonly float Diagonal = (float)Math.Sqrt(0.5);
 
-        /// <summary>Spec 3.4: a stone's power for hits and clashes, its kind's (StoneTable, from the settings) + 1 when grounded
-        /// (<see cref="IsGrounded"/>) + 1 when moving faster than <paramref name="movingSpeed"/> m/s (a speed that is not a
-        /// number is not moving). 0 for a byte that is not a kind (grounded and moving still add).</summary>
+        /// <summary>Spec 3.4: a stone's power for hits and clashes, its kind's (StoneTable, from the settings) + 1 when grounded,
+        /// which for power is Still or Sliding only (ruling C35: "+ 1 if grounded (still or sliding)"; a Rising or Stomped
+        /// stone, grounded for <see cref="IsGrounded"/>, adds nothing here) + 1 when moving faster than
+        /// <paramref name="movingSpeed"/> m/s (a speed that is not a number is not moving). 0 for a byte that is not a kind
+        /// (still or sliding and moving still add).</summary>
         public static int Power(StoneKind k, StoneState s, float speed, float movingSpeed) {
             int p = StoneTable.Of(k).Power;
-            if (IsGrounded(s)) p++;
+            if (s == StoneState.Still || s == StoneState.Sliding) p++;
             if (speed > movingSpeed) p++;
             return p;
         }
@@ -571,9 +574,10 @@ namespace Earthbending {
         static float NotNegative(float v) => v >= 0f && !float.IsInfinity(v) ? v : 0f;
     }
 
-    /// <summary>Task 13 (spec 2.4, rulings C13, C14): the PD controller that pulls a held stone toward its target ahead of the
-    /// holding hand. Unity-free: StoneHold.cs reads the server's copy of the hand and adds the force each physics step. Task 14
-    /// (rulings C13, C15): Flick's PID toward the point ahead of the two hands, and its turn; StoneFlick.cs runs them.</summary>
+    /// <summary>Task 13 (spec 2.4, rulings C13, C14, C34): the PD controller that pulls a held stone toward its target ahead of
+    /// the holding hand, along the holder's look. Unity-free: StoneHold.cs reads the server's copy of the hand and adds the
+    /// force each physics step. Task 14 (rulings C13, C15): Flick's PID toward the point ahead of the two hands, and its turn;
+    /// StoneFlick.cs runs them. Ruling C36: both pulls are held to MaxStoneSpeed each step (<see cref="CappedPull"/>).</summary>
     internal static class Pd {
         /// <summary>[EarthModifiers] HoldDistance (m), HoldFreeScale, HoldGroundScale, HoldLetGoSpeed (m/s), HoldArmMetres (m)
         /// and PdStepSeconds (s) defaults (spec 2.4; ruling C13 for the step; ruling C28: let go at 5 m/s, not RUMBLE's 8,
@@ -581,11 +585,6 @@ namespace Earthbending {
         /// armed within 0.5 m).</summary>
         public const float DefaultHoldDistance = 1f, DefaultHoldFreeScale = 2500f, DefaultHoldGroundScale = 1500f, DefaultHoldLetGoSpeed = 5f,
             DefaultHoldArmMetres = 0.5f, DefaultPdStepSeconds = 0.02f;
-
-        /// <summary>The flat part (length) of a length-1 direction under which it points "straight up or down" for
-        /// <see cref="HoldTarget"/>: within 45 degrees of vertical. The Hold pose's fingers point up (its A hand), and a hand's
-        /// flat way that near vertical swings round with every small turn of the wrist.</summary>
-        public const float UprightFlat = 0.70710678f;
 
         /// <summary>How far a held stone trails its target, from <paramref name="error"/> (target minus its centre): the whole
         /// distance on a free hold, the flat distance on a grounded one (it slides at its own height under a target at hand
@@ -626,17 +625,36 @@ namespace Earthbending {
             return new V3(InRange(x), InRange(y), InRange(z));
         }
 
-        /// <summary>Where a held stone is pulled to: <paramref name="hand"/> (the holding controller's place) plus
-        /// <paramref name="distance"/> m ([EarthModifiers] HoldDistance) along the hand's forward made flat and length 1. When
-        /// the hand points within 45 degrees of straight up or down (<see cref="UprightFlat"/>; the Hold pose's fingers point
-        /// up), or its forward is not a number, the head's forward made flat stands in. The hand itself when neither has a flat
-        /// way, or the distance is not above 0 (or not finite).</summary>
-        public static V3 HoldTarget(V3 hand, V3 handForward, V3 headForward, float distance) {
-            if (!(distance > 0f) || float.IsInfinity(distance)) return hand;
-            V3 f = Finite(handForward) ? handForward.Normalized : V3.Zero;
-            V3 way = new V3(f.X, 0f, f.Z);
-            if (!(way.Length >= UprightFlat)) way = Finite(headForward) ? new V3(headForward.X, 0f, headForward.Z) : V3.Zero;
-            return hand + way.Normalized * distance;
+        /// <summary>Ruling C34: where a held stone is pulled to: <paramref name="hand"/> (the holding controller's place) plus
+        /// <paramref name="distance"/> m ([EarthModifiers] HoldDistance) along <paramref name="headForward"/> (the holder's
+        /// look) made flat and length 1, as Flick (<see cref="FlickTarget"/> with both hands at the holding hand). Never the
+        /// controller's own forward: its +z is not the fingers on every controller, and the finger axis is a per-game
+        /// [EarthPose] setting the server cannot see. The hand itself when the look has no flat way (straight up or down, or
+        /// not a number) or the distance is not above 0 (or not finite).</summary>
+        public static V3 HoldTarget(V3 hand, V3 headForward, float distance) {
+            if (!(distance > 0f) || float.IsInfinity(distance) || !Finite(headForward)) return hand;
+            return hand + new V3(headForward.X, 0f, headForward.Z).Normalized * distance;
+        }
+
+        /// <summary>Ruling C36: a hold's or a flick's <paramref name="force"/> (N) for one physics step of <paramref name="dt"/>
+        /// s on a stone of <paramref name="mass"/> kg moving at <paramref name="velocity"/> (m/s), held so the step leaves it
+        /// no faster than <paramref name="cap"/> m/s ([EarthModifiers] MaxStoneSpeed; a cap not above 0 or not finite is
+        /// StoneRules.DefaultMaxStoneSpeed, as StoneRules.Pushed). The force itself, untouched, when velocity + force x dt /
+        /// mass is within the cap; otherwise the force that ends the step at the cap along that way (a stone already past it
+        /// is slowed to it). The pull grows with the distance (a stone stuck behind something, a holder who teleports), and
+        /// Unity applies a force in the step after FixedUpdate, so the cap is on the velocity the step ends with. A force that
+        /// is not a number pulls nothing; a velocity that is not a number, or a mass or dt not above 0 (or not finite), leaves
+        /// the force. Worked in doubles, held to the range of a float.</summary>
+        public static V3 CappedPull(V3 force, V3 velocity, float mass, float dt, float cap) {
+            if (!Finite(force)) return V3.Zero;
+            if (!Finite(velocity) || !(mass > 0f) || float.IsInfinity(mass) || !(dt > 0f) || float.IsInfinity(dt)) return force;
+            double c = cap > 0f && !float.IsInfinity(cap) ? cap : StoneRules.DefaultMaxStoneSpeed;
+            double k = dt / (double)mass;
+            double x = velocity.X + force.X * k, y = velocity.Y + force.Y * k, z = velocity.Z + force.Z * k;
+            double len = Math.Sqrt(x * x + y * y + z * z);
+            if (!(len > c)) return force;
+            double s = c / len;
+            return new V3(InRange((x * s - velocity.X) / k), InRange((y * s - velocity.Y) / k), InRange((z * s - velocity.Z) / k));
         }
 
         // ---------------------------------------------------------------- Task 14: Flick

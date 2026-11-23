@@ -11,9 +11,10 @@ using UnityEngine;
 namespace Earthbending {
     // The server: what a moving stone does to what it meets (spec 2.2, 2.6, 3.4, 3.7; rulings 24 and 25). The [EarthDamage]
     // settings are the server's.
-    //   - Power (StoneRules.Power): the kind's ([EarthStones] <Kind>Power) + 1 while grounded + 1 moving faster than
-    //     MovingSpeed, from the stone's velocity BEFORE the physics step (StoneBody.Velocity): a collision callback comes after
-    //     the step, which has already slowed the stone against what it struck.
+    //   - Power (StoneRules.Power): the kind's ([EarthStones] <Kind>Power) + 1 while still or sliding (ruling C35: not while
+    //     rising or stomped) + 1 moving faster than MovingSpeed, from the stone's velocity BEFORE the physics step
+    //     (StoneBody.Velocity): a collision callback comes after the step, which has already slowed the stone against what it
+    //     struck.
     //   - A creature (a health object that is not a player's, with a cripple stat or an Alta.Intelligence.Agent) is hit
     //     through the stone's own collisions (StoneBody.OnCollisionEnter -> OnContact), judged on the STONE's own speed before
     //     the step (the controller's ruling on Task 8): at least MinHitSpeed, and never by a Rising stone (ruling 25). A
@@ -89,10 +90,11 @@ namespace Earthbending {
         static double victimsAt = double.NaN;
         static bool contactFailed, playersFailed, playerReadFailed, stunFailed, sendFailed, blastFailed, blastSendFailed;
 
+        // No name here: Server.NameOf builds a string, and the players are read every physics step while any stone moves (held
+        // and flicked ones too); it is built only for a Debug line.
         struct Victim {
             public Player Player;
             public PlayerHealth Health;
-            public string Name;
             public Vector3 Head, Feet;
         }
 
@@ -100,7 +102,7 @@ namespace Earthbending {
         internal static void Init() {
             MelonPreferences_Category cat = Cfg.Category("EarthDamage");
             hurtPlayersEntry = cat.CreateEntry("HurtPlayers", DefaultHurtPlayers, description: "Server. Stones hit players: a moving stone that comes at a player damages them (whatever the server's PvP setting; the game's spawn invincibility still applies), knocks them back and breaks on them; a marked stone's blast knocks them back too. Off: stones and blasts ignore players entirely (no damage, no knockback, no break; they still hit creatures and clash), for a public server: a knockback alone can push someone off a cliff.");
-            damagePerPowerEntry = cat.CreateEntry("DamagePerPower", DefaultDamagePerPower, description: "Server. A stone's hit deals this much damage per point of its power (Blunt; power is the stone's own, +1 grounded, +1 moving faster than MovingSpeed: a still Cube is 3, a sliding Pillar pushed by Straight 3). A guess to tune from the Debug lines' health before and after. 0 or more (0: no damage).");
+            damagePerPowerEntry = cat.CreateEntry("DamagePerPower", DefaultDamagePerPower, description: "Server. A stone's hit deals this much damage per point of its power (Blunt; power is the stone's own, +1 still or sliding on the ground (not rising or stomped), +1 moving faster than MovingSpeed: a still Cube is 3, a sliding Pillar pushed by Straight 3, a stomped Ball falling fast 2). A guess to tune from the Debug lines' health before and after. 0 or more (0: no damage).");
             cripplePerPowerEntry = cat.CreateEntry("CripplePerPower", DefaultCripplePerPower, description: "Server. A stone's hit also deals this much cripple per point of power, which knocks a creature down once its stagger pool runs out. 0 or more.");
             minHitSpeedEntry = cat.CreateEntry("MinHitSpeed", DefaultMinHitSpeed, description: "Server. A stone hits a creature or a player only when the stone itself moves this many m/s or more (toward the player; a creature walking into a standing stone is not hit), and two stones clash only when they meet this fast. A rising stone never hits or clashes. 0 or more.");
             movingSpeedEntry = cat.CreateEntry("MovingSpeed", DefaultMovingSpeed, description: "Server. A stone moving faster than this many m/s has one more power for its hits and clashes. 0 or more.");
@@ -269,7 +271,7 @@ namespace Earthbending {
             }
             if (damage > 0f && !(after < before)) {   // ruling 30: the game did not lower their health; the record stays charged
                 if (Logs.Debug)
-                    MelonLogger.Msg($"[Earth] Hits: {stone.Kind} #{stone.Id} of {stone.OwnerName} ({stone.State}, power {power}, {speed:0.##} m/s) hit player {v.Name}: damage {damage:0.##} refused by the game (health {before:0.##} -> {after:0.##}: spawn invincibility or ignoring damage); no knockback, no break");
+                    MelonLogger.Msg($"[Earth] Hits: {stone.Kind} #{stone.Id} of {stone.OwnerName} ({stone.State}, power {power}, {speed:0.##} m/s) hit player {Server.NameOf(v.Player)}: damage {damage:0.##} refused by the game (health {before:0.##} -> {after:0.##}: spawn invincibility or ignoring damage); no knockback, no break");
                 return;
             }
             V3 away = new V3(toward.x, toward.y, toward.z);
@@ -282,9 +284,9 @@ namespace Earthbending {
             }
             if (Logs.Debug) {
                 string dealt = hurt ? $"damage {damage:0.##}, cripple {cripple:0.##}" : "not hurt (DamagePerPower and CripplePerPower are 0)";
-                MelonLogger.Msg($"[Earth] Hits: {stone.Kind} #{stone.Id} of {stone.OwnerName} ({stone.State}, power {power}, {speed:0.##} m/s) hit player {v.Name}{(stone.Owner != 0UL && stone.Owner == Server.AccountOf(v.Player) ? " (its owner)" : "")}: {dealt}; health {before:0.##} -> {after:0.##} of {(ph != null ? ph.MaxHealth : 0f):0.##}; knockback {knock}, hitstun {hitstun:0.###} s{(sent ? "" : " (NOT sent)")}{(BreakOnHit ? "; it breaks" : "")}");
+                MelonLogger.Msg($"[Earth] Hits: {stone.Kind} #{stone.Id} of {stone.OwnerName} ({stone.State}, power {power}, {speed:0.##} m/s) hit player {Server.NameOf(v.Player)}{(stone.Owner != 0UL && stone.Owner == Server.AccountOf(v.Player) ? " (its owner)" : "")}: {dealt}; health {before:0.##} -> {after:0.##} of {(ph != null ? ph.MaxHealth : 0f):0.##}; knockback {knock}, hitstun {hitstun:0.###} s{(sent ? "" : " (NOT sent)")}{(BreakOnHit ? "; it breaks" : "")}");
             }
-            if (BreakOnHit) stone.Break(Logs.Debug ? $"hit player {v.Name}" : "hit a player");
+            if (BreakOnHit) stone.Break(Logs.Debug ? $"hit player {Server.NameOf(v.Player)}" : "hit a player");
         }
 
         /// <summary>This physics step's players with a body and a connection, read once per step (every moving stone tests
@@ -304,7 +306,7 @@ namespace Earthbending {
                     if (head == null || c == null || c.IsDisposed) continue;
                     Vector3 h = head.position, f = pc.RealFeetPosition;
                     if (!Finite(h) || !Finite(f)) continue;
-                    victims.Add(new Victim { Player = p, Health = ph, Name = Server.NameOf(p), Head = h, Feet = f });
+                    victims.Add(new Victim { Player = p, Health = ph, Head = h, Feet = f });
                 }
                 catch (Exception e) {   // a player still joining: left out this step
                     if (!playerReadFailed) { playerReadFailed = true; MelonLogger.Warning($"[Earth] Hits: a player could not be read for the stones' hits; left out (said once): {e.Message}"); }
@@ -371,20 +373,21 @@ namespace Earthbending {
         /// <item>Our own stones (not the source, not broken; a copy of Server.Stones): StoneBody.Blast with the same push
         /// (Rising ones and ones frozen in a hitstop left alone, grounded ones set loose first, held to MaxStoneSpeed).</item>
         /// </list>
-        /// The games within 80 m get Applied(Exploded) at the centre (they play ExplodeEffect and ExplodeSound). One Debug line
+        /// The games within 80 m get Applied(Exploded) at the centre (they play ExplodeEffect and ExplodeSound), only when it
+        /// blasts (a radius above 0: ExplodeRadius 0 is no blast, and no look). One Debug line
         /// with what it pushed. Never throws: a failure is warned once, then Debug lines, and the rest of the blast goes on.</summary>
         internal static void Explode(Vector3 centre, float radius, float force, StoneBody? source) {
             try {
                 if (!Finite(centre)) return;
+                string what = !Logs.Debug ? "" : source != null ? $"{source.Kind} #{source.Id} of {source.OwnerName}" : "a blast";
+                if (!(radius > 0f) || float.IsInfinity(radius)) {   // ExplodeRadius 0: no blast, so no look on the games either
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Hits: {what} exploded at {centre}, blasting nothing ([EarthModifiers] ExplodeRadius {radius:0.##}); no look sent");
+                    return;
+                }
                 int games = 0;
                 try { games = Net.SendApplied(source != null ? source.Id : 0u, Wire.Exploded, centre); }
                 catch (Exception e) {
                     if (!blastSendFailed) { blastSendFailed = true; MelonLogger.Warning($"[Earth] Hits: telling the games a stone exploded failed (said once): {e.Message}"); }
-                }
-                string what = !Logs.Debug ? "" : source != null ? $"{source.Kind} #{source.Id} of {source.OwnerName}" : "a blast";
-                if (!(radius > 0f) || float.IsInfinity(radius)) {
-                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Hits: {what} exploded at {centre}, blasting nothing ([EarthModifiers] ExplodeRadius {radius:0.##}); the look goes to {games} game(s)");
-                    return;
                 }
                 if (!(force >= 0f) || float.IsInfinity(force)) force = 0f;
                 List<string>? said = Logs.Debug ? new List<string>() : null;
@@ -474,7 +477,7 @@ namespace Earthbending {
                         if (!sendFailed) { sendFailed = true; MelonLogger.Warning($"[Earth] Hits: sending a knockback failed (said once): {e.Message}"); }
                     }
                     if (sent) n++;
-                    said?.Add($"player {v.Name} {knock} m/s, hitstun {hitstun:0.###} s{(sent ? "" : " (NOT sent)")}");
+                    said?.Add($"player {Server.NameOf(v.Player)} {knock} m/s, hitstun {hitstun:0.###} s{(sent ? "" : " (NOT sent)")}");
                 }
                 catch (Exception e) { BlastFailed("a player", e); }
             }

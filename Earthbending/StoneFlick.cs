@@ -15,8 +15,9 @@ namespace Earthbending {
     // (PlayerController.RightController / LeftController / Head, the transforms Hold reads: StoneHold.LiveBody) and:
     //   - pulls the stone toward Pd.FlickTarget: the midpoint of the two hands plus [EarthModifiers] HoldDistance along the
     //     head's flat forward (the last one that had a flat way, the claim's yaw at first: a look straight up or down keeps it),
-    //     with Pd.Flick's PID (ruling C13's d x PdStepSeconds, ruling C15's gains by weight), x FlickScale, ForceMode.Force;
-    //     the integral starts at zero with each flick;
+    //     with Pd.Flick's PID (ruling C13's d x PdStepSeconds, ruling C15's gains by weight), x FlickScale, ForceMode.Force,
+    //     held so no step leaves the stone faster than [EarthModifiers] MaxStoneSpeed (ruling C36: Pd.CappedPull); the
+    //     integral starts at zero with each flick;
     //   - turns it toward Pd.FlickTurn: up from the B hand to the A hand (the pose's A, the claim's hand), forward the look made
     //     square to it: FlickTurnGain x the turn still to go (Pd.TurnVector, the short way) - FlickTurnDamp x its spin, an
     //     acceleration (ForceMode.Acceleration: the same on every stone).
@@ -44,6 +45,14 @@ namespace Earthbending {
 
         /// <summary>A look whose flat part is under this (within about 6 degrees of straight up or down) keeps the last way.</summary>
         const float MinFlatLook = 0.1f;
+
+        /// <summary>Sets <paramref name="kept"/> to <paramref name="look"/> made flat and length 1 when it has a flat way
+        /// (<see cref="MinFlatLook"/>); a look straight up or down (or none) keeps the last. Flick's and Hold's look (ruling
+        /// C34: StoneHold.cs aims along it too).</summary>
+        static void KeepFlatLook(Vector3 look, ref Vector3 kept) {
+            var flat = new Vector3(look.x, 0f, look.z);
+            if (flat.sqrMagnitude >= MinFlatLook * MinFlatLook) kept = flat.normalized;
+        }
 
         FlickGrip? flick;
         /// <summary>The stone each player flicks, by account (one at most).</summary>
@@ -106,12 +115,13 @@ namespace Earthbending {
             try {
                 if (body == null || body.isKinematic || State != StoneState.Flicked) { LetGoFlick(Logs.Debug ? $"it is {State}" : ""); return; }
                 if (!HandsOf(f, out Transform handA, out Transform handB, out Vector3 look, out string gone)) { LetGoFlick(gone); return; }
-                var flat = new Vector3(look.x, 0f, look.z);
-                if (flat.sqrMagnitude >= MinFlatLook * MinFlatLook) f.Look = flat.normalized;
+                KeepFlatLook(look, ref f.Look);
                 V3 a = V(handA.position), b = V(handB.position), way = V(f.Look);
                 V3 target = Pd.FlickTarget(a, b, way, Server.HoldDistance);
                 V3 error = target - V(body.worldCenterOfMass);
-                Vector3 force = U(Pd.Flick(error, ref f.Integral, V(body.velocity), body.mass, Time.fixedDeltaTime, Server.FlickScale, Server.PdStepSeconds));
+                V3 vel = V(body.velocity);
+                V3 pull = Pd.Flick(error, ref f.Integral, vel, body.mass, Time.fixedDeltaTime, Server.FlickScale, Server.PdStepSeconds);
+                Vector3 force = U(Pd.CappedPull(pull, vel, body.mass, Time.fixedDeltaTime, Server.MaxStoneSpeed));   // ruling C36
                 if (force != Vector3.zero) body.AddForce(force, ForceMode.Force);
                 (V3 forward, V3 up) turn = Pd.FlickTurn(a, b, way);
                 Quaternion togo = Quaternion.LookRotation(U(turn.forward), U(turn.up)) * Quaternion.Inverse(body.rotation);

@@ -107,7 +107,7 @@ Pushes are in N s: the speed is the push over the mass (2300 on a 275 kg Pillar 
 | **Stomp** | 1500 down; it moves only up and down until it lands, then stands | nothing |
 | **Uppercut** | 900 forward and 900 up | set loose, 1300 forward and 1300 up, spinning 5 rad/s top forward |
 | **Parry** | stops dead and floats 3 s, or until something moves it faster than 0.1 m/s | set loose, then floats |
-| **Hold** | follows A, 1 m ahead of it; let go (a throw) once faster than 5 m/s, after it has first settled within 0.5 m of its place | slides along the ground after A |
+| **Hold** | follows A, about 1 m ahead of it along where you look; let go (a throw) once faster than 5 m/s, after it has first settled within 0.5 m of its place | slides along the ground after A |
 | **Flick** | hangs 1 m ahead of the point between your hands and turns with them; only Stomp or a break drops it | refused |
 | **Explode** | marked | marked |
 
@@ -119,7 +119,7 @@ Pushes are in N s: the speed is the push over the mass (2300 on a 275 kg Pillar 
 ## Movement and hits
 
 - **Jump:** 6 m/s up (about 2.2 m). **Dash:** 8 m/s the way you look, with 0.5 m/s up. Both on your own game, with a dust puff.
-- **Power** = the stone's own, +1 on the ground (rising, still, sliding or stomped), +1 moving faster than 3 m/s.
+- **Power** = the stone's own, +1 still or sliding on the ground (not rising or stomped), +1 moving faster than 3 m/s.
 - **Hits:** a stone moving at 2 m/s or more itself hits creatures, and players it is closing on: 8 damage and 0.5 cripple per point of power, then it breaks. 8 and 0.5 are untuned guesses. A rising stone never hits. Your own stones can hit you, but not one you hold or flick.
 - **Knockback:** a struck player is pushed 4 m/s along the stone's way (level, or 45° up) and cannot bend for power x 0.7 / 3 s (never after a Disc).
 - **Clashes:** more power breaks less; equal, both break. Both first freeze and shake for 0.06 + 0.02 x (both powers) s, then the winner carries on at its old speed.
@@ -185,7 +185,7 @@ Everything is in `UserData\Earthbending.cfg`, written in full at the first start
 | `ParryBreakSpeed` | 0.1 | ... or until moved faster than this, m/s. |
 | `ExplodeRadius` | 3 | The blast's reach, m. |
 | `ExplodeForce` | 1000 | Its push on stones and loose objects, N s, times their share. |
-| `HoldDistance` | 1 | A held stone keeps this far ahead of the hand (a flicked one, of the point between the hands), m. |
+| `HoldDistance` | 1 | A held stone keeps about this far ahead of your top hand, along where you look (a flicked one, of the point between the hands), m. |
 | `HoldFreeScale` | 2500 | How hard Hold pulls a loose stone, N per metre off. |
 | `HoldGroundScale` | 1500 | The same for a standing stone, which slides after the hand. |
 | `HoldLetGoSpeed` | 5 | A held stone is let go (thrown) once faster than this, m/s ... |
@@ -303,7 +303,7 @@ The mod's only network message. The first byte is the kind, the second the wire 
 | 10 Knockback | the server | one game | velocity (3 floats), stun seconds (float) |
 | 11 Applied | the server | every game whose player's head is within 80 m | entity `Identifier` (uint), event (byte: a modifier as above, or 20 Broke, 21 Hitstop, 22 Exploded), position (3 floats) |
 
-- The game judges the pose and sends a claim, only when the server runs the mod. The server never judges poses; it checks the claim. A Summon: the stone on, its cooldown, the claimed head within `HeadSlackMetres` of the server's copy, natural ground at the spot. A Modify: its cooldown, a standing stone, in reach of the server's copy of the head and feet (plus `RangeSlackMetres`), allowed in the stone's state. Bytes out of range and numbers that are not finite are refused.
+- The game judges the pose and sends a claim, only when the server runs the mod. The server never judges poses; it checks the claim. A Summon: the stone on, its cooldown, the claimed head within `HeadSlackMetres` of the server's copy, natural ground at the spot. A Modify: its cooldown, a stone that still exists, in reach of the server's copy of the head and feet (plus `RangeSlackMetres`), allowed in the stone's state. Bytes out of range and numbers that are not finite are refused.
 - Applied events sent today: 2 Stomp (a stomped stone landed), 7 Explode (a stone was marked), 20, 21 and 22.
 - Hooks: the server listens from a postfix on `ServerHandler.ConnectionCreated`, a game from one on `JoinServerPipeline.ConnectionApprovedByServer`. Message numbers already taken by mods: 18 SyncLib, 19 this mod, 27 Blue's Archery Overhaul, 32 TavernLib, 137 ArmorRestored.
 - SyncLib prefab ids: `EarthDisc`, `EarthBall`, `EarthPillar`, `EarthCube`, `EarthWall`, under the mod's name and author. Never rename any of them after a server has used them.

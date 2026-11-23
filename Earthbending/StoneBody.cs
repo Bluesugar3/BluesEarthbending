@@ -93,8 +93,8 @@ namespace Earthbending {
         /// <summary>Its collider (a box, a sphere for the Ball), for the players' capsule test (Hits.TestPlayers).</summary>
         internal Collider? Shape => shape;
 
-        /// <summary>Spec 3.4: its power for hits and clashes now (StoneRules.Power, its kind's + grounded + moving faster than
-        /// [EarthDamage] MovingSpeed, from <see cref="Velocity"/>).</summary>
+        /// <summary>Spec 3.4: its power for hits and clashes now (StoneRules.Power, its kind's + still or sliding (ruling C35) +
+        /// moving faster than [EarthDamage] MovingSpeed, from <see cref="Velocity"/>).</summary>
         internal int Power => StoneRules.Power(Kind, State, Velocity.magnitude, Hits.MovingSpeed);
 
         /// <summary>Its world box (the collider's bounds), what a modifier's reach is judged on; a point at its place without a
@@ -433,7 +433,7 @@ namespace Earthbending {
                 return;
             }
             StoneState was = State, next = StoneRules.After(was, m);
-            if (m == Modifier.Hold) { TakeHold(by, hand, was, next); return; }
+            if (m == Modifier.Hold) { TakeHold(by, hand, flatForward, was, next); return; }
             if (m == Modifier.Flick) { TakeFlick(by, hand, flatForward, was); return; }
             if (grip != null && next != was) EndHold(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");
             if (flick != null && next != was) EndFlick(Logs.Debug ? $"{m} by {Server.NameOf(by)} made it {next}" : "");   // Stomp drops it

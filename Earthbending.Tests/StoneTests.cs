@@ -71,9 +71,6 @@ internal static class StoneTests {
         StoneRules.SetHitstop(StoneRules.DefaultHitstopSeconds, StoneRules.DefaultHitstopPerPower);
         Check("hitstop: defaults back", Near(StoneRules.HitstopSeconds(3, 1), 0.14f));
 
-        // ruling C19: only a contact is refused on a frozen stone (its life, its owner, the quit, clear, a double Straight still break it)
-        Check("breakable: the same answer every time", StoneRules.Breakable(false) == StoneRules.Breakable(false) && StoneRules.Breakable(true) == StoneRules.Breakable(true));
-
         // ruling C20: along the yaw at the speed, y the lift
         Check("dash: yaw 0 is (0, 0.5, 8)", NearV(MoveRules.Dash(0f, 8f, 0.5f), new V3(0f, 0.5f, 8f)));
         Check("dash: yaw -90 is (-8, 0.5, 0)", NearV(MoveRules.Dash(-90f, 8f, 0.5f), new V3(-8f, 0.5f, 0f)));
@@ -328,19 +325,27 @@ internal static class StoneTests {
     }
 
     // A flicked stone of this mass along x, pulled by Pd.Flick at the defaults (FlickScale, PdStepSeconds; the integral from
-    // zero as a flick begins) toward `target(t)`, starting at rest at x0, stepped as PhysX steps a body (semi-implicit Euler:
-    // the velocity first, then the place) every 1/hz s for `seconds`: how far it is from the target at the end, and `worst`
-    // its furthest. NaN when it runs away.
-    static float Flicked(float mass, float hz, System.Func<double, double> target, double x0, double seconds, out float worst) {
+    // zero as a flick begins) toward `target(t)`, held to the default MaxStoneSpeed each step (Pd.CappedPull, ruling C36, as
+    // StoneFlick.DriveFlick does), starting at rest at x0, stepped as PhysX steps a body (semi-implicit Euler: the velocity
+    // first, then the place) every 1/hz s for `seconds`: how far it is from the target at the end, and `worst` its furthest.
+    // NaN when it runs away.
+    static float Flicked(float mass, float hz, System.Func<double, double> target, double x0, double seconds, out float worst) =>
+        Flicked(mass, hz, target, x0, seconds, out worst, out _);
+
+    // As above; `peak` its fastest.
+    static float Flicked(float mass, float hz, System.Func<double, double> target, double x0, double seconds, out float worst, out float peak) {
         double x = x0, v = 0.0, dt = 1.0 / hz, t = 0.0;
         V3 integral = V3.Zero;
         worst = 0f;
+        peak = 0f;
         for (; t < seconds; t += dt) {
             var error = new V3((float)(target(t) - x), 0f, 0f);
             worst = System.Math.Max(worst, System.Math.Abs(error.X));
-            V3 f = Pd.Flick(error, ref integral, new V3((float)v, 0f, 0f), mass, (float)dt, Pd.DefaultFlickScale, Pd.DefaultPdStepSeconds);
+            var vel = new V3((float)v, 0f, 0f);
+            V3 f = Pd.CappedPull(Pd.Flick(error, ref integral, vel, mass, (float)dt, Pd.DefaultFlickScale, Pd.DefaultPdStepSeconds), vel, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
             v += f.X / mass * dt;
             x += v * dt;
+            peak = System.Math.Max(peak, (float)System.Math.Abs(v));
             if (double.IsNaN(x) || System.Math.Abs(x) > 1e6) { worst = float.NaN; return float.NaN; }
         }
         return (float)System.Math.Abs(target(t) - x);
@@ -436,23 +441,68 @@ internal static class StoneTests {
                 && !Held(150f, false, hz, _ => 0.0, -2.7, 10.0, out _, out _, out _);
         Check("model (C28): the same three at the server's 15, 30 and 50 Hz", rates);
 
-        // the target: the hand plus its own flat forward x HoldDistance; the head's flat forward when the hand points within
-        // 45 degrees of straight up or down (the Hold pose's fingers point up)
+        // ruling C34: the target is the hand plus the holder's look (the head's forward) made flat x HoldDistance, never the
+        // controller's own forward (its +z is not the fingers on every controller, and the server cannot see [EarthPose])
         var hand = new V3(0f, 1.5f, 0.4f);
         var east = new V3(1f, 0f, 0f);
-        Check("hold target: a hand pointing ahead", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, 1f), new V3(0f, 1.5f, 1.4f)));
-        Check("hold target: pointing down and ahead goes flat ahead", NearV(Pd.HoldTarget(hand, new V3(0f, -0.6f, 0.8f), east, 1f), new V3(0f, 1.5f, 1.4f)));
-        Check("hold target: fingers straight up take the head's flat forward", NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), east, 1f), new V3(1f, 1.5f, 0.4f)));
-        Check("hold target: fingers tilted back 37 degrees still take the head's", NearV(Pd.HoldTarget(hand, new V3(0f, 0.8f, -0.6f), new V3(0f, 0f, 1f), 1f), new V3(0f, 1.5f, 1.4f))
-            && NearV(Pd.HoldTarget(hand, new V3(0.6f, -0.8f, 0f), new V3(0f, 0f, 1f), 1f), new V3(0f, 1.5f, 1.4f)));
-        Check("hold target: past 45 degrees from up the hand's own way", NearV(Pd.HoldTarget(hand, new V3(0.75f, 0.6614f, 0f), new V3(0f, 0f, 1f), 1f), new V3(1f, 1.5f, 0.4f)));
-        Check("hold target: the head's forward is made flat and length 1", NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), new V3(0f, -3f, 4f), 1f), new V3(0f, 1.5f, 1.4f)));
-        Check("hold target: a forward of any length", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 5f), east, 1f), new V3(0f, 1.5f, 1.4f)));
-        Check("hold target: HoldDistance", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, 2.5f), new V3(0f, 1.5f, 2.9f)) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, 0f), hand));
-        Check("hold target: a distance not above 0 or not a number is the hand", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, float.NaN), hand) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), east, -1f), hand));
-        Check("hold target: a forward that is not a number takes the head's", NearV(Pd.HoldTarget(hand, new V3(float.NaN, 0f, 1f), east, 1f), new V3(1f, 1.5f, 0.4f)));
-        Check("hold target: nothing to go by is the hand itself", NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), new V3(0f, -1f, 0f), 1f), hand)
-            && NearV(Pd.HoldTarget(hand, V3.Zero, new V3(float.NaN, 0f, 0f), 1f), hand));
+        Check("hold target (C34): the hand plus the look x HoldDistance", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), 1f), new V3(0f, 1.5f, 1.4f))
+            && NearV(Pd.HoldTarget(hand, east, 1f), new V3(1f, 1.5f, 0.4f)));
+        Check("hold target (C34): the look made flat and length 1 (looking down or up at it)", NearV(Pd.HoldTarget(hand, new V3(0f, -3f, 4f), 1f), new V3(0f, 1.5f, 1.4f))
+            && NearV(Pd.HoldTarget(hand, new V3(0f, 0.8f, -0.6f), 1f), new V3(0f, 1.5f, -0.6f)) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 5f), 1f), new V3(0f, 1.5f, 1.4f)));
+        Check("hold target: HoldDistance", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), 2.5f), new V3(0f, 1.5f, 2.9f)));
+        Check("hold target: a distance of 0, below 0 or not a number is the hand", NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), 0f), hand)
+            && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), -1f), hand) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), float.NaN), hand)
+            && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, 1f), float.PositiveInfinity), hand));
+        Check("hold target: a look straight up or down, none, or not a number is the hand itself", NearV(Pd.HoldTarget(hand, new V3(0f, -1f, 0f), 1f), hand)
+            && NearV(Pd.HoldTarget(hand, new V3(0f, 1f, 0f), 1f), hand) && NearV(Pd.HoldTarget(hand, V3.Zero, 1f), hand)
+            && NearV(Pd.HoldTarget(hand, new V3(float.NaN, 0f, 1f), 1f), hand) && NearV(Pd.HoldTarget(hand, new V3(0f, 0f, float.PositiveInfinity), 1f), hand));
+        bool asFlick = true;
+        uint holdSeed = 777u;
+        for (int k = 0; k < 200; k++) {
+            V3 at = Rand(ref holdSeed), look = Rand(ref holdSeed);
+            asFlick &= NearV(Pd.HoldTarget(at, look, 1.3f), Pd.FlickTarget(at, at, look, 1.3f));
+        }
+        Check("hold target (C34): where Flick hangs a stone ahead of two hands both at the holding hand", asFlick);
+
+        // ruling C36: each driven step of a hold or a flick leaves the stone no faster than [EarthModifiers] MaxStoneSpeed:
+        // the velocity the step ends with (velocity + force x dt / mass) is held to the cap, its way kept; a step that stays
+        // within it keeps its force exactly
+        var pull = new V3(1500f, 0f, -750f);   // on 150 kg for 0.02 s: +0.2, 0, -0.1 m/s
+        Check("capped pull (C36): a step that stays within the cap keeps its force exactly", SameV(Pd.CappedPull(pull, new V3(10f, 0f, 0f), 150f, 0.02f, 20f), pull)
+            && SameV(Pd.CappedPull(pull, new V3(19.5f, 0f, 0f), 150f, 0.02f, 20f), pull) && SameV(Pd.CappedPull(pull, V3.Zero, 150f, 0.02f, 20f), pull));
+        V3 past = Pd.CappedPull(new V3(15000f, 0f, 0f), new V3(19f, 0f, 0f), 150f, 0.02f, 20f);   // 19 + 2 m/s
+        Check("capped pull (C36): a step that would pass the cap ends at it", NearF(past, new V3(7500f, 0f, 0f)));
+        var still = V3.Zero;
+        V3 slant = Pd.CappedPull(new V3(150000f, 0f, 150000f), still, 150f, 0.02f, 20f);   // (20, 0, 20) m/s uncapped
+        V3 slantEnd = still + slant * (0.02f / 150f);
+        Check("capped pull (C36): the way is kept", Near2(slantEnd.Length, 20f, 1e-3f) && Near2(slantEnd.X, slantEnd.Z, 1e-3f) && Near2(slantEnd.Y, 0f, 1e-4f));
+        V3 slow = Pd.CappedPull(V3.Zero, new V3(0f, -30f, 0f), 300f, 0.05f, 20f);
+        Check("capped pull (C36): a stone already past the cap is slowed to it", NearF(slow, new V3(0f, 60000f, 0f)));
+        Check("capped pull (C36): from the setting", NearF(Pd.CappedPull(new V3(15000f, 0f, 0f), new V3(9f, 0f, 0f), 150f, 0.02f, 10f), new V3(7500f, 0f, 0f)));
+        bool capDefault = true;
+        foreach (float cap in new[] { 0f, -1f, float.NaN, float.PositiveInfinity })
+            capDefault &= NearF(Pd.CappedPull(new V3(15000f, 0f, 0f), new V3(19f, 0f, 0f), 150f, 0.02f, cap), new V3(7500f, 0f, 0f));
+        Check("capped pull (C36): a cap not above 0 or not a number is the default 20", capDefault);
+        V3 big = new V3(1e6f, 0f, 0f);
+        Check("capped pull (C36): a mass or step not above 0 or not a number, or a velocity not a number, leaves the force",
+            SameV(Pd.CappedPull(big, V3.Zero, 0f, 0.02f, 20f), big) && SameV(Pd.CappedPull(big, V3.Zero, float.NaN, 0.02f, 20f), big)
+            && SameV(Pd.CappedPull(big, V3.Zero, float.PositiveInfinity, 0.02f, 20f), big) && SameV(Pd.CappedPull(big, V3.Zero, 150f, 0f, 20f), big)
+            && SameV(Pd.CappedPull(big, V3.Zero, 150f, float.NaN, 20f), big) && SameV(Pd.CappedPull(big, new V3(float.NaN, 0f, 0f), 150f, 0.02f, 20f), big));
+        Check("capped pull (C36): a force that is not a number pulls nothing", NearV(Pd.CappedPull(new V3(float.PositiveInfinity, 0f, 0f), V3.Zero, 150f, 0.02f, 20f), V3.Zero)
+            && NearV(Pd.CappedPull(new V3(0f, float.NaN, 0f), new V3(1f, 0f, 0f), 150f, 0.02f, 20f), V3.Zero));
+        Check("capped pull (C36): huge numbers stay finite", FiniteV(Pd.CappedPull(new V3(3e38f, -3e38f, 3e38f), new V3(-3e38f, 3e38f, 0f), 1e-38f, 3e38f, 3e38f))
+            && FiniteV(Pd.CappedPull(new V3(3e38f, -3e38f, 3e38f), V3.Zero, 3e38f, 1e-38f, 20f)));
+        // the models: a holder (or a flicker) 100 m off, as after a teleport or with the stone stuck behind something while
+        // they walk off: the pull grows with the distance, but no step leaves the stone faster than MaxStoneSpeed
+        bool heldCapped = true, flickCapped = true;
+        foreach (float hz in new[] { 15f, 30f, 45f, 50f }) {
+            Held(150f, false, hz, _ => 0.0, -100.0, 20.0, out float farPeak, out _, out _);
+            heldCapped &= farPeak <= StoneRules.DefaultMaxStoneSpeed + 1e-3f && farPeak > 19f;
+            Flicked(150f, hz, _ => 0.0, -100.0, 20.0, out _, out float flickPeak);
+            flickCapped &= flickPeak <= StoneRules.DefaultMaxStoneSpeed + 1e-3f && flickPeak > 19f;
+        }
+        Check("model (C36): a held Ball pulled from 100 m never passes MaxStoneSpeed (15-50 Hz)", heldCapped);
+        Check("model (C36): a flicked Ball pulled from 100 m never passes MaxStoneSpeed (15-50 Hz)", flickCapped);
 
         // letting go (ruling: past HoldLetGoSpeed, or grounded changed)
         Check("let go: at 8 m/s it holds on", !StoneRules.HoldLetGo(8f, false, 8f));
@@ -513,6 +563,9 @@ internal static class StoneTests {
 
     static bool FiniteV(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
 
+    // Exactly the same numbers (a force left untouched).
+    static bool SameV(V3 a, V3 b) => a.X == b.X && a.Y == b.Y && a.Z == b.Z;
+
     static bool Near2(float a, float b, float tol) => System.Math.Abs(a - b) <= tol;
 
     // A free stone of this mass held by Pd.Hold (defaults) behind a target moving along x at `speed`, stepped as PhysX steps a
@@ -531,9 +584,10 @@ internal static class StoneTests {
     }
 
     // Ruling C28's model: one held stone along x, stepped as PhysX steps a body (semi-implicit Euler) every 1/hz s with the
-    // default settings, through the arming (Pd.Trail, StoneRules.HoldArmed) and let-go (StoneRules.HoldLetGo) rules in the order
-    // StoneHold.DriveHold runs them, starting at rest at x0 under the target `target(t)`. True when it is let go (thrown);
-    // `peak` its fastest, `armed` whether it armed, `left` how far from the target it is at the end (or the let-go).
+    // default settings, through the arming (Pd.Trail, StoneRules.HoldArmed) and let-go (StoneRules.HoldLetGo) rules and the
+    // pull held to the default MaxStoneSpeed (Pd.CappedPull, ruling C36) in the order StoneHold.DriveHold runs them, starting
+    // at rest at x0 under the target `target(t)`. True when it is let go (thrown); `peak` its fastest, `armed` whether it
+    // armed, `left` how far from the target it is at the end (or the let-go).
     static bool Held(float mass, bool grounded, float hz, System.Func<double, double> target, double x0, double seconds, out float peak, out bool armed, out float left) {
         double x = x0, v = 0.0, dt = 1.0 / hz;
         peak = 0f;
@@ -543,7 +597,8 @@ internal static class StoneTests {
             float speed = (float)System.Math.Abs(v);
             armed = StoneRules.HoldArmed(armed, Pd.Trail(error, grounded), speed, Pd.DefaultHoldArmMetres, Pd.DefaultHoldLetGoSpeed);
             if (StoneRules.HoldLetGo(speed, false, Pd.DefaultHoldLetGoSpeed, armed)) { left = error.Length; return true; }
-            V3 f = Pd.Hold(error, new V3((float)v, 0f, 0f), mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds);
+            var vel = new V3((float)v, 0f, 0f);
+            V3 f = Pd.CappedPull(Pd.Hold(error, vel, mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds), vel, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
             v += f.X / mass * dt;
             x += v * dt;
             peak = System.Math.Max(peak, (float)System.Math.Abs(v));
@@ -857,6 +912,15 @@ internal static class StoneTests {
         Check("power: faster than, not at", StoneRules.Power(Ball, StoneState.Free, 3f, moving) == 1 && StoneRules.Power(Ball, StoneState.Free, 3.01f, moving) == 2);
         Check("power: a speed that is not a number is not moving", StoneRules.Power(Ball, StoneState.Free, float.NaN, moving) == 1);
         Check("power: a byte that is not a kind", StoneRules.Power((StoneKind)9, StoneState.Free, 0f, moving) == 0);
+        // ruling C35 (spec 3.4: "+ 1 if grounded (still or sliding)"): only Still and Sliding add the grounded 1
+        Check("power (C35): a still or sliding ball is 2, at rest", StoneRules.Power(Ball, StoneState.Still, 0f, moving) == 2 && StoneRules.Power(Ball, StoneState.Sliding, 0f, moving) == 2);
+        Check("power (C35): a rising pillar is its own 1 (rising is not still or sliding)", StoneRules.Power(Pillar, StoneState.Rising, 0f, moving) == 1);
+        Check("power (C35): a falling stomped ball is as a free one, its own + moving: 2", StoneRules.Power(Ball, StoneState.Stomped, 8f, moving) == 2
+            && StoneRules.Power(Ball, StoneState.Stomped, 8f, moving) == StoneRules.Power(Ball, StoneState.Free, 8f, moving));
+        Check("power (C35): a slow stomped wall is its own 3", StoneRules.Power(Wall, StoneState.Stomped, 1f, moving) == 3);
+        Check("power (C35): held, flicked and floating add nothing", StoneRules.Power(Cube, StoneState.Held, 0f, moving) == 2
+            && StoneRules.Power(Cube, StoneState.Flicked, 0f, moving) == 2 && StoneRules.Power(Cube, StoneState.Floating, 0f, moving) == 2);
+        Check("power (C35): grounded keeps its meaning elsewhere (rising and stomped are grounded)", StoneRules.IsGrounded(StoneState.Rising) && StoneRules.IsGrounded(StoneState.Stomped));
 
         // spec 2.2: equal power both break, else the weaker
         Check("clash: equal, both break", StoneRules.Clash(2, 2) == ClashResult.BothBreak);
