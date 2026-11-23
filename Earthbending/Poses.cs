@@ -86,6 +86,17 @@ namespace Earthbending {
         }
     }
 
+    /// <summary>What limits one hand in a pose (<see cref="PoseMatch.Parts"/>): the place's zone distance (0 the centre, 1 the
+    /// edge), and the palm's and the fingers' angles to the pose's in degrees (NaN: not checked).</summary>
+    internal struct HandParts {
+        public float Place, PalmDeg, FingerDeg;
+
+        /// <summary><c>place 0.31 palm 12 fingers 35 deg</c> (a part not checked is <c>-</c>).</summary>
+        public readonly override string ToString() => "place " + Place.ToString("0.00", CultureInfo.InvariantCulture) + " palm " + Deg(PalmDeg) + " fingers " + Deg(FingerDeg) + " deg";
+
+        static string Deg(float d) => float.IsNaN(d) ? "-" : d.ToString("0", CultureInfo.InvariantCulture);
+    }
+
     internal static class PoseMatch {
         /// <summary>Whether the hands strike the pose, as written (A = right) or mirrored (A = left), whichever is closer.
         /// <paramref name="score"/> is the largest of (the place's <see cref="Zone"/> distance, angle / cone) over every checked
@@ -127,6 +138,22 @@ namespace Earthbending {
             if (V3.Dot(na, na) == 0f || V3.Dot(nb, nb) == 0f) return 180f;
             double d = Math.Max(-1.0, Math.Min(1.0, V3.Dot(na, nb)));
             return (float)(Math.Acos(d) * 180.0 / Math.PI);
+        }
+
+        /// <summary>One hand's parts against one hand of a pose (the fire line and the trace's replay): the place's
+        /// <see cref="Zone"/> distance and the palm's and the fingers' angles in degrees; an angle the pose does not check is NaN.</summary>
+        public static HandParts Parts(in HandSpec h, in HandSample x) => new HandParts {
+            Place = Zone(in h, x.Pos - h.Pos),
+            PalmDeg = Checked(h.Palm) ? Angle(x.Palm, h.Palm) : float.NaN,
+            FingerDeg = Checked(h.Fingers) ? Angle(x.Fingers, h.Fingers) : float.NaN,
+        };
+
+        /// <summary>Each hand's <see cref="Parts"/> against the pose, with A on the right hand (<paramref name="rightIsA"/>) or
+        /// on the left (the mirror), as <see cref="Match"/> assigned it.</summary>
+        public static void Explain(in PoseSpec s, bool rightIsA, in HandSample right, in HandSample left, out HandParts r, out HandParts l) {
+            PoseSpec p = rightIsA ? s : s.Mirrored();
+            r = Parts(rightIsA ? p.A : p.B, in right);
+            l = Parts(rightIsA ? p.B : p.A, in left);
         }
 
         static float Ratio(float error, float tolerance) {
@@ -299,6 +326,9 @@ namespace Earthbending {
 
         public float MinHoldSeconds, RearmSeconds, StructureWindowSeconds, MoveCooldownSeconds;
         public float StructureDeepScore, StructureStillMetres, StructureStillSeconds;
+        /// <summary>A modifier or a movement fires once its score is at most this (or the hands rest in it), as a structure
+        /// does at <see cref="StructureDeepScore"/> (Ruling 37).</summary>
+        public float MoveDeepScore;
         public float[]? Cooldown;
 
         public static PoseValues Default {
@@ -313,9 +343,10 @@ namespace Earthbending {
                 c[(int)Move.Hold] = 0.8f;
                 c[(int)Move.Flick] = 0.8f;
                 c[(int)Move.Explode] = 0.3f;
-                // MinHoldSeconds 0: a pose fires the first frame the hands are inside it (spec 3.3, "flow, not hold")
+                // MinHoldSeconds 0: a pose counts the first frame the hands are inside it; it fires once deep or at rest
+                // there (Ruling 37, MoveDeepScore 0.6: the path tests pass from 0.4 to 0.7)
                 return new PoseValues { MinHoldSeconds = 0f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f,
-                    StructureDeepScore = 0.5f, StructureStillMetres = 0.01f, StructureStillSeconds = 0.06f, Cooldown = c };
+                    StructureDeepScore = 0.5f, StructureStillMetres = 0.01f, StructureStillSeconds = 0.06f, MoveDeepScore = 0.6f, Cooldown = c };
             }
         }
 
@@ -339,6 +370,7 @@ namespace Earthbending {
                 StructureDeepScore = Ok(StructureDeepScore, d.StructureDeepScore),
                 StructureStillMetres = Ok(StructureStillMetres, d.StructureStillMetres),
                 StructureStillSeconds = Ok(StructureStillSeconds, d.StructureStillSeconds),
+                MoveDeepScore = Ok(MoveDeepScore, d.MoveDeepScore),
                 Cooldown = c,
             };
         }
@@ -349,32 +381,39 @@ namespace Earthbending {
     /// <summary>Turns the hands of every frame into moves (spec 3.3). Each pose keeps its own state:
     /// <list type="bullet">
     /// <item>it counts once it has matched for <see cref="PoseValues.MinHoldSeconds"/> without a break (the default 0: the
-    /// first frame the hands are inside it, so a hand passing through a pose fires it), and that entry is judged once, then:
-    /// it fires, or it is used up (a gate, its cooldown or a better pose the same frame), and it fires again only after it
-    /// has stopped matching for <see cref="PoseValues.RearmSeconds"/>;</item>
+    /// first frame the hands are inside it); once it fires, or is used up, it fires again only after it has stopped matching
+    /// for <see cref="PoseValues.RearmSeconds"/>;</item>
+    /// <item>every move is followed while the hands are in it, never fired on a brush (Rulings 33 and 37): it fires once its
+    /// score is at most its deep score (<see cref="PoseValues.StructureDeepScore"/> for a structure,
+    /// <see cref="PoseValues.MoveDeepScore"/> for a modifier or a movement), or once the hands have stopped going deeper into
+    /// it (both hands within <see cref="PoseValues.StructureStillMetres"/> of where they were, and its score no better, for
+    /// <see cref="PoseValues.StructureStillSeconds"/>). So the edge of one zone crossed on the way to another fires
+    /// nothing, and a pose struck loosely fires when the hands stop in it;</item>
+    /// <item>a candidate that may not fire now (stunned, its cooldown, a structure not armed, the ground rules, movement while
+    /// armed) is used up; when a move fires, every other pose the hands are in that frame is used up too (no second fire a
+    /// frame later where two zones overlap), except an armed structure when a modifier or movement fires (it still fires
+    /// as the hands go on into it); and while the hands stay in the pose that fired, another fires at rest only when it
+    /// scores better than that one (no second fire at an edge entered after the fire);</item>
     /// <item><see cref="Move.Base"/> never fires: while it counts on a frame where no structure matches (a clean base,
-    /// Ruling 34) it arms the structures, which fire only when the base counted within
+    /// Ruling 34) and the hands have arrived in it (deep at <see cref="PoseValues.StructureDeepScore"/>, or at rest: the
+    /// review's I-3) it arms the structures, which fire only when the base counted within
     /// <see cref="PoseValues.StructureWindowSeconds"/> before the structure's pose started matching, with the player grounded
     /// on natural ground; firing a structure disarms. While armed (the base counted within that window of now) Jump and Dash
     /// do not fire, so moving from the base into a structure never dashes on the way;</item>
-    /// <item>an armed structure is not judged on entry but followed (Ruling 33): of the armed structures the hands are in,
-    /// the best-scored fires once its score is at most <see cref="PoseValues.StructureDeepScore"/>, or once the hands have
-    /// stopped going deeper into it (both hands within <see cref="PoseValues.StructureStillMetres"/> of where they were, and
-    /// its score no better, for <see cref="PoseValues.StructureStillSeconds"/>). So the edge of one structure crossed on
-    /// the way to another fires nothing, and a structure struck loosely fires when the hands stop in it;</item>
     /// <item>modifiers need natural ground under a grounded player, or the air; movement needs natural ground under a
     /// grounded player; each move waits out its own cooldown;</item>
     /// <item>with anything in a hand nothing counts and every pose and the arming start over (the cooldowns stay); while
     /// stunned nothing fires (the base still arms);</item>
-    /// <item>of the poses that may fire in one frame, an armed structure first, then modifiers, then movement, and within
-    /// one kind the lowest score; one move a frame.</item>
+    /// <item>three groups in order, an armed structure, then modifiers, then movement: of each the best-scored candidate
+    /// leads, and the first group whose lead is ready fires; a lead that is not ready holds back no group after it. One move
+    /// a frame.</item>
     /// </list></summary>
     internal sealed class PoseMachine {
         struct State {
             public bool Matching, Used, RightIsA, Counts;
             public double Since, LeftAt;
             public float Score;
-            public float Deepest;       // the best score since it started matching (to follow a structure) ...
+            public float Deepest;       // the best score since it started matching (to follow a move) ...
             public double DeepestAt;    // ... and when that was
         }
 
@@ -387,7 +426,11 @@ namespace Earthbending {
         readonly State[] states;
         readonly PoseValues values;
         readonly double[] lastFired = new double[PoseValues.MoveCount];
+        const int Groups = 3;   // an armed structure, a modifier, movement (Rank)
+        readonly int[] lead = new int[Groups];
+        readonly float[] leadScore = new float[Groups];
         double baseAt = double.NegativeInfinity;
+        int held = -1;   // the pose that fired last, while the hands are still in it (review I-1); -1: none
 
         // the hands' stillness: where both were when one last moved more than StructureStillMetres, and since when
         V3 stillRight, stillLeft;
@@ -428,7 +471,8 @@ namespace Earthbending {
             Still(now, in right, in left);
 
             // every pose's state first, so the base's arming does not depend on the order of the list
-            bool baseCounts = false, structureMatches = false;
+            bool structureMatches = false;
+            int baseIndex = -1;
             for (int i = 0; i < specs.Length; i++) {
                 ref State st = ref states[i];
                 bool matches = PoseMatch.Match(in specs[i], in right, in left, out bool rA, out float score);
@@ -452,38 +496,45 @@ namespace Earthbending {
                 st.Score = score;
                 st.Counts = now - st.Since >= values.MinHoldSeconds - Eps;
                 if (IsStructure(specs[i].Move)) structureMatches = true;
-                if (st.Counts && specs[i].Move == Move.Base) baseCounts = true;
+                if (st.Counts && specs[i].Move == Move.Base) baseIndex = i;
             }
-            if (baseCounts && !structureMatches) baseAt = now;   // Ruling 34: only a clean base arms
+            // Ruling 34: only a clean base arms (no structure matching); and (review I-3) only on arrival, as a move fires:
+            // Base deep (StructureDeepScore) or the hands at rest in it, so a brush of its edge arms nothing
+            if (baseIndex >= 0 && !structureMatches && Ready(baseIndex, now, values.StructureDeepScore)) baseAt = now;
+            if (held >= 0 && !states[held].Matching) held = -1;
 
-            int best = -1, bestRank = int.MaxValue, lead = -1;
-            float bestScore = float.PositiveInfinity, leadScore = float.PositiveInfinity;
+            // every move is followed (Rulings 33, 37): a candidate is used up only when it may not fire now (stunned, its
+            // cooldown, not armed, the ground rules, movement while armed) or when a move fires. Of each group (0 an armed
+            // structure, 1 a modifier, 2 movement) the best-scored candidate leads; the first group in that order whose lead
+            // is ready (deep enough, or the hands at rest in it) fires. A lead that is not ready holds back nothing after it
+            for (int g = 0; g < Groups; g++) { lead[g] = -1; leadScore[g] = float.PositiveInfinity; }
             for (int i = 0; i < specs.Length; i++) {
                 ref State st = ref states[i];
                 Move move = specs[i].Move;
                 if (!st.Counts || st.Used || move == Move.Base) continue;
-                // a modifier's or a movement's entry is judged once: it fires now or not at all. A structure is followed
-                // (Ruling 33): it is used up only when it may not fire (stunned, its cooldown, not armed, not on natural
-                // ground) or when it fires
-                bool followed = IsStructure(move);
-                if (!followed || stunned) st.Used = true;
-                if (stunned) continue;
+                if (stunned) { st.Used = true; continue; }
                 int rank = Rank(move, st.Since, now, grounded, onNatural);
                 if (rank < 0) { st.Used = true; continue; }
-                if (followed) {
-                    if (st.Score < leadScore) { lead = i; leadScore = st.Score; }
-                    continue;
-                }
-                if (rank < bestRank || (rank == bestRank && st.Score < bestScore)) { best = i; bestRank = rank; bestScore = st.Score; }
+                if (st.Score < leadScore[rank]) { lead[rank] = i; leadScore[rank] = st.Score; }
             }
-            // the best-scored armed structure the hands are in fires at its deepest point, before anything else
-            if (lead >= 0 && Ready(in states[lead], now)) {
-                best = lead;
-                states[lead].Used = true;
-            }
+            int best = -1;
+            for (int g = 0; g < Groups && best < 0; g++)
+                if (lead[g] >= 0 && Ready(lead[g], now, g == 0 ? values.StructureDeepScore : values.MoveDeepScore)) best = lead[g];
             if (best < 0) return Move.None;
-
+            // every pose the hands are in now is used up with it: it must stop matching for RearmSeconds before it can fire,
+            // or hands resting where two zones overlap would fire the second a frame later (the base is no move: it still
+            // arms). But a modifier or a movement never uses up an armed structure the hands are heading into (review I-2):
+            // that one still fires deep, or at rest once it scores better than the move that fired (I-1)
             Move fired = specs[best].Move;
+            for (int i = 0; i < specs.Length; i++) {
+                ref State st = ref states[i];
+                if (!st.Matching || specs[i].Move == Move.Base) continue;
+                if (i != best && !IsStructure(fired) && IsStructure(specs[i].Move) && st.Counts && !st.Used
+                    && Rank(specs[i].Move, st.Since, now, grounded, onNatural) == 0) continue;
+                st.Used = true;
+            }
+            held = best;
+
             lastFired[(int)fired] = now;
             if (IsStructure(fired)) baseAt = double.NegativeInfinity;
             rightIsA = states[best].RightIsA;
@@ -502,12 +553,17 @@ namespace Earthbending {
             return -1;
         }
 
-        /// <summary>A followed structure fires now: deep inside it, or the hands have stopped going deeper into it (both
-        /// hands still, and its score no better, for StructureStillSeconds).</summary>
-        bool Ready(in State st, double now) {
-            if (st.Score <= values.StructureDeepScore) return true;
+        /// <summary>A followed pose is ready now: deep inside it (its score at most <paramref name="deep"/>: StructureDeepScore
+        /// for a structure and Base, MoveDeepScore for the others), or the hands have stopped going deeper into it (both hands
+        /// still, and its score no better, for StructureStillSeconds). While the hands are still in the pose that fired last,
+        /// another is ready at rest only when it scores better than that one does now (review I-1: never a second fire at an
+        /// edge once the hands settle).</summary>
+        bool Ready(int i, double now, float deep) {
+            ref State st = ref states[i];
+            if (st.Score <= deep) return true;
             double wait = values.StructureStillSeconds - Eps;
-            return now - stillSince >= wait && now - st.DeepestAt >= wait;
+            if (!(now - stillSince >= wait && now - st.DeepestAt >= wait)) return false;
+            return held < 0 || held == i || st.Score < states[held].Score;
         }
 
         /// <summary>Follows the hands' stillness: both within StructureStillMetres of where they were at
@@ -532,6 +588,7 @@ namespace Earthbending {
         public void Reset() {
             for (int i = 0; i < states.Length; i++) states[i] = new State { LeftAt = double.NegativeInfinity };
             baseAt = double.NegativeInfinity;
+            held = -1;
             stillKnown = false;
             stillSince = double.PositiveInfinity;
         }
@@ -650,6 +707,197 @@ namespace Earthbending {
             }
             return string.Join(",", c);
         }
+    }
+
+    /// <summary>One frame of the hands trace (<see cref="PoseTrace"/>): the time, the practice guide's step (None: none), what
+    /// the machine was given (hands empty, grounded, on natural ground, stunned), whether the structures were armed after the
+    /// frame, the head's yaw, and both hands in the body frame the machine sees.</summary>
+    internal struct TraceFrame {
+        public double T;
+        public Move Practice;
+        public bool Empty, Grounded, Natural, Stunned, Armed;
+        public float Yaw;
+        public HandSample Right, Left;
+    }
+
+    /// <summary>A move fired, as the trace records it: the time, the move, its score, and whether A was the right hand.</summary>
+    internal struct TraceFire {
+        public double T;
+        public Move Move;
+        public float Score;
+        public bool RightIsA;
+    }
+
+    /// <summary>The hands trace (task 17a, <c>[EarthPose] Trace</c>): <c>UserData\Earthbending\pose-trace-&lt;yyyyMMdd-HHmmss&gt;.csv</c>,
+    /// a <see cref="ValuesLine"/>, the <see cref="Header"/>, then one row per frame (at most one every <see cref="RowSeconds"/>,
+    /// <see cref="Due"/>, and the frame of every fire) and an event row whenever a move fires: <c>t,fired,Move,score,right|left</c> (A's hand). Numbers in the invariant culture,
+    /// 3 decimals. PoseTraceFile.cs writes it; Earthbending.Tests' <c>--replay</c> reads it with <see cref="Parse"/>.</summary>
+    internal static class PoseTrace {
+        /// <summary>At most 45 frame rows a second.</summary>
+        public const double RowSeconds = 1.0 / 45.0;
+        /// <summary>The file stops growing at 20 MB.</summary>
+        public const long MaxBytes = 20L * 1024 * 1024;
+        public const string FiredWord = "fired";
+        const int Columns = 26;
+        const double Eps = 1e-6;
+
+        public static readonly string Header = MakeHeader();
+
+        static string MakeHeader() {
+            var c = new List<string> { "t", "practice", "empty", "grounded", "natural", "stunned", "armed", "yaw" };
+            foreach (string hand in new[] { "right", "left" })
+                foreach (string part in new[] { "", "Palm", "Fingers" })
+                    foreach (char k in "XYZ") c.Add(hand + part + k);
+            return string.Join(",", c);
+        }
+
+        /// <summary>The file's name for a trace started at <paramref name="at"/> (local time).</summary>
+        public static string FileName(DateTime at) => "pose-trace-" + at.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".csv";
+
+        /// <summary>Whether a frame row is due at <paramref name="now"/>, the last row's slot at <paramref name="lastRow"/>.</summary>
+        public static bool Due(double now, double lastRow) => now - lastRow >= RowSeconds - Eps;
+
+        /// <summary>The slot of a row written at <paramref name="now"/> after the slot <paramref name="lastRow"/> (review M-2):
+        /// one <see cref="RowSeconds"/> on, but never more than one behind now. A frame clock that jitters then still gives
+        /// about 45 rows a second (with <c>lastRow = now</c> two short frames in a row skipped one: about 36), and never more.</summary>
+        public static double NextSlot(double lastRow, double now) => Math.Max(lastRow + RowSeconds, now - RowSeconds);
+
+        /// <summary>The start of the line holding the machine's numbers the game ran with (<see cref="ValuesLine"/>).</summary>
+        public const string ValuesPrefix = "# values";
+
+        /// <summary>The machine's numbers a replay can be given (<c>key=value</c>), as the <c>[EarthPose]</c> settings name them.</summary>
+        public static readonly string[] ValueKeys = { "MoveDeepScore", "StructureDeepScore", "StructureStillMetres", "StructureStillSeconds", "RearmSeconds", "StructureWindowSeconds", "MinHoldSeconds" };
+
+        /// <summary><c># values MoveDeepScore=0.6 StructureDeepScore=0.5 ...</c>: every one of <see cref="ValueKeys"/>, the
+        /// invariant culture, exact. The trace's first line; the game writes it again when the numbers change while it traces.</summary>
+        public static string ValuesLine(in PoseValues v) {
+            var sb = new System.Text.StringBuilder(ValuesPrefix);
+            foreach (string k in ValueKeys) sb.Append(' ').Append(k).Append('=').Append(Get(in v, k).ToString("R", CultureInfo.InvariantCulture));
+            return sb.ToString();
+        }
+
+        static float Get(in PoseValues v, string key) {
+            switch (key) {
+                case "MoveDeepScore": return v.MoveDeepScore;
+                case "StructureDeepScore": return v.StructureDeepScore;
+                case "StructureStillMetres": return v.StructureStillMetres;
+                case "StructureStillSeconds": return v.StructureStillSeconds;
+                case "RearmSeconds": return v.RearmSeconds;
+                case "StructureWindowSeconds": return v.StructureWindowSeconds;
+                default: return v.MinHoldSeconds;
+            }
+        }
+
+        /// <summary>Sets one number from <c>Key=value</c> (a key of <see cref="ValueKeys"/>, any case; a number of 0 or more
+        /// in the invariant culture). False, and <paramref name="v"/> unchanged, with <paramref name="why"/> otherwise.</summary>
+        public static bool TrySet(ref PoseValues v, string? keyValue, out string why) {
+            string text = (keyValue ?? "").Trim();
+            int eq = text.IndexOf('=');
+            string key = eq > 0 ? text.Substring(0, eq).Trim() : "";
+            string known = Array.Find(ValueKeys, k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase)) ?? "";
+            if (known.Length == 0) { why = "'" + text + "' is not Key=value with a key of " + string.Join(", ", ValueKeys); return false; }
+            if (!float.TryParse(text.Substring(eq + 1).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float f) || !(f >= 0f) || float.IsInfinity(f)) {
+                why = "'" + text + "': the value is not a number of 0 or more";
+                return false;
+            }
+            switch (known) {
+                case "MoveDeepScore": v.MoveDeepScore = f; break;
+                case "StructureDeepScore": v.StructureDeepScore = f; break;
+                case "StructureStillMetres": v.StructureStillMetres = f; break;
+                case "StructureStillSeconds": v.StructureStillSeconds = f; break;
+                case "RearmSeconds": v.RearmSeconds = f; break;
+                case "StructureWindowSeconds": v.StructureWindowSeconds = f; break;
+                default: v.MinHoldSeconds = f; break;
+            }
+            why = "";
+            return true;
+        }
+
+        /// <summary>The numbers of a trace's first <see cref="ValuesPrefix"/> line over <paramref name="fallback"/> (found
+        /// false: no such line, the fallback as it was). Each <c>key=value</c> that does not read is named in
+        /// <paramref name="errors"/> and left as the fallback's. <paramref name="later"/> counts further values lines (the
+        /// numbers changed while the game traced).</summary>
+        public static PoseValues ValuesOf(string[] lines, PoseValues fallback, out bool found, out int later, out List<string> errors) {
+            errors = new List<string>();
+            found = false;
+            later = 0;
+            PoseValues v = fallback;
+            foreach (string raw in lines ?? new string[0]) {
+                string line = (raw ?? "").Trim();
+                if (!line.StartsWith(ValuesPrefix, StringComparison.Ordinal)) continue;
+                if (found) { later++; continue; }
+                found = true;
+                foreach (string kv in line.Substring(ValuesPrefix.Length).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+                    if (!TrySet(ref v, kv, out string why)) errors.Add(why);
+            }
+            return v;
+        }
+
+        /// <summary>One frame's row (no line break).</summary>
+        public static string Row(in TraceFrame f) {
+            var sb = new System.Text.StringBuilder(200);
+            AppendRow(sb, in f);
+            return sb.ToString();
+        }
+
+        public static void AppendRow(System.Text.StringBuilder sb, in TraceFrame f) {
+            sb.Append(N(f.T)).Append(',').Append(f.Practice == Move.None ? "" : f.Practice.ToString())
+                .Append(',').Append(B(f.Empty)).Append(',').Append(B(f.Grounded)).Append(',').Append(B(f.Natural))
+                .Append(',').Append(B(f.Stunned)).Append(',').Append(B(f.Armed)).Append(',').Append(N(f.Yaw));
+            foreach (HandSample h in new[] { f.Right, f.Left })
+                foreach (V3 v in new[] { h.Pos, h.Palm, h.Fingers })
+                    sb.Append(',').Append(N(v.X)).Append(',').Append(N(v.Y)).Append(',').Append(N(v.Z));
+        }
+
+        /// <summary>A fire's event row (no line break).</summary>
+        public static string Fire(in TraceFire f) => N(f.T) + "," + FiredWord + "," + f.Move + "," + N(f.Score) + "," + (f.RightIsA ? "right" : "left");
+
+        static string B(bool b) => b ? "1" : "0";
+        static string N(double d) => d.ToString("0.000", CultureInfo.InvariantCulture);
+
+        /// <summary>A trace's lines: its frames and its fires, in the file's order. The header (and any line starting
+        /// <c>t,</c>), <c>#</c> lines (the values: <see cref="ValuesOf"/>) and blank lines are skipped; a line that does not read is skipped and named in <paramref name="errors"/>.</summary>
+        public static void Parse(string[] lines, out List<TraceFrame> frames, out List<TraceFire> fires, out List<string> errors) {
+            frames = new List<TraceFrame>();
+            fires = new List<TraceFire>();
+            errors = new List<string>();
+            for (int i = 0; i < (lines?.Length ?? 0); i++) {
+                string line = (lines![i] ?? "").Trim();
+                if (line.Length == 0 || line.StartsWith("t,", StringComparison.Ordinal) || line.StartsWith("#", StringComparison.Ordinal)) continue;
+                string[] c = line.Split(',');
+                if (c.Length == 5 && c[1] == FiredWord) {
+                    if (D(c[0], out double t) && PoseLibrary.TryMove(c[2], out Move m) && F(c[3], out float score) && (c[4] == "right" || c[4] == "left"))
+                        fires.Add(new TraceFire { T = t, Move = m, Score = score, RightIsA = c[4] == "right" });
+                    else errors.Add("line " + (i + 1) + ": not a fired row: " + line);
+                    continue;
+                }
+                if (c.Length != Columns) { errors.Add("line " + (i + 1) + ": " + c.Length + " cells, want " + Columns); continue; }
+                var f = new TraceFrame();
+                Move practice = Move.None;
+                bool ok = D(c[0], out f.T) && (c[1].Length == 0 || PoseLibrary.TryMove(c[1], out practice))
+                    && Flag(c[2], out f.Empty) && Flag(c[3], out f.Grounded) && Flag(c[4], out f.Natural) && Flag(c[5], out f.Stunned) && Flag(c[6], out f.Armed)
+                    && F(c[7], out f.Yaw) && Hand(c, 8, out f.Right) && Hand(c, 17, out f.Left);
+                f.Practice = practice;
+                if (ok) frames.Add(f);
+                else errors.Add("line " + (i + 1) + ": a cell that does not read: " + line);
+            }
+        }
+
+        static bool Hand(string[] c, int at, out HandSample h) {
+            h = default;
+            var n = new float[9];
+            for (int i = 0; i < 9; i++) if (!F(c[at + i], out n[i])) return false;
+            h = new HandSample(new V3(n[0], n[1], n[2]), new V3(n[3], n[4], n[5]), new V3(n[6], n[7], n[8]));
+            return true;
+        }
+
+        static bool Flag(string s, out bool b) {
+            b = s == "1";
+            return s == "0" || s == "1";
+        }
+
+        static bool D(string s, out double d) => double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out d) && !double.IsNaN(d) && !double.IsInfinity(d);
+        static bool F(string s, out float f) => float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out f);
     }
 
     /// <summary>The capture guide's words and rules (Task 3b; CaptureGuide.cs draws them): what each hand does in each of

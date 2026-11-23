@@ -31,6 +31,11 @@ namespace Earthbending {
         static Move pending, shownMarker;
         static float pendingScore;
         static int shownVersion = -1, shownPoses = -1;
+        static Move current;   // the step being tried now (None: none), for the hands trace
+
+        /// <summary>The move the practice guide asks for now: its current step's move while it is tried; None while a result
+        /// is shown, once done, and with the guide off or away (the hands trace's practice column).</summary>
+        internal static Move Current => active ? current : Move.None;
 
         /// <summary>From Main.OnInitializeMelon on games, after Bend.Init.</summary>
         internal static void Init() {
@@ -98,6 +103,7 @@ namespace Earthbending {
             clock += Time.unscaledDeltaTime;
             PracticeView v = run!.Step(clock, pending, pendingScore);
             pending = Move.None;
+            current = v.Phase == PracticePhase.Try ? v.Move : Move.None;
             if (v.Log != null) MelonLogger.Msg(v.Log);
 
             if (rewrite || v.Version != shownVersion) {

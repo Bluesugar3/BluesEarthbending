@@ -22,7 +22,8 @@ namespace Earthbending {
     // of the same move when that file has one: PoseLibrary.Merge; a line of it that does not parse is one warning, and its pose
     // stays the built-in one) and the four [EarthPose] timings, and built again only when one of those changed: at a settings
     // reload, or when poses.txt's write time changed (looked at every 2 s). A rebuild starts every pose and cooldown over.
-    // Bend.Tick allocates nothing on a frame without a fired move or a look at poses.txt.
+    // Bend.Tick allocates nothing on a frame without a fired move or a look at poses.txt, unless [EarthPose] Trace is on
+    // (PoseTraceFile.cs; off, one bool test). Every move fires on arrival, deep or at rest in it (Ruling 37, PoseMachine).
 
     /// <summary>Who may bend.</summary>
     internal static class Bender {
@@ -37,7 +38,7 @@ namespace Earthbending {
         const float PosesLookSeconds = 2f;
 
         static MelonPreferences_Entry<float>? minHold, rearm, structureWindow, moveCooldown, groundGrace, jumpSpeedEntry, poseHaptic, poseHapticSeconds;
-        static MelonPreferences_Entry<float>? structureDeep, structureStillMetres, structureStillSeconds;
+        static MelonPreferences_Entry<float>? structureDeep, structureStillMetres, structureStillSeconds, moveDeep;
         static float jumpSpeed = DefaultJumpSpeed, haptic = DefaultPoseHaptic, hapticSeconds = DefaultPoseHapticSeconds;
 
         static PoseMachine? machine;
@@ -67,6 +68,9 @@ namespace Earthbending {
         /// <summary>Another number each time the machine was built again (poses.txt or a timing changed).</summary>
         internal static int PosesVersion { get; private set; }
 
+        /// <summary>The machine's numbers as it runs now (the trace's values line).</summary>
+        internal static PoseValues Values => built;
+
         /// <summary>A move's pose as the machine runs it (poses.txt's over the built-in one). False for a move with no pose.</summary>
         internal static bool Pose(Move move, out PoseSpec spec) {
             foreach (PoseSpec s in running)
@@ -79,13 +83,14 @@ namespace Earthbending {
         internal static void Init() {
             PoseValues d = PoseValues.Default;
             MelonPreferences_Category pose = Cfg.Category("EarthPose");
-            minHold = pose.CreateEntry("MinHoldSeconds", d.MinHoldSeconds, description: "Per game. A pose counts once the hands have been inside it this long without a break. 0 (the default): the first frame they are inside it, so a pose fires as the hands pass through it (flow, not hold). 0 or more.");
+            minHold = pose.CreateEntry("MinHoldSeconds", d.MinHoldSeconds, description: "Per game. A pose counts once the hands have been inside it this long without a break. 0 (the default): from the first frame they are inside it; it then fires once the hands are deep in it or rest in it (MoveDeepScore, StructureDeepScore, StructureStillMetres). 0 or more.");
             rearm = pose.CreateEntry("RearmSeconds", d.RearmSeconds, description: "Per game. A pose fires again only after the hands have left it for this long. 0 or more.");
             structureWindow = pose.CreateEntry("StructureWindowSeconds", d.StructureWindowSeconds, description: "Per game. A structure pose fires only when the base pose was held within this many seconds before it. 0 or more.");
             moveCooldown = pose.CreateEntry("MoveCooldownSeconds", d.MoveCooldownSeconds, description: "Per game. After a Jump (or a Dash) fires, the same move waits this long before it can fire again. 0 or more.");
-            structureDeep = pose.CreateEntry("StructureDeepScore", d.StructureDeepScore, description: "Per game. A structure (Disc, Ball, Pillar, Cube, Wall) is not fired as the hands enter it but at its deepest point, so the edge of one crossed on the way to another fires nothing: of the structures the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.5: half way in), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). 0 or more; 1 or more fires on entry.");
-            structureStillMetres = pose.CreateEntry("StructureStillMetres", d.StructureStillMetres, description: "Per game. A structure struck loosely (never as deep as StructureDeepScore) fires once both hands have stayed within this many metres of where they were for StructureStillSeconds, and it has got no deeper meanwhile. Hands moving slower than this over that time count as stopped (0.01 m in 0.06 s: about 0.17 m/s). 0 or more.");
-            structureStillSeconds = pose.CreateEntry("StructureStillSeconds", d.StructureStillSeconds, description: "Per game. See StructureStillMetres: how long the hands must be still in a structure struck loosely before it fires. 0 or more.");
+            structureDeep = pose.CreateEntry("StructureDeepScore", d.StructureDeepScore, description: "Per game. A structure (Disc, Ball, Pillar, Cube, Wall) is not fired as the hands enter it but at its deepest point, so the edge of one crossed on the way to another fires nothing: of the structures the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.5: half way in), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). The base pose arms the structures the same way: only deep (this score) or with the hands at rest in it, so brushing its edge arms nothing. 0 or more; 1 or more fires on entry.");
+            moveDeep = pose.CreateEntry("MoveDeepScore", d.MoveDeepScore, description: "Per game. A modifier (Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode) or a movement (Jump, Dash) is not fired as the hands enter it but once they are deep in it, so the edge of one crossed on the way to another fires nothing: of the moves the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.6 by default), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). 0 or more; 1 or more fires on entry.");
+            structureStillMetres = pose.CreateEntry("StructureStillMetres", d.StructureStillMetres, description: "Per game. Every move, not only the structures (the name is older): a move struck loosely (never as deep as MoveDeepScore, or StructureDeepScore for a structure) fires once both hands have stayed within this many metres of where they were for StructureStillSeconds, and it has got no deeper meanwhile. Hands moving slower than this over that time count as stopped (0.01 m in 0.06 s: about 0.17 m/s), but the move's score must also stop getting better: hands drifting toward its centre by a few cm a second, or a wrist or head turning about 10 degrees a second, keep it waiting until they stop. 0 or more.");
+            structureStillSeconds = pose.CreateEntry("StructureStillSeconds", d.StructureStillSeconds, description: "Per game. Every move, not only the structures (the name is older). See StructureStillMetres: how long the hands must be still in a move struck loosely before it fires. 0 or more.");
             groundGrace = pose.CreateEntry("GroundGraceSeconds", DefaultGroundGraceSeconds, description: "Per game. A pose counts you as standing for this long after the game last had you on the ground, on the ground you stood on then (the game's on-the-ground flag flickers while walking, and a pose judged in a flicker would be used up). 0 to 0.5 (more is used as 0.5: a longer grace would let a Jump fire well after leaving the ground).");
             jumpSpeedEntry = Cfg.Category("EarthMovement").CreateEntry("JumpSpeed", DefaultJumpSpeed, description: "Per game. The Jump pose pushes you up at this many m/s (6: about 2.2 m high). 0 or more.");
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
@@ -94,6 +99,7 @@ namespace Earthbending {
             posesPath = Path.Combine(MelonEnvironment.UserDataDirectory, "Earthbending", "poses.txt");
             Apply();
             Cfg.Changed += Apply;
+            PoseTraceFile.Init();   // [EarthPose] Trace
         }
 
         static void Apply() {
@@ -114,6 +120,7 @@ namespace Earthbending {
             v.StructureDeepScore = Cfg.NotNegative(structureDeep, "EarthPose", "StructureDeepScore", v.StructureDeepScore);
             v.StructureStillMetres = Cfg.NotNegative(structureStillMetres, "EarthPose", "StructureStillMetres", v.StructureStillMetres);
             v.StructureStillSeconds = Cfg.NotNegative(structureStillSeconds, "EarthPose", "StructureStillSeconds", v.StructureStillSeconds);
+            v.MoveDeepScore = Cfg.NotNegative(moveDeep, "EarthPose", "MoveDeepScore", v.MoveDeepScore);
             wanted = v;
             Build();
         }
@@ -138,14 +145,16 @@ namespace Earthbending {
             machine = new PoseMachine(poses, wanted);
             running = poses;
             PosesVersion++;
+            bool changed = !SameTimings(wanted, built);
             built = wanted;
+            if (changed) PoseTraceFile.ValuesChanged(built);
             posesLines = lines;
             idle = true;   // the next frame with a player starts from a fresh machine, gates included
             emptyGate.Reset();
             grace.Reset();
             MelonLogger.Msg($"[Earth] Poses: the machine runs {poses.Length} poses ({(lines == null ? "all built in; no " + posesPath : fromFileCount + " from " + posesPath + ", the rest built in")}); "
                 + $"hold {wanted.MinHoldSeconds:0.###} s, rearm {wanted.RearmSeconds:0.###} s, a structure within {wanted.StructureWindowSeconds:0.###} s of the base, "
-                + $"fired at a score of {wanted.StructureDeepScore:0.###} or with the hands within {wanted.StructureStillMetres:0.###} m for {wanted.StructureStillSeconds:0.###} s, Jump and Dash cooldown {wanted.MoveCooldownSeconds:0.###} s");
+                + $"fired at a score of {wanted.StructureDeepScore:0.###} (a modifier or movement {wanted.MoveDeepScore:0.###}) or with the hands within {wanted.StructureStillMetres:0.###} m for {wanted.StructureStillSeconds:0.###} s, Jump and Dash cooldown {wanted.MoveCooldownSeconds:0.###} s");
         }
 
         static bool ReadPoses(out string[]? lines, out DateTime stamp) {
@@ -176,7 +185,8 @@ namespace Earthbending {
 
         static bool SameTimings(PoseValues a, PoseValues b) =>
             a.MinHoldSeconds == b.MinHoldSeconds && a.RearmSeconds == b.RearmSeconds && a.StructureWindowSeconds == b.StructureWindowSeconds && a.MoveCooldownSeconds == b.MoveCooldownSeconds
-            && a.StructureDeepScore == b.StructureDeepScore && a.StructureStillMetres == b.StructureStillMetres && a.StructureStillSeconds == b.StructureStillSeconds;
+            && a.StructureDeepScore == b.StructureDeepScore && a.StructureStillMetres == b.StructureStillMetres && a.StructureStillSeconds == b.StructureStillSeconds
+            && a.MoveDeepScore == b.MoveDeepScore;
 
         static bool SameLines(string[]? a, string[]? b) {
             if (a == null || b == null) return a == b;
@@ -208,7 +218,8 @@ namespace Earthbending {
                 bool standing = grace.Step(now, grounded, natural, out bool onNatural);
                 bool stunned = Moves.Stunned || pc.IsDowned || !pc.IsAlive;
                 Move move = m.Step(now, right, left, canBend, standing, onNatural, stunned, out bool rightIsA);
-                if (move != Move.None) Fire(pc, move, rightIsA, m.LastScore, head, yawDeg);
+                if (move != Move.None) Fire(pc, move, rightIsA, m.LastScore, head, yawDeg, in right, in left);
+                if (PoseTraceFile.On) Trace(m, now, in right, in left, canBend, standing, onNatural, stunned, yawDeg, move, rightIsA);
             }
             catch (Exception e) {
                 if (failed) return;
@@ -226,8 +237,23 @@ namespace Earthbending {
             grace.Reset();
         }
 
-        static void Fire(PlayerController pc, Move move, bool rightIsA, float score, Vector3 head, float yawDeg) {
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: {move} fired (A on the {(rightIsA ? "right" : "left")} hand, score {score:0.00})");
+        /// <summary>[EarthPose] Trace on: this frame as the machine saw it (a row at most 45 times a second) and the move it
+        /// fired. Allocates: only while the owner traces on purpose.</summary>
+        static void Trace(PoseMachine m, double now, in HandSample right, in HandSample left, bool empty, bool grounded, bool natural, bool stunned, float yawDeg, Move move, bool rightIsA) {
+            PoseTraceFile.Frame(new TraceFrame { T = now, Practice = PracticeGuide.Current, Empty = empty, Grounded = grounded, Natural = natural, Stunned = stunned,
+                Armed = m.Armed(now), Yaw = yawDeg, Right = right, Left = left }, move != Move.None);
+            if (move != Move.None) PoseTraceFile.Fired(new TraceFire { T = now, Move = move, Score = m.LastScore, RightIsA = rightIsA });
+        }
+
+        static void Fire(PlayerController pc, Move move, bool rightIsA, float score, Vector3 head, float yawDeg, in HandSample right, in HandSample left) {
+            if (Logs.Debug) {
+                string why = "";
+                if (Pose(move, out PoseSpec spec)) {
+                    PoseMatch.Explain(spec, rightIsA, in right, in left, out HandParts r, out HandParts l);
+                    why = $"; right: {r}; left: {l}";
+                }
+                MelonLogger.Msg($"[Earth] Bend: {move} fired (A on the {(rightIsA ? "right" : "left")} hand, score {score:0.00}{why})");
+            }
             try { Buzz(pc); }
             catch (Exception e) {
                 if (!buzzFailed) { buzzFailed = true; MelonLogger.Warning($"[Earth] Bend: the haptic tick failed (said once): {e.Message}"); }

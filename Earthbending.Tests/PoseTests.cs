@@ -227,8 +227,8 @@ internal static class PoseTests {
         Check("body scale leaves directions", NearV(BodyFrame.ToBody(V3.Zero, 0f, new V3(0, -0.9f, 0), up * 3f, fwd, 0.5f).Palm, up));
         Check("body scale 0 or NaN reads as 1", Near(BodyFrame.ToBody(V3.Zero, 0f, new V3(0, -0.9f, 0), up, fwd, 0f).Pos.Y, -0.9f) && Near(BodyFrame.ToBody(V3.Zero, 0f, new V3(0, -0.9f, 0), up, fwd, float.NaN).Pos.Y, -0.9f));
 
-        // the machine: entry (the first frame inside a pose counts: flow, not hold), rearm
-        Check("a hand passing through a pose for one frame fires it once", Run(M(), OneFrame(Move.Jump), 0.5).SequenceEqual(new[] { Move.Jump }));
+        // the machine: a pose struck at its centre is deep at once (Ruling 37: the first frame there fires), rearm
+        Check("hands at a pose's centre for one frame fire it once (deep at once)", Run(M(), OneFrame(Move.Jump), 0.5).SequenceEqual(new[] { Move.Jump }));
         Check("held jump fires once", Run(M(), Hold(Move.Jump, 0.3), 0.3).SequenceEqual(new[] { Move.Jump }));
         PoseValues held = PoseValues.Default;
         held.MinHoldSeconds = 0.05f;
@@ -257,6 +257,9 @@ internal static class PoseTests {
         Check("armed: a structure fired disarms, so a jump after it fires", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2), Hold(Move.Jump, 0.3)), 0.7).SequenceEqual(new[] { Move.Pillar, Move.Jump }));
 
         StructureFlowChecks();
+        MovePathChecks();
+        ReviewChecks();
+        TraceChecks();
 
         // rearm and cooldown
         Check("rearm: hold straight 1 s fires once; leave 0.15 s, re-enter fires again after cooldown", Run(M(), Seq(Hold(Move.Straight, 1.0), Idle(0.15), Hold(Move.Straight, 0.3)), 1.45).SequenceEqual(new[] { Move.Straight, Move.Straight }));
@@ -298,7 +301,7 @@ internal static class PoseTests {
             && PoseMachine.IsModifier(Move.Straight) && PoseMachine.IsModifier(Move.Explode) && !PoseMachine.IsModifier(Move.Jump) && !PoseMachine.IsModifier(Move.Wall)
             && PoseMachine.IsMovement(Move.Jump) && PoseMachine.IsMovement(Move.Dash) && !PoseMachine.IsMovement(Move.Base) && !PoseMachine.IsMovement(Move.None));
         PoseValues pv = PoseValues.Default;
-        Check("values: the spec's numbers (no hold: passing through counts)", pv.MinHoldSeconds == 0f && Near(pv.RearmSeconds, 0.1f) && Near(pv.StructureWindowSeconds, 1.2f) && Near(pv.MoveCooldownSeconds, 0.6f));
+        Check("values: the spec's numbers (no hold)", pv.MinHoldSeconds == 0f && Near(pv.RearmSeconds, 0.1f) && Near(pv.StructureWindowSeconds, 1.2f) && Near(pv.MoveCooldownSeconds, 0.6f));
         Check("cooldowns by move", new[] { Move.Disc, Move.Ball, Move.Pillar, Move.Cube, Move.Wall }.All(m => Near(pv.CooldownOf(m), 0.3f))
             && Near(pv.CooldownOf(Move.Straight), 0.5f) && Near(pv.CooldownOf(Move.Kick), 0.3f) && Near(pv.CooldownOf(Move.Stomp), 0.3f) && Near(pv.CooldownOf(Move.Uppercut), 0.5f)
             && Near(pv.CooldownOf(Move.Parry), 0.3f) && Near(pv.CooldownOf(Move.Hold), 0.8f) && Near(pv.CooldownOf(Move.Flick), 0.8f) && Near(pv.CooldownOf(Move.Explode), 0.3f)
@@ -375,13 +378,24 @@ internal static class PoseTests {
         Check("structures: Base to Cube crosses Ball's edge first (score 0.75 at best) and fires only Cube", cube.Count == 1 && cube[0].move == Move.Cube);
         // the reviewer's rest: arms at the sides, 1 m under the head
         var rest = (new HandSample(new V3(0.22f, -1.0f, 0.05f), new V3(-1f, 0f, 0f), new V3(0f, -1f, 0f)), new HandSample(new V3(-0.22f, -1.0f, 0.05f), new V3(1f, 0f, 0f), new V3(0f, -1f, 0f)));
+        // (review I-3: Base arms only on arrival, so the hands stop at Base on the way; the raise in one motion, which passes
+        // Base at 0.75 at best, arms nothing and so summons nothing)
         var wallWrong = new List<string>();
-        foreach (double seconds in new[] { 0.3, 0.6, 1.0, 1.5 }) {
-            List<(Move move, double at)> wall = RunPath(M(), rest, At(Move.Wall), 0.2, seconds, 0.3);
-            if (!(wall.Count == 1 && wall[0].move == Move.Wall)) wallWrong.Add($"{seconds} s: [{string.Join(", ", wall.Select(g => g.move))}]");
+        foreach (double speed in new[] { 0.5, 1.0, 2.5 }) {
+            List<PathFire> wall = Feed(M(), PathHolds(speed, (rest, 0.2), (At(Move.Base), 0.1), (At(Move.Wall), 0.3)));
+            if (!(wall.Count == 1 && wall[0].Move == Move.Wall)) wallWrong.Add($"{Inv(speed)} m/s: {Fires(wall)}");
         }
-        Check("structures: raising the hands from rest to Wall (through Base, then Ball's edge) fires Wall, never Ball, at 0.3 to 1.5 s"
+        Check("structures: raising the hands from rest to Wall, stopping at Base on the way (then Ball's edge), fires Wall, never Ball, at 0.5 to 2.5 m/s"
             + (wallWrong.Count > 0 ? " (wrong: " + string.Join("; ", wallWrong) + ")" : ""), wallWrong.Count == 0);
+        var oneMotion = new List<string>();
+        float baseBest = float.PositiveInfinity;
+        foreach (double seconds in new[] { 0.3, 0.6, 1.0, 1.5 }) {
+            baseBest = Math.Min(baseBest, Enumerable.Range(0, 200).Select(k => Toward(rest.Item1, At(Move.Wall).r, k / 199f)).Zip(Enumerable.Range(0, 200).Select(k => Toward(rest.Item2, At(Move.Wall).l, k / 199f)), (r, l) => PoseMatch.Match(Spec(Move.Base), r, l, out _, out float sc) ? sc : float.PositiveInfinity).Min());
+            List<(Move move, double at)> wall = RunPath(M(), rest, At(Move.Wall), 0.2, seconds, 0.3);
+            if (wall.Count != 0) oneMotion.Add($"{seconds} s: [{string.Join(", ", wall.Select(g => g.move))}]");
+        }
+        Check($"structures (I-3): raising the hands from rest to Wall in one motion passes Base at {baseBest:0.00} at best, which arms nothing: nothing fires, at 0.3 to 1.5 s"
+            + (oneMotion.Count > 0 ? " (fired: " + string.Join("; ", oneMotion) + ")" : ""), baseBest > PoseValues.Default.StructureDeepScore && oneMotion.Count == 0);
         List<(Move move, double at)> direct = RunPath(M(), (baseR, baseL), At(Move.Disc), 0.2, 1e-9, 0.3);
         double firstThere = Enumerable.Range(0, 100).Select(n => n * Dt).First(t => !(t < 0.2 + 1e-9));
         Check("structures: struck straight at its centre, a structure fires on the first frame there", direct.Count == 1 && direct[0].move == Move.Disc && direct[0].at == firstThere);
@@ -410,6 +424,582 @@ internal static class PoseTests {
                 Check($"base: after a clean base, the same place fires the structure best struck there ({bestThere}) once",
                     found && after.Count(g => PoseMachine.IsStructure(g.move)) == 1 && after.First(g => PoseMachine.IsStructure(g.move)).move == bestThere);
             }
+    }
+
+    // ----- Ruling 37 (task 17a): every move fires on arrival (deep, or with the hands at rest in it), never on a brush -----
+
+    /// <summary>One frame of a hand path: its time and both hands.</summary>
+    internal struct PathFrame {
+        public double T;
+        public HandSample R, L;
+    }
+
+    /// <summary>A move the machine fired on a path.</summary>
+    internal struct PathFire {
+        public Move Move;
+        public double At;
+        public float Score;
+        public bool RightIsA;
+    }
+
+    /// <summary>The seconds a path holds its hands still at each of its points.</summary>
+    const double PathHold = 0.3;
+
+    // the hands at rest: hanging, the right at (0.25, -0.75, 0.05), palm toward the body (-X), fingers down; the left its mirror
+    static readonly (HandSample r, HandSample l) RestHands = (
+        new HandSample(new V3(0.25f, -0.75f, 0.05f), new V3(-1f, 0f, 0f), new V3(0f, -1f, 0f)),
+        new HandSample(new V3(-0.25f, -0.75f, 0.05f), new V3(1f, 0f, 0f), new V3(0f, -1f, 0f)));
+
+    // the eight modifiers and the two movements
+    static readonly Move[] MoveList = { Move.Straight, Move.Kick, Move.Stomp, Move.Uppercut, Move.Parry, Move.Hold, Move.Flick, Move.Explode, Move.Jump, Move.Dash };
+
+    /// <summary>The hands along straight lines through <paramref name="points"/> at 90 frames a second: still at each point for
+    /// <see cref="PathHold"/> s (the first frame of the hold is the point itself), and between two points the place moved along
+    /// the straight line and the hand turned evenly (one turn about one axis), so that the hand that goes further moves at
+    /// <paramref name="speed"/> m/s and both arrive together.</summary>
+    internal static List<PathFrame> PathFrames(double speed, params (HandSample r, HandSample l)[] points) =>
+        PathHolds(speed, points.Select(p => (p, PathHold)).ToArray());
+
+    /// <summary>As <see cref="PathFrames"/>, with each point's own hold in seconds (0: the hands pass through it without
+    /// stopping; the point itself is still one frame of the path).</summary>
+    internal static List<PathFrame> PathHolds(double speed, params ((HandSample r, HandSample l) at, double hold)[] points) {
+        var frames = new List<PathFrame>();
+        void Add(HandSample r, HandSample l) => frames.Add(new PathFrame { T = frames.Count * Dt, R = r, L = l });
+        for (int i = 0; i < points.Length; i++) {
+            if (i > 0) {
+                var (a, b) = (points[i - 1].at, points[i].at);
+                double far = Math.Max((b.r.Pos - a.r.Pos).Length, (b.l.Pos - a.l.Pos).Length);
+                int n = Math.Max(1, (int)Math.Ceiling(far / speed / Dt));
+                for (int k = 1; k < n; k++) Add(Turn(a.r, b.r, (float)k / n), Turn(a.l, b.l, (float)k / n));
+            }
+            int hold = Math.Max(1, (int)Math.Round(points[i].hold / Dt));
+            for (int k = 0; k < hold; k++) Add(points[i].at.r, points[i].at.l);
+        }
+        return frames;
+    }
+
+    /// <summary>Steps a machine through a path (hands empty, grounded on natural ground, never stunned) and returns every fire.</summary>
+    internal static List<PathFire> Feed(PoseMachine m, List<PathFrame> frames, bool grounded = true, bool natural = true) {
+        var fired = new List<PathFire>();
+        foreach (PathFrame f in frames) {
+            Move mv = m.Step(f.T, f.R, f.L, true, grounded, natural, false, out bool rA);
+            if (mv != Move.None) fired.Add(new PathFire { Move = mv, At = f.T, Score = m.LastScore, RightIsA = rA });
+        }
+        return fired;
+    }
+
+    /// <summary>Part of the way from one hand to another: the place along the straight line, and the hand turned by that part
+    /// of the one turn that takes a's palm and fingers to b's.</summary>
+    static HandSample Turn(HandSample a, HandSample b, float u) {
+        V3 pos = a.Pos + (b.Pos - a.Pos) * u;
+        double[,] fa = FrameOf(a), fb = FrameOf(b), r = new double[3, 3];
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                for (int k = 0; k < 3; k++) r[i, j] += fb[i, k] * fa[j, k];   // R = Fb Fa^T
+        if (!AxisAngle(r, out V3 axis, out double angle)) return new HandSample(pos, a.Palm, a.Fingers);
+        float deg = (float)(angle * u * 180.0 / Math.PI);
+        return new HandSample(pos, Rot(a.Palm, axis, deg).Normalized, Rot(a.Fingers, axis, deg).Normalized);
+    }
+
+    /// <summary>A hand's frame as columns: the palm, the fingers made square to it, and their cross product.</summary>
+    static double[,] FrameOf(HandSample h) {
+        V3 n = h.Palm.Normalized, f = (h.Fingers - n * V3.Dot(h.Fingers, n)).Normalized, s = Cross(n, f);
+        return new double[,] { { n.X, f.X, s.X }, { n.Y, f.Y, s.Y }, { n.Z, f.Z, s.Z } };
+    }
+
+    /// <summary>The axis and angle (radians) of a rotation matrix; false for no turn.</summary>
+    static bool AxisAngle(double[,] r, out V3 axis, out double angle) {
+        axis = V3.Zero;
+        double c = Math.Max(-1.0, Math.Min(1.0, (r[0, 0] + r[1, 1] + r[2, 2] - 1.0) / 2.0));
+        angle = Math.Acos(c);
+        if (angle < 1e-7) return false;
+        if (Math.PI - angle > 1e-4) {
+            double s2 = 2.0 * Math.Sin(angle);
+            axis = new V3((float)((r[2, 1] - r[1, 2]) / s2), (float)((r[0, 2] - r[2, 0]) / s2), (float)((r[1, 0] - r[0, 1]) / s2)).Normalized;
+            return true;
+        }
+        // half a turn: R = 2kk^T - I, read from the largest diagonal
+        int i = r[0, 0] >= r[1, 1] && r[0, 0] >= r[2, 2] ? 0 : r[1, 1] >= r[2, 2] ? 1 : 2;
+        var k = new double[3];
+        k[i] = Math.Sqrt(Math.Max(0.0, (r[i, i] + 1.0) / 2.0));
+        for (int j = 0; j < 3; j++) if (j != i) k[j] = (r[i, j] + r[j, i]) / (4.0 * k[i]);
+        axis = new V3((float)k[0], (float)k[1], (float)k[2]).Normalized;
+        return true;
+    }
+
+    static string Hand(bool mirrored) => mirrored ? "A left" : "A right";
+    static string Inv(double d) => d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    static string Fires(List<PathFire> got) => "[" + string.Join(", ", got.Select(g => $"{g.Move} {g.Score:0.00}")) + "]";
+
+    /// <summary>Every path of the task 17a tables that did not fire exactly what it should: its key and what it fired. Rest to
+    /// each modifier and movement (either hand as A, 1 and 2.5 m/s): exactly that move, once. Rest to Base to each structure:
+    /// exactly that structure, once. From each modifier or movement, at rest in it, to every other one (each with either hand
+    /// as A, at 1 and 2.5 m/s; a path starts at rest in the first): exactly the two, in that order.</summary>
+    internal static List<(string key, string got)> PathTable() {
+        var wrong = new List<(string, string)>();
+        foreach (double speed in new[] { 1.0, 2.5 }) {
+            foreach (Move m in MoveList)
+                for (int mi = 0; mi < 2; mi++) {
+                    List<PathFire> got = Feed(M(), PathFrames(speed, RestHands, At(m, mi == 1)));
+                    if (!(got.Count == 1 && got[0].Move == m))
+                        wrong.Add(($"rest -> {m} ({Hand(mi == 1)}) at {Inv(speed)} m/s", Fires(got)));
+                }
+            foreach (Move s in Structures)
+                for (int mi = 0; mi < 2; mi++) {
+                    List<PathFire> got = Feed(M(), PathFrames(speed, RestHands, At(Move.Base), At(s, mi == 1)));
+                    if (!(got.Count == 1 && got[0].Move == s))
+                        wrong.Add(($"rest -> Base -> {s} ({Hand(mi == 1)}) at {Inv(speed)} m/s", Fires(got)));
+                }
+            foreach (Move a in MoveList)
+                foreach (Move b in MoveList) {
+                    if (a == b) continue;
+                    for (int ma = 0; ma < 2; ma++)
+                        for (int mb = 0; mb < 2; mb++) {
+                            List<PathFire> got = Feed(M(), PathFrames(speed, At(a, ma == 1), At(b, mb == 1)));
+                            if (!(got.Count == 2 && got[0].Move == a && got[1].Move == b))
+                                wrong.Add(($"{a} ({Hand(ma == 1)}) -> {b} ({Hand(mb == 1)}) at {Inv(speed)} m/s", Fires(got)));
+                        }
+                }
+        }
+        return wrong;
+    }
+
+    /// <summary>The paths of <see cref="PathTable"/> that fail with the default poses because their straight line runs deep
+    /// through a third pose (task 17a: listed, not hidden). A change that fixes one or adds one shows up in the test.</summary>
+    // None left. Until the review fixes (I-3) these were Jump to Dash and Dash to Jump with the other hand as A, at 1 and 2.5
+    // m/s: crossing sides, the hands brushed Base's edge (0.96) clean for 1-3 frames, which armed the structures and used up
+    // the second move. Base now arms only deep or at rest.
+    static readonly string[] KnownPathFailures = {
+    };
+
+    static HandSample H(float px, float py, float pz, float nx, float ny, float nz, float fx, float fy, float fz) =>
+        new HandSample(new V3(px, py, pz), new V3(nx, ny, nz).Normalized, new V3(fx, fy, fz).Normalized);
+
+    /// <summary>The best score of a move's pose for these hands (infinity: no match).</summary>
+    static float ScoreOf(Move m, (HandSample r, HandSample l) h) => PoseMatch.Match(Spec(m), h.r, h.l, out _, out float sc) ? sc : float.PositiveInfinity;
+
+    /// <summary>The hands part of the way from one pose's exact hands to another's (place along the line, turned evenly).</summary>
+    static (HandSample r, HandSample l) Between((HandSample r, HandSample l) a, (HandSample r, HandSample l) b, float u) => (Turn(a.r, b.r, u), Turn(a.l, b.l, u));
+
+    // the review of task 17a: I-1 (no second fire at an edge once the hands settle), I-2 (a modifier never eats an armed
+    // structure), I-3 (Base arms on arrival: deep or at rest), M-6 (a line through every move's centre fires it)
+    static void ReviewChecks() {
+        PoseValues pv = PoseValues.Default;
+
+        // I-1, the review's case: from rest at 1 m/s into Straight (0.59 there) where Uppercut's zone reaches, held 0.6 s
+        var i1 = (H(0.104f, -0.220f, 0.275f, -0.838f, 0.002f, -0.546f, 0.003f, 1f, -0.001f), H(-0.201f, -0.279f, 0.395f, 0.503f, -0.827f, 0.251f, 0.255f, 0.42f, 0.871f));
+        List<PathFire> i1Fires = Feed(M(), PathHolds(1.0, (RestHands, 0.2), (i1, 0.6)));
+        Check($"I-1: from rest into Straight where Uppercut reaches, held: Straight fires, Uppercut never ({Fires(i1Fires)})", i1Fires.Count == 1 && i1Fires[0].Move == Move.Straight);
+
+        // I-1's sweep: every point between two moves' centres (either hand as A) where one is deep and the other matches, and
+        // the same around each move's centre jittered up to 0.14 m / 30 degrees: from rest, held 0.6 s, never two fires
+        int points = 0;
+        var doubles = new List<string>();
+        void Try((HandSample r, HandSample l) at, string name) {
+            var deep = MoveList.Where(m => ScoreOf(m, at) <= pv.MoveDeepScore).ToList();
+            if (deep.Count == 0 || !MoveList.Any(m => !deep.Contains(m) && ScoreOf(m, at) <= 1f)) return;
+            points++;
+            foreach (double speed in new[] { 1.0, 2.5 }) {
+                List<PathFire> got = Feed(M(), PathHolds(speed, (RestHands, 0.2), (at, 0.6)));
+                if (got.Count > 1) doubles.Add($"{name} at {Inv(speed)} m/s {Fires(got)}");
+            }
+        }
+        foreach (Move a in MoveList)
+            foreach (Move b in MoveList) {
+                if (a == b) continue;
+                for (int ma = 0; ma < 2; ma++)
+                    for (int mb = 0; mb < 2; mb++)
+                        for (int k = 1; k < 40; k++) Try(Between(At(a, ma == 1), At(b, mb == 1), k / 40f), $"{a}->{b} {k}/40");
+            }
+        var rng = new Random(17);
+        V3 Jitter(V3 v, float metres) => v + new V3((float)(rng.NextDouble() * 2 - 1), (float)(rng.NextDouble() * 2 - 1), (float)(rng.NextDouble() * 2 - 1)).Normalized * (float)(rng.NextDouble() * metres);
+        HandSample Loose(HandSample h) {
+            V3 axis = new V3((float)(rng.NextDouble() * 2 - 1), (float)(rng.NextDouble() * 2 - 1), (float)(rng.NextDouble() * 2 - 1));
+            float deg = (float)(rng.NextDouble() * 30.0);
+            return new HandSample(Jitter(h.Pos, 0.14f), Rot(h.Palm, axis, deg).Normalized, Rot(h.Fingers, axis, deg).Normalized);
+        }
+        foreach (Move m in MoveList)
+            for (int mi = 0; mi < 2; mi++)
+                for (int n = 0; n < 300; n++) {
+                    var (r, l) = At(m, mi == 1);
+                    Try((Loose(r), Loose(l)), $"{m} loose #{n}");
+                }
+        Check($"I-1: {points} rest points deep in one move and inside another, from rest at 1 and 2.5 m/s and held: never two fires"
+            + (doubles.Count > 0 ? " (" + doubles.Count + ": " + string.Join("; ", doubles.Take(6)) + ")" : ""), points >= 100 && doubles.Count == 0);
+
+        // I-1: two at one rest, both in their outer part (0.71 and 0.75): the better one fires alone
+        PoseSpec kick = Spec(Move.Kick);
+        var far = new PoseSpec(Move.Straight, new HandSpec(kick.A.Pos + new V3(0.365f, 0f, 0f), kick.A.Palm, kick.A.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f),
+            new HandSpec(kick.B.Pos + new V3(0.365f, 0f, 0f), kick.B.Palm, kick.B.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f));
+        var outer = (Moved(R(Move.Kick), new V3(0.1775f, 0f, 0f)), Moved(L(Move.Kick), new V3(0.1775f, 0f, 0f)));
+        PoseMatch.Match(kick, outer.Item1, outer.Item2, out _, out float o1);
+        PoseMatch.Match(far, outer.Item1, outer.Item2, out _, out float o2);
+        List<PathFire> outerFires = Feed(new PoseMachine(new[] { kick, far }, pv), PathHolds(1.0, (RestHands, 0.2), (outer, 1.0)));
+        Check($"I-1: two at one rest in their outer parts ({o1:0.00}, {o2:0.00}): the better fires alone", o1 > 0.7f && o2 > o1 && o2 < 0.8f && outerFires.Count == 1 && outerFires[0].Move == Move.Kick);
+        // I-1: a pose entered after the fire, still in the one that fired, fires only when deep or better than that one
+        var later = new PoseMachine(new[] { kick, far }, pv);
+        List<PathFire> slide = Feed(later, PathHolds(1.0, (At(Move.Kick), 0.3), (outer, 1.0)));
+        Check("I-1: sliding from Kick's centre to where a neighbour's edge reaches (0.75 there, Kick 0.71): only Kick", slide.Count == 1 && slide[0].Move == Move.Kick);
+
+        // I-2, the review's case: Base, then at 1.5 m/s through a point where Straight is 0.60 and Ball 0.99, on to Ball's
+        // centre: Ball fires
+        var i2 = (H(0.190f, -0.225f, 0.242f, -0.996f, -0.07f, -0.054f, -0.087f, 0.855f, 0.511f), H(-0.124f, -0.300f, 0.413f, 0.577f, -0.812f, 0.092f, 0.004f, 0.115f, 0.993f));
+        List<PathFire> i2Fires = Feed(M(), PathHolds(1.5, (RestHands, 0.2), (At(Move.Base), 0.2), (i2, 0.0), (At(Move.Ball), 0.4)));
+        Check($"I-2: Base, through Straight's deep part and Ball's edge, to Ball: Ball fires ({Fires(i2Fires)})", i2Fires.Count(f => f.Move == Move.Ball) == 1 && i2Fires[i2Fires.Count - 1].Move == Move.Ball);
+        // I-2's sweep: Base, then through every point between a modifier's centre and a structure's where the modifier is deep
+        // and the structure matches, to the structure's centre: the structure fires once, last
+        int i2Points = 0;
+        var lost = new List<string>();
+        foreach (Move s in Structures)
+            foreach (Move mod in MoveList.Where(PoseMachine.IsModifier))
+                for (int ms = 0; ms < 2; ms++)
+                    for (int mm = 0; mm < 2; mm++)
+                        for (int k = 1; k < 20; k++) {
+                            var at = Between(At(mod, mm == 1), At(s, ms == 1), k / 20f);
+                            if (!(ScoreOf(mod, at) <= pv.MoveDeepScore && ScoreOf(s, at) <= 1f)) continue;
+                            i2Points++;
+                            foreach (double speed in new[] { 1.0, 2.5 }) {
+                                List<PathFire> got = Feed(M(), PathHolds(speed, (At(Move.Base), 0.2), (at, 0.0), (At(s, ms == 1), 0.4)));
+                                if (!(got.Count(f => f.Move == s) == 1 && got[got.Count - 1].Move == s)) lost.Add($"{mod} then {s} {k}/20 at {Inv(speed)} m/s {Fires(got)}");
+                            }
+                        }
+        Check($"I-2: {i2Points} points where a modifier is deep and a structure matches, passed on the way from Base to the structure: it always fires"
+            + (lost.Count > 0 ? " (" + lost.Count + ": " + string.Join("; ", lost.Take(6)) + ")" : ""), i2Points > 20 && lost.Count == 0);
+
+        // I-3: Base arms on arrival: a line through its centre at 2.5 m/s without stopping arms (deep); a brush of its edge
+        // (0.96 at best) arms nothing
+        var (br, bl) = At(Move.Base);
+        V3 back = new V3(0f, 0f, -0.45f), ahead = new V3(0f, 0f, 0.45f), edge = new V3(0f, 0.192f, 0f);
+        (HandSample, HandSample) BaseOff(V3 by) => (Moved(br, by), Moved(bl, by));
+        bool ArmedAfter(List<PathFrame> path, out float best) {
+            var m = M();
+            best = path.Min(f => PoseMatch.Match(Spec(Move.Base), f.R, f.L, out _, out float sc) ? sc : float.PositiveInfinity);
+            Feed(m, path);
+            return m.Armed(path[path.Count - 1].T);
+        }
+        bool sweepArms = ArmedAfter(PathHolds(2.5, (BaseOff(back), 0.0), (BaseOff(ahead), 0.1)), out float sweepBest);
+        bool brushArms = ArmedAfter(PathHolds(2.5, (BaseOff(edge + back), 0.0), (BaseOff(edge + ahead), 0.1)), out float brushBest);
+        Check($"I-3: a sweep through Base's centre at 2.5 m/s arms (best {sweepBest:0.00})", sweepArms && sweepBest <= pv.StructureDeepScore);
+        Check($"I-3: a brush of Base's edge at 2.5 m/s (best {brushBest:0.00}) arms nothing", !brushArms && brushBest > 0.9f && brushBest <= 1f);
+        bool restArms = ArmedAfter(PathHolds(1.0, (BaseOff(edge + back), 0.0), (BaseOff(edge), 0.3)), out _);
+        Check("I-3: hands that stop in Base's edge arm (at rest)", restArms);
+        Check("I-3: the review's Jump to Dash with the other hand as A now fires both", Feed(M(), PathFrames(2.5, At(Move.Jump), At(Move.Dash, true))).Select(f => f.Move).SequenceEqual(new[] { Move.Jump, Move.Dash }));
+
+        // M-6: a line through every move's centre, every pose running, both ways round, along each axis, at 1, 2.5 and 5 m/s,
+        // fires exactly that move
+        var missed = new List<string>();
+        foreach (Move m in MoveList)
+            for (int mi = 0; mi < 2; mi++)
+                foreach (V3 axis in new[] { new V3(0.6f, 0f, 0f), new V3(0f, 0.45f, 0f), new V3(0f, 0f, 0.65f) })
+                    foreach (double speed in new[] { 1.0, 2.5, 5.0 }) {
+                        var (r, l) = At(m, mi == 1);
+                        List<PathFire> got = Feed(M(), PathHolds(speed, ((Moved(r, -axis), Moved(l, -axis)), 0.0), ((r, l), 0.0), ((Moved(r, axis), Moved(l, axis)), 0.2)));
+                        if (!(got.Count(f => f.Move == m) == 1)) missed.Add($"{m}{(mi == 1 ? " mirrored" : "")} along {axis} at {Inv(speed)} m/s {Fires(got)}");
+                    }
+        Check("M-6: a line through each modifier's and movement's centre (every pose running, either hand as A, three axes, 1 to 5 m/s) fires it once"
+            + (missed.Count > 0 ? " (" + missed.Count + ": " + string.Join("; ", missed.Take(6)) + ")" : ""), missed.Count == 0);
+    }
+
+    static void MovePathChecks() {
+        PoseValues pv = PoseValues.Default;
+        Check("moves: MoveDeepScore 0.6 by default, structures keep 0.5", Near(pv.MoveDeepScore, 0.6f) && Near(pv.StructureDeepScore, 0.5f));
+
+        // the path helper: it ends exactly where it was sent, turned evenly
+        List<PathFrame> sample = PathFrames(1.0, RestHands, At(Move.Uppercut, true));
+        Check("path helper: ends at the pose, held 0.3 s, the faster hand at 1 m/s", Same(sample[sample.Count - 1].R, At(Move.Uppercut, true).r) && Same(sample[sample.Count - 1].L, At(Move.Uppercut, true).l)
+            && Same(sample[0].R, RestHands.r) && Enumerable.Range(1, sample.Count - 1).All(i => (sample[i].R.Pos - sample[i - 1].R.Pos).Length <= 1.0 * Dt + 1e-4 && (sample[i].L.Pos - sample[i - 1].L.Pos).Length <= 1.0 * Dt + 1e-4));
+        HandSample halfTurn = Turn(new HandSample(V3.Zero, new V3(1f, 0f, 0f), new V3(0f, 1f, 0f)), new HandSample(V3.Zero, new V3(-1f, 0f, 0f), new V3(0f, 1f, 0f)), 0.5f);
+        Check("path helper: half of a half turn is a quarter turn, the fingers kept", Near(V3.Dot(halfTurn.Palm, new V3(1f, 0f, 0f)), 0f) && NearV(halfTurn.Fingers, new V3(0f, 1f, 0f)));
+
+        // the tables: what fails is exactly the known list
+        List<(string key, string got)> table;
+        var cultureNow = System.Globalization.CultureInfo.CurrentCulture;
+        try {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");   // a decimal comma: the keys must not change
+            table = PathTable();
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = cultureNow; }
+        var known = new HashSet<string>(KnownPathFailures);
+        var unexpected = table.Where(w => !known.Contains(w.key)).ToList();
+        var fixedNow = KnownPathFailures.Where(k => !table.Any(w => w.key == k)).ToList();
+        Check($"paths (run in de-DE): rest to each modifier and movement, rest to Base to each structure, and each move to every other fire exactly what they should, but the {KnownPathFailures.Length} known ({table.Count} fail)"
+            + (unexpected.Count > 0 ? "; NEW: " + string.Join("; ", unexpected.Take(12).Select(w => w.key + " " + w.got)) + (unexpected.Count > 12 ? $" and {unexpected.Count - 12} more (-- --paths)" : "") : "")
+            + (fixedNow.Count > 0 ? "; now passing: " + string.Join("; ", fixedNow) : ""), unexpected.Count == 0 && fixedNow.Count == 0);
+
+        // a brush: a hand that crosses only the outer part of a zone (score 0.8 at best) without stopping fires nothing; a
+        // hand that stops there fires once it has rested StructureStillSeconds
+        PoseSpec kick = Spec(Move.Kick);
+        V3 side = new V3(0.2f, 0f, 0f), back = new V3(0f, 0f, -0.4f), ahead = new V3(0f, 0f, 0.4f);
+        var (kr, kl) = At(Move.Kick);
+        (HandSample, HandSample) Off(V3 by) => (Moved(kr, by), Moved(kl, by));
+        foreach (double speed in new[] { 0.5, 1.0, 2.5 }) {
+            List<PathFrame> brush = PathFrames(speed, Off(side + back), Off(side + ahead));
+            float best = brush.Min(f => PoseMatch.Match(kick, f.R, f.L, out _, out float sc) ? sc : float.PositiveInfinity);
+            List<PathFire> got = Feed(new PoseMachine(new[] { kick }, PoseValues.Default), brush);
+            Check($"brush: crossing Kick's outer part at {speed} m/s (best score {best:0.00}) fires nothing", best > 0.6f && best <= 1f && got.Count == 0);
+            List<PathFrame> stop = PathFrames(speed, Off(side + back), Off(side));
+            double stoppedAt = stop[stop.Count - (int)Math.Round(PathHold / Dt)].T;
+            List<PathFire> rested = Feed(new PoseMachine(new[] { kick }, PoseValues.Default), stop);
+            Check($"brush: stopping in Kick's outer part at {speed} m/s fires it once, StructureStillSeconds after the stop",
+                rested.Count == 1 && rested[0].Move == Move.Kick && rested[0].At >= stoppedAt + pv.StructureStillSeconds - 1e-6 && rested[0].At <= stoppedAt + pv.StructureStillSeconds + 3 * Dt);
+        }
+        // with all sixteen poses, the same brush fires nothing either
+        Check("brush: crossing Kick's outer part with every pose running fires nothing", Feed(M(), PathFrames(1.0, Off(side + back), Off(side + ahead))).Count == 0);
+
+        // a deep pass fires on the way: the same line through the zone's middle
+        List<PathFire> through = Feed(new PoseMachine(new[] { kick }, PoseValues.Default), PathFrames(1.0, Off(back), Off(ahead)));
+        Check("deep: a line through Kick's middle fires it on the way, once", through.Count == 1 && through[0].Move == Move.Kick && through[0].Score <= pv.MoveDeepScore);
+
+        // two poses at one rest: the better-scored fires; the other never fires until the hands have left it
+        var nearTwin = new PoseSpec(Move.Straight, new HandSpec(kick.A.Pos + new V3(0.1f, 0f, 0f), kick.A.Palm, kick.A.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f),
+            new HandSpec(kick.B.Pos + new V3(0.1f, 0f, 0f), kick.B.Palm, kick.B.Fingers, 0.25f, 0.2f, 0.3f, 60f, 60f));
+        var twinHands = Off(new V3(0.03f, 0f, 0f));
+        var straightHands = Off(new V3(0.1f, 0f, 0f));
+        List<PathFire> two = Feed(new PoseMachine(new[] { kick, nearTwin }, PoseValues.Default), PathFrames(1.0, RestHands, twinHands, twinHands, twinHands, twinHands));
+        Check("two at one rest: the better-scored fires, the other not while the hands stay", two.Count == 1 && two[0].Move == Move.Kick);
+        var restAfter = PathFrames(1.0, RestHands, twinHands, twinHands, twinHands, RestHands, straightHands);
+        List<PathFire> again = Feed(new PoseMachine(new[] { kick, nearTwin }, PoseValues.Default), restAfter);
+        Check("two at one rest: once the hands have left and come back to the other's middle, it fires", again.Count == 2 && again[0].Move == Move.Kick && again[1].Move == Move.Straight);
+        // groups: a modifier struck loosely (0.8, not ready) does not hold back a movement struck deep in the same frame; and
+        // once the movement fired, the modifier matched then is used up (no second fire a moment later)
+        var jumpTwin = new PoseSpec(Move.Jump, nearTwin.A, nearTwin.B);
+        jumpTwin.A.Pos = kick.A.Pos + side;
+        jumpTwin.B.Pos = kick.B.Pos + side;
+        List<PathFire> grouped = Feed(new PoseMachine(new[] { kick, jumpTwin }, PoseValues.Default), PathFrames(1.0, Off(side)));
+        Check("groups: a modifier that is not ready does not hold back a ready movement, and is used up when it fires", grouped.Count == 1 && grouped[0].Move == Move.Jump && grouped[0].At == 0.0);
+    }
+
+    // ----- the hands trace (task 17a): its rows, and its replay through the machine -----
+
+    /// <summary>A gap between two rows longer than this is a stop of the game's machine (review M-3).</summary>
+    const double ReplayGapSeconds = 0.25;
+
+    /// <summary>A trace's frames through a fresh machine of <paramref name="poses"/>, with each frame's recorded flags.</summary>
+    internal static List<PathFire> Replay(List<TraceFrame> frames, PoseSpec[] poses, PoseValues values) {
+        var m = new PoseMachine(poses, values);
+        var fired = new List<PathFire>();
+        double last = double.NaN;
+        foreach (TraceFrame f in frames) {
+            if (f.T - last > ReplayGapSeconds) m.Reset();   // the game stopped running the machine (no player, the recorder): it started over
+            last = f.T;
+            Move mv = m.Step(f.T, f.Right, f.Left, f.Empty, f.Grounded, f.Natural, f.Stunned, out bool rA);
+            if (mv != Move.None) fired.Add(new PathFire { Move = mv, At = f.T, Score = m.LastScore, RightIsA = rA });
+        }
+        return fired;
+    }
+
+    /// <summary>A path written as the game writes a trace: every frame a row (as the machine was given it, the armed flag
+    /// after the step, the practice step <paramref name="practice"/>), and a fired row after the frame a move fired.</summary>
+    static List<string> TraceOf(List<PathFrame> frames, Move practice, out List<PathFire> fired) {
+        var m = M();
+        fired = new List<PathFire>();
+        var lines = new List<string> { PoseTrace.ValuesLine(PoseValues.Default), PoseTrace.Header };
+        double slot = double.NegativeInfinity;
+        foreach (PathFrame p in frames) {
+            Move mv = m.Step(p.T, p.R, p.L, true, true, true, false, out bool rA);
+            var f = new TraceFrame { T = p.T, Practice = practice, Empty = true, Grounded = true, Natural = true, Armed = m.Armed(p.T), Yaw = 12.5f, Right = p.R, Left = p.L };
+            bool due = PoseTrace.Due(p.T, slot);   // as the game writes: about 45 rows a second, and the frame of every fire
+            if (due) slot = PoseTrace.NextSlot(slot, p.T);
+            if (due || mv != Move.None) lines.Add(PoseTrace.Row(in f));
+            if (mv == Move.None) continue;
+            fired.Add(new PathFire { Move = mv, At = p.T, Score = m.LastScore, RightIsA = rA });
+            lines.Add(PoseTrace.Fire(new TraceFire { T = p.T, Move = mv, Score = m.LastScore, RightIsA = rA }));
+        }
+        return lines;
+    }
+
+    static void TraceChecks() {
+        // I-5: the values line, written and read back; a replay's key=value
+        var tuned = PoseValues.Default;
+        tuned.MoveDeepScore = 0.7f; tuned.StructureDeepScore = 0.45f; tuned.StructureStillMetres = 0.02f; tuned.StructureStillSeconds = 0.08f;
+        tuned.RearmSeconds = 0.15f; tuned.StructureWindowSeconds = 1.5f; tuned.MinHoldSeconds = 0.01f;
+        string valuesLine;
+        var cultureWas = System.Globalization.CultureInfo.CurrentCulture;
+        try {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            valuesLine = PoseTrace.ValuesLine(tuned);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = cultureWas; }
+        PoseValues back = PoseTrace.ValuesOf(new[] { valuesLine, PoseTrace.Header, PoseTrace.ValuesLine(PoseValues.Default) }, PoseValues.Default, out bool foundValues, out int laterValues, out List<string> valueErrors);
+        Check("values line: '# values' and every key, the invariant culture", valuesLine.StartsWith("# values MoveDeepScore=0.7 StructureDeepScore=0.45 ") && valuesLine.Contains("MinHoldSeconds=0.01") && !valuesLine.Contains(","));
+        Check("values line: reads back exactly, the first line counts, a later one is counted", foundValues && laterValues == 1 && valueErrors.Count == 0
+            && back.MoveDeepScore == 0.7f && back.StructureDeepScore == 0.45f && back.StructureStillMetres == 0.02f && back.StructureStillSeconds == 0.08f
+            && back.RearmSeconds == 0.15f && back.StructureWindowSeconds == 1.5f && back.MinHoldSeconds == 0.01f && back.MoveCooldownSeconds == PoseValues.Default.MoveCooldownSeconds);
+        PoseValues none = PoseTrace.ValuesOf(new[] { PoseTrace.Header }, tuned, out bool noneFound, out _, out _);
+        Check("values line: none in the file keeps the fallback", !noneFound && none.MoveDeepScore == 0.7f);
+        PoseValues kv = PoseValues.Default;
+        Check("values: key=value sets one number, any case; a bad key or value is refused and changes nothing",
+            PoseTrace.TrySet(ref kv, "movedeepscore=0.65", out _) && kv.MoveDeepScore == 0.65f
+            && !PoseTrace.TrySet(ref kv, "Nope=1", out string whyKey) && whyKey.Length > 0 && !PoseTrace.TrySet(ref kv, "MoveDeepScore=-1", out _)
+            && !PoseTrace.TrySet(ref kv, "MoveDeepScore=0,7", out _) && !PoseTrace.TrySet(ref kv, "MoveDeepScore", out _) && kv.MoveDeepScore == 0.65f);
+        PoseTrace.Parse(new[] { valuesLine, "# a comment", PoseTrace.Header }, out List<TraceFrame> noFrames, out _, out List<string> hashErrors);
+        Check("trace parse: # lines are skipped", noFrames.Count == 0 && hashErrors.Count == 0);
+        // M-2: the row slots: about 45 rows a second from a 90 Hz clock that jitters by up to 1 ms, never more
+        var jitter = new Random(5);
+        double rowSlot = double.NegativeInfinity, clock = 0;
+        int rowCount = 0;
+        for (int n = 0; n < 900; n++) {
+            clock += Dt + (jitter.NextDouble() * 2 - 1) * 0.001;
+            if (!PoseTrace.Due(clock, rowSlot)) continue;
+            rowSlot = PoseTrace.NextSlot(rowSlot, clock);
+            rowCount++;
+        }
+        Check($"trace slots: a jittering 90 Hz clock gives about 45 rows a second ({rowCount / clock:0.0})", rowCount / clock > 43.5 && rowCount <= (int)(clock / PoseTrace.RowSeconds) + 2);
+
+        // the fire line's parts: each hand's place ratio and its two angles to the fired pose, with the assignment it fired with
+        PoseSpec kickSpec = Spec(Move.Kick);
+        var (er, el) = At(Move.Kick, true);
+        PoseMatch.Explain(kickSpec, false, er, el, out HandParts mr, out HandParts ml);
+        Check("parts: a mirrored pose's own hands, explained with A on the left, are all 0", Near(mr.Place, 0f) && Near(mr.PalmDeg, 0f) && Near(mr.FingerDeg, 0f) && Near(ml.Place, 0f) && Near(ml.PalmDeg, 0f) && Near(ml.FingerDeg, 0f));
+        PoseMatch.Explain(kickSpec, true, Turned(Moved(R(Move.Kick), new V3(0.125f, 0f, 0f)), 30f), L(Move.Kick), out HandParts sr, out HandParts sl);
+        Check("parts: 0.125 m to the side is half way out, a palm turned 30 degrees reads 30, the fingers 0", Near(sr.Place, 0.5f) && Math.Abs(sr.PalmDeg - 30f) < 0.01f && Near(sr.FingerDeg, 0f) && Near(sl.Place, 0f));
+        Check("parts: the line's words", sr.ToString() == "place 0.50 palm 30 fingers 0 deg");
+        var noFingers = new HandSpec(kickSpec.A.Pos, kickSpec.A.Palm, V3.Zero, 0.25f, 0.2f, 0.3f, 60f, 60f);
+        HandParts unchecked_ = PoseMatch.Parts(noFingers, R(Move.Kick));
+        Check("parts: a direction the pose does not check is NaN, said as -", float.IsNaN(unchecked_.FingerDeg) && unchecked_.ToString() == "place 0.00 palm 0 fingers - deg");
+
+        // one row and one fire, through the text and back, in a culture with a decimal comma
+        var frame = new TraceFrame { T = 12.3456, Practice = Move.Kick, Empty = true, Grounded = false, Natural = true, Stunned = false, Armed = true, Yaw = -66.25f,
+            Right = new HandSample(new V3(0.25f, -0.75f, 0.05f), new V3(-1f, 0f, 0f), new V3(0f, -1f, 0f)),
+            Left = new HandSample(new V3(-0.1234f, 0.5f, 0.3337f), new V3(0f, 0.6f, 0.8f), new V3(0f, -0.8f, 0.6f)) };
+        var fire = new TraceFire { T = 12.3456, Move = Move.Uppercut, Score = 0.5812f, RightIsA = false };
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        string row, fireRow;
+        try {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            row = PoseTrace.Row(in frame);
+            fireRow = PoseTrace.Fire(in fire);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
+        string[] header = PoseTrace.Header.Split(',');
+        Check("trace header: time, practice, five flags, yaw, then place, palm and fingers of the right hand and the left",
+            header.Length == 26 && string.Join(",", header.Take(8)) == "t,practice,empty,grounded,natural,stunned,armed,yaw"
+            && string.Join(",", header.Skip(8).Take(9)) == "rightX,rightY,rightZ,rightPalmX,rightPalmY,rightPalmZ,rightFingersX,rightFingersY,rightFingersZ" && header[17] == "leftX" && header[25] == "leftFingersZ");
+        Check("trace row: 26 cells, 3 decimals, the invariant culture", row.Split(',').Length == 26 && row.StartsWith("12.346,Kick,1,0,1,0,1,-66.250,0.250,-0.750,0.050,-1.000,") && row.EndsWith(",-0.800,0.600"));
+        Check("trace fire row", fireRow == "12.346,fired,Uppercut,0.581,left");
+        PoseTrace.Parse(new[] { PoseTrace.Header, row, fireRow, "", "garbage,1,2", "1.0,fired,Nope,0.5,right", "1.0,,1,1,1,0,0" }, out List<TraceFrame> frames, out List<TraceFire> fires, out List<string> errors);
+        bool sameFrame = frames.Count == 1 && Math.Abs(frames[0].T - 12.346) < 1e-9 && frames[0].Practice == Move.Kick && frames[0].Empty && !frames[0].Grounded && frames[0].Natural && !frames[0].Stunned && frames[0].Armed
+            && Math.Abs(frames[0].Yaw - -66.25f) < 1e-4f && Same(frames[0].Right, frame.Right) && Math.Abs(frames[0].Left.Pos.X - -0.123f) < 1e-6f && Math.Abs(frames[0].Left.Pos.Z - 0.334f) < 1e-6f;
+        Check("trace parse: the row reads back (to 3 decimals)", sameFrame);
+        Check("trace parse: the fire reads back", fires.Count == 1 && fires[0].Move == Move.Uppercut && Math.Abs(fires[0].Score - 0.581f) < 1e-6f && !fires[0].RightIsA && Math.Abs(fires[0].T - 12.346) < 1e-9);
+        Check("trace parse: bad lines are skipped and named", errors.Count == 3 && errors[0].Contains("line 5") && errors[1].Contains("line 6") && errors[2].Contains("line 7"));
+        var nanFrame = frame;
+        nanFrame.Right = new HandSample(new V3(float.NaN, 0f, 0f), frame.Right.Palm, frame.Right.Fingers);
+        nanFrame.Practice = Move.None;
+        PoseTrace.Parse(new[] { PoseTrace.Row(in nanFrame) }, out List<TraceFrame> nanBack, out _, out List<string> nanErrors);
+        Check("trace parse: a lost hand (NaN) and no practice step read back", nanErrors.Count == 0 && nanBack.Count == 1 && float.IsNaN(nanBack[0].Right.Pos.X) && nanBack[0].Practice == Move.None);
+        Check("trace: at most 45 frame rows a second", PoseTrace.Due(1.0, double.NegativeInfinity) && !PoseTrace.Due(1.0 + Dt, 1.0) && PoseTrace.Due(1.0 + 2 * Dt, 1.0) && Near((float)PoseTrace.RowSeconds, 1f / 45f));
+        Check("trace: the file's name", PoseTrace.FileName(new DateTime(2026, 11, 23, 9, 5, 7)) == "pose-trace-20261123-090507.csv" && PoseTrace.MaxBytes == 20L * 1024 * 1024);
+
+        // a path written as a trace, read back and replayed: the same fires (each within a frame of its time: 3 decimals)
+        var (kr, kl) = At(Move.Kick);
+        List<PathFrame> path = PathFrames(1.0, RestHands, At(Move.Straight), At(Move.Kick, true), (Moved(kr, new V3(0.2f, 0f, 0f)), Moved(kl, new V3(0.2f, 0f, 0f))), RestHands, At(Move.Base), At(Move.Cube));
+        List<string> lines = TraceOf(path, Move.Kick, out List<PathFire> direct);
+        PoseTrace.Parse(lines.ToArray(), out List<TraceFrame> read, out List<TraceFire> recorded, out List<string> readErrors);
+        List<PathFire> replayed = Replay(read, PoseLibrary.Defaults, PoseValues.Default);
+        Check($"replay: a path's trace replays to the same fires ({string.Join(", ", direct.Select(d => d.Move))} / {string.Join(", ", replayed.Select(d => d.Move))})",
+            readErrors.Count == 0 && read.Count < path.Count * 0.6 && direct.Count >= 3 && replayed.Count == direct.Count && recorded.Count == direct.Count
+            && Enumerable.Range(0, direct.Count).All(i => replayed[i].Move == direct[i].Move && recorded[i].Move == direct[i].Move && Math.Abs(replayed[i].At - direct[i].At) <= Dt + 1e-3));
+        Check("replay: the path fired Straight, Kick with A on the left, Kick at rest in its outer part, then Cube from Base",
+            direct.Select(d => d.Move).SequenceEqual(new[] { Move.Straight, Move.Kick, Move.Kick, Move.Cube }) && !direct[1].RightIsA && direct[2].RightIsA && direct[2].Score > PoseValues.Default.MoveDeepScore);
+    }
+
+    // ----- not a test: `-- --paths`, the table of task 17a's paths that fire what they should not -----
+
+    internal static int PrintPaths() {
+        List<(string key, string got)> table = PathTable();
+        var known = new HashSet<string>(KnownPathFailures);
+        Console.WriteLine("Paths that do not fire exactly what they should (rest -> each modifier and movement; rest -> Base -> each structure; each modifier or movement -> every other; either hand as A, 1 and 2.5 m/s):");
+        foreach (var (key, got) in table) Console.WriteLine($"{(known.Contains(key) ? "KNOWN" : "NEW  ")} {key}: fired {got}");
+        foreach (string k in KnownPathFailures.Where(k => !table.Any(w => w.key == k))) Console.WriteLine($"FIXED {k} (known, now passes)");
+        Console.WriteLine($"{table.Count} path(s) fail, {table.Count(w => known.Contains(w.key))} of them known (MoveDeepScore {PoseValues.Default.MoveDeepScore}, StructureDeepScore {PoseValues.Default.StructureDeepScore})");
+        return table.Any(w => !known.Contains(w.key)) ? 1 : 0;
+    }
+
+    // ----- not a test: `-- --replay <trace.csv> [poses.txt]`, a hands trace from the game through the machine -----
+
+    internal static int ReplayTrace(string? path, string[] rest) {
+        if (path == null) { Console.WriteLine("usage: --replay <pose-trace.csv> [poses.txt] [Key=value ...] (keys: " + string.Join(", ", PoseTrace.ValueKeys) + ")"); return 2; }
+        string? posesPath = rest.FirstOrDefault(a => !a.Contains("="));
+        List<string> settings = rest.Where(a => a.Contains("=")).ToList();
+        string[] lines;
+        try { lines = System.IO.File.ReadAllLines(path); }
+        catch (Exception e) { Console.WriteLine($"cannot read {path}: {e.Message}"); return 1; }
+        PoseTrace.Parse(lines, out List<TraceFrame> frames, out List<TraceFire> recorded, out List<string> errors);
+        foreach (string e in errors) Console.WriteLine("SKIPPED " + e);
+        PoseSpec[] poses = PoseLibrary.Defaults;
+        if (posesPath != null) {
+            string[] poseLines;
+            try { poseLines = System.IO.File.ReadAllLines(posesPath); }
+            catch (Exception e) { Console.WriteLine($"cannot read {posesPath}: {e.Message}"); return 1; }
+            PoseSpec[] fromFile = PoseLibrary.Parse(poseLines, out List<string> poseErrors);
+            foreach (string e in poseErrors) Console.WriteLine("POSES SKIPPED " + e);
+            poses = PoseLibrary.Merge(PoseLibrary.Defaults, fromFile, out int replaced);
+            Console.WriteLine($"poses: {replaced} from {posesPath}, the rest built in");
+        }
+        // the numbers: the trace's values line (the game's), else the built-in ones; then each Key=value given
+        PoseValues values = PoseTrace.ValuesOf(lines, PoseValues.Default, out bool valuesInFile, out int later, out List<string> valueErrors);
+        foreach (string e in valueErrors) Console.WriteLine("VALUES SKIPPED " + e);
+        foreach (string kv in settings)
+            if (!PoseTrace.TrySet(ref values, kv, out string why)) { Console.WriteLine("ERROR " + why); return 2; }
+        Console.WriteLine($"{frames.Count} frame(s), {recorded.Count} recorded fire(s) in {path}");
+        Console.WriteLine($"the machine runs {(valuesInFile ? "the trace's values" : "the built-in values (the trace has no values line)")}{(settings.Count > 0 ? ", with " + string.Join(" ", settings) : "")}: "
+            + PoseTrace.ValuesLine(values).Substring(PoseTrace.ValuesPrefix.Length).Trim());
+        if (later > 0) Console.WriteLine($"NOTE: the game's values changed {later} time(s) during the trace (more '# values' lines); the replay runs the first throughout");
+        if (frames.Count == 0) return 1;
+
+        List<PathFire> replayed = Replay(frames, poses, values);
+        Console.WriteLine();
+        Console.WriteLine("Fires (time, move, score, A's hand):");
+        var all = replayed.Select(r => (t: r.At, line: $"  replay {r.At,9:0.000} {r.Move,-9} {r.Score:0.00} {(r.RightIsA ? "right" : "left")}"))
+            .Concat(recorded.Select(r => (t: r.T, line: $"  file   {r.T,9:0.000} {r.Move,-9} {r.Score:0.00} {(r.RightIsA ? "right" : "left")}")))
+            .OrderBy(x => x.t).ThenBy(x => x.line);
+        foreach (var x in all) Console.WriteLine(x.line);
+        Console.WriteLine($"  {replayed.Count} replayed, {recorded.Count} in the file");
+
+        // each practice step: the target's best score during it, and each hand's parts at that moment
+        Console.WriteLine();
+        Console.WriteLine("Practice steps (the target's best score during the step; at that moment each hand's place ratio, palm and finger angles):");
+        int steps = 0;
+        for (int i = 0; i < frames.Count;) {
+            Move target = frames[i].Practice;
+            int j = i;
+            while (j < frames.Count && frames[j].Practice == target) j++;
+            if (target != Move.None) {
+                steps++;
+                PoseSpec spec = poses.FirstOrDefault(p => p.Move == target);
+                float best = float.PositiveInfinity;
+                int at = -1;
+                bool bestA = true;
+                for (int k = i; k < j; k++) {
+                    PoseMatch.Match(spec, frames[k].Right, frames[k].Left, out bool rA, out float sc);
+                    if (sc < best) { best = sc; at = k; bestA = rA; }
+                }
+                string line = $"  {target,-9} {frames[i].T,9:0.000}-{frames[j - 1].T:0.000} s: ";
+                if (at < 0) line += "never judged";
+                else {
+                    PoseMatch.Explain(spec, bestA, frames[at].Right, frames[at].Left, out HandParts pr, out HandParts pl);
+                    line += $"best {best:0.00} at {frames[at].T:0.000} s (A on the {(bestA ? "right" : "left")}); right: {pr}; left: {pl}";
+                }
+                Console.WriteLine(line);
+            }
+            i = j;
+        }
+        if (steps == 0) Console.WriteLine("  (no practice step in this trace)");
+
+        // each pose: how long the hands were inside it (a gap over 0.1 s between rows counts 0.1 s)
+        Console.WriteLine();
+        Console.WriteLine("Time inside each pose (seconds):");
+        foreach (PoseSpec s in poses) {
+            double inside = 0;
+            for (int k = 0; k < frames.Count; k++) {
+                if (!PoseMatch.Match(s, frames[k].Right, frames[k].Left, out _, out _)) continue;
+                double dt = k + 1 < frames.Count ? frames[k + 1].T - frames[k].T : 0.0;
+                inside += Math.Max(0.0, Math.Min(0.1, dt));
+            }
+            Console.WriteLine($"  {s.Move,-9} {inside:0.00}");
+        }
+        return 0;
     }
 
     // the capture guide (Task 3b): the hand lines in the recorder's order, the next pose for a count, the card's text, the
