@@ -25,6 +25,8 @@ internal static class MotionTests {
         Moving("irregular, 0.02 / 0.07 s", Irregular);
 
         KinematicRise();
+        Stops();
+        Silence();
         Snaps();
         BadSteps();
         StartsOnBody();
@@ -70,7 +72,21 @@ internal static class MotionTests {
         // the target from a sync
         var s = new MotionSync(new V3(1f, 2f, 3f), Q.Identity, new V3(4f, 0f, 0f), V3.Zero, 10f, false);
         Check("target: live + velocity x age", NearV(Motion.Target(s, 10.1f, 0.25f), new V3(1.4f, 2f, 3f)));
-        Check("target: the age held to PredictMaxSeconds", NearV(Motion.Target(s, 11f, 0.25f), new V3(2f, 2f, 3f)));
+        Check("target: the age counts in full up to PredictMaxSeconds", NearV(Motion.Target(s, 10.25f, 0.25f), new V3(2f, 2f, 3f)));
+        Check("target: past PredictMaxSeconds the prediction fades back to the synced place", NearV(Motion.Target(s, 11f, 0.25f), new V3(1f, 2f, 3f))
+            && NearV(Motion.Target(s, 10.5f, 0.25f), new V3(1f, 2f, 3f)) && Motion.Target(s, 10.4f, 0.25f).X > 1f && Motion.Target(s, 10.4f, 0.25f).X < 2f);
+        float most = 0f;
+        for (int i = 0; i <= 1000; i++) most = Math.Max(most, Motion.PredictedAge(i * 0.001f, 0.25f));
+        Check("target: the fade coasts on at most 6% of PredictMaxSeconds", most <= 0.25f * 1.06f && most >= 0.25f);
+        Check("target: the free distance holds the predicted length", NearV(Motion.Target(s, 10.2f, 0.25f, 0.3f), new V3(1.3f, 2f, 3f))
+            && NearV(Motion.Target(s, 10.2f, 0.25f, 0f), new V3(1f, 2f, 3f)) && NearV(Motion.Target(s, 10.05f, 0.25f, 0.3f), new V3(1.2f, 2f, 3f))
+            && NearV(Motion.Target(s, 10.2f, 0.25f, float.NaN), new V3(1.8f, 2f, 3f)));
+        var stopped = new MotionSync(new V3(1f, 2f, 3f), Q.Identity, V3.Zero, V3.Zero, 10.1f, false);
+        var back = new MotionSync(new V3(1f, 2f, 3f), Q.Identity, new V3(-2f, 0f, 0f), V3.Zero, 10.1f, false);
+        var slower = new MotionSync(new V3(1f, 2f, 3f), Q.Identity, new V3(3f, 0f, 0f), V3.Zero, 10.1f, false);
+        var frozen = new MotionSync(new V3(1f, 2f, 3f), Q.Identity, V3.Zero, V3.Zero, 10.1f, true);
+        Check("against: stopped, going back and frozen are against the motion, slowing is not", Motion.Against(s, stopped) && Motion.Against(s, back)
+            && Motion.Against(s, frozen) && !Motion.Against(s, slower) && !Motion.Against(stopped, s) && !Motion.Against(frozen, s));
         Check("target: an age below 0 is 0", NearV(Motion.Target(s, 9f, 0.25f), new V3(1f, 2f, 3f)));
         var k = new MotionSync(new V3(1f, 2f, 3f), Q.Identity, new V3(4f, 0f, 0f), V3.Zero, 10f, true);
         Check("target: kinematic is live, no prediction", NearV(Motion.Target(k, 10.2f, 0.25f), new V3(1f, 2f, 3f)));
@@ -175,31 +191,123 @@ internal static class MotionTests {
         Check($"motion: {name} steps within {maxStepRatio:0%} of the true step", worstRatio <= maxStepRatio);
     }
 
-    // a kinematic rise of 1.8 m in 0.3 s, synced every 0.1 s (a slow server; a kinematic sync carries no velocity)
+    // a kinematic rise of 1.8 m in 0.3 s (6 m/s; a kinematic sync carries no velocity), synced at a fast server's gap and a
+    // slow one's, the stone standing at the top after it (its syncs go on)
     static void KinematicRise() {
+        KinematicRise(0.022f, maxLag: 0.25f, maxLate: 0.05f);
+        KinematicRise(0.1f, maxLag: float.MaxValue, maxLate: float.MaxValue);
+    }
+
+    static void KinematicRise(float gap, float maxLag, float maxLate) {
         var f = new MotionFollow();
         var m = MotionValues.Default;
-        float top = 1.8f, over = 0f, lastSync = 0f, atEnd = float.MaxValue;
+        const float top = 1.8f, rise = 0.3f;
+        float over = 0f, lag = 0f, outAt = 0f, atEnd = float.MaxValue;
         float nextSync = 0.005f;
         MotionSync sync = default;
         bool have = false;
         for (int i = 0; i <= 90; i++) {
             float now = i * Frame;
-            float truthY = Math.Min(nextSync, 0.3f) / 0.3f * top;
-            if (now >= nextSync && nextSync <= 0.31f) {
-                sync = new MotionSync(new V3(0f, Math.Min(nextSync / 0.3f, 1f) * top, 0f), Q.Identity, V3.Zero, V3.Zero, now, true);
+            float trueY = Math.Min(now / rise, 1f) * top;
+            if (now >= nextSync) {
+                sync = new MotionSync(new V3(0f, Math.Min(nextSync / rise, 1f) * top, 0f), Q.Identity, V3.Zero, V3.Zero, now, true);
                 have = true;
-                lastSync = now;
-                nextSync += SyncEvery;
+                nextSync += gap;
             }
             if (!have) continue;
-            f.Step(sync, now, Frame, new V3(0f, truthY, 0f), Q.Identity, m);
+            f.Step(sync, now, Frame, new V3(0f, trueY, 0f), Q.Identity, m);
             over = Math.Max(over, f.Shown.Y - top);
-            if (now >= lastSync + 0.3f && atEnd == float.MaxValue && sync.Live.Y >= top - 1e-4f) atEnd = Math.Abs(f.Shown.Y - top);
+            lag = Math.Max(lag, trueY - f.Shown.Y);
+            if (Math.Abs(f.Shown.Y - top) > 0.05f) outAt = now + Frame;   // the model is within 5 cm of the top from outAt on
+            if (now >= rise + 0.3f && atEnd == float.MaxValue) atEnd = Math.Abs(f.Shown.Y - top);
         }
-        Console.WriteLine($"MOTION kinematic rise 1.8 m in 0.3 s: worst overshoot {F(Math.Max(over, 0f))} m, off the top 0.3 s after the last sync {F(atEnd)} m");
-        Check("motion: a kinematic rise never passes the top by more than 0.05 m", over <= 0.05f);
-        Check("motion: a kinematic rise is within 0.05 m of the top 0.3 s after the last sync", atEnd <= 0.05f);
+        float late = outAt - rise;
+        Console.WriteLine($"MOTION kinematic rise 1.8 m in 0.3 s (every {gap} s): worst lag {F(lag)} m, at the top {F(late)} s after the true stone, worst overshoot {F(Math.Max(over, 0f))} m, off the top 0.3 s after it {F(atEnd)} m");
+        Check($"motion: a kinematic rise (every {gap} s) never passes the top by more than 0.05 m", over <= 0.05f);
+        Check($"motion: a kinematic rise (every {gap} s) is within 0.05 m of the top 0.3 s after the true one", atEnd <= 0.05f);
+        if (maxLag < float.MaxValue) Check($"motion: a kinematic rise (every {gap} s) lags at most {maxLag} m", lag <= maxLag);
+        if (maxLate < float.MaxValue) Check($"motion: a kinematic rise (every {gap} s) is at the top within {maxLate} s of the true one", late <= maxLate);
+    }
+
+    enum StopKind { Stop, Reverse, Freeze }
+
+    // I-1: 8 m/s into a wall at ts, then stopped (Stop), going back at 4 m/s (Reverse) or frozen by a clash (Freeze: a
+    // kinematic sync, velocity 0), at three gaps and ten phases of ts against the syncs. With the free distance given (the
+    // game's sweep finds the wall) the model never goes more than 5 cm past the wall; without it (no wall known, as a hitstop
+    // in open air) it overshoots and is back within 5 cm of the true place soon after.
+    static void Stops() {
+        foreach (float gap in new[] { 0.022f, 0.1f, 0.15f })
+            foreach (StopKind kind in new[] { StopKind.Stop, StopKind.Reverse, StopKind.Freeze }) {
+                float pastWall = 0f, past = 0f, back = 0f;
+                for (int k = 0; k < 10; k++) {
+                    float ts = 0.4f + gap * k / 10f;
+                    StopRun(kind, gap, ts, true, out float pw, out _);
+                    StopRun(kind, gap, ts, false, out float p, out float b);
+                    pastWall = Math.Max(pastWall, pw);
+                    past = Math.Max(past, p);
+                    back = Math.Max(back, b);
+                }
+                float limit = gap < 0.05f ? 0.15f : gap < 0.12f ? 0.25f : float.MaxValue;
+                string name = $"{kind} at 8 m/s (every {gap} s)";
+                Console.WriteLine($"MOTION {name}: past the wall {F(pastWall)} m with the free distance; without it {F(past)} m past, back within 5 cm {F(back)} s after the stop");
+                Check($"motion: {name} with the free distance is never more than 0.05 m past the wall", pastWall <= 0.05f);
+                if (limit < float.MaxValue) Check($"motion: {name} without it is back within 0.05 m in under {limit} s", back < limit);
+            }
+    }
+
+    static void StopRun(StopKind kind, float gap, float ts, bool withFree, out float past, out float back) {
+        var f = new MotionFollow();
+        var m = MotionValues.Default;
+        float wall = 8f * ts;
+        past = 0f;
+        float outAt = ts;
+        float nextSync = 0.005f;
+        MotionSync sync = default;
+        bool have = false;
+        float free = float.PositiveInfinity;
+        for (int i = 0; i * Frame <= ts + 1f; i++) {
+            float now = i * Frame;
+            StopTruth(kind, ts, now, out float x, out _);
+            if (now >= nextSync) {
+                StopTruth(kind, ts, nextSync, out float sx, out float sv);
+                bool kin = kind == StopKind.Freeze && nextSync >= ts;
+                sync = new MotionSync(new V3(sx, 0f, 0f), Q.Identity, new V3(kin ? 0f : sv, 0f, 0f), V3.Zero, now, kin);
+                free = withFree && !kin && sv > 0f ? Math.Max(0f, wall - sx) : float.PositiveInfinity;   // the sweep along the velocity
+                have = true;
+                nextSync += gap;
+            }
+            if (!have) continue;
+            f.Step(sync, now, Frame, new V3(x, 0f, 0f), Q.Identity, m, free);
+            past = Math.Max(past, f.Shown.X - wall);
+            if (now >= ts && Math.Abs(f.Shown.X - x) > 0.05f) outAt = now + Frame;
+        }
+        back = outAt - ts;
+    }
+
+    static void StopTruth(StopKind kind, float ts, float t, out float x, out float v) {
+        if (t < ts) { x = 8f * t; v = 8f; return; }
+        if (kind == StopKind.Reverse) { x = 8f * ts - 4f * (t - ts); v = -4f; return; }
+        x = 8f * ts; v = 0f;
+    }
+
+    // M-1: the syncs stop while the last one carried 8 m/s: the model comes back to the synced place, smoothly
+    static void Silence() {
+        var f = new MotionFollow();
+        var m = MotionValues.Default;
+        var s = new MotionSync(new V3(0f, 0f, 0f), Q.Identity, new V3(8f, 0f, 0f), V3.Zero, 1f, false);
+        float worstStep = 0f, furthest = 0f;
+        V3 prev = V3.Zero;
+        for (int i = 0; i <= 180; i++) {
+            float now = 1f + i * Frame;
+            f.Step(s, now, Frame, V3.Zero, Q.Identity, m);
+            if (i > 0) worstStep = Math.Max(worstStep, (f.Shown - prev).Length);
+            furthest = Math.Max(furthest, f.Shown.X);
+            prev = f.Shown;
+        }
+        Console.WriteLine($"MOTION syncs stop at 8 m/s: furthest {F(furthest)} m, after 2 s {F(f.Shown.Length)} m from the synced place, worst step {F(worstStep)} m a frame");
+        Check("motion: when the syncs stop the model comes back to its synced place", f.Shown.Length < 0.01f);
+        Check("motion: and never coasts more than 6% past PredictMaxSeconds' reach", furthest <= 8f * 0.25f * 1.06f);
+        Check("motion: and never steps more than twice its speed in a frame", worstStep <= 2f * 8f * Frame);
     }
 
     // a jump of 5 m between two syncs is taken at once, one of 1 m is eased

@@ -2,17 +2,23 @@ using System;
 
 // Unity-free, compiled by Earthbending.Tests, so only System.* in here. Task 17b (Ruling 38): where a game draws a stone's
 // "Model" between the game's syncs of its rigidbody. The server sends a body's place every second frame of its own
-// (NetworkScene.Update, serializationInterval 2), so the gap between syncs depends on the server's frame rate (at most 45 a
-// second; a slow server far fewer). Between syncs the game pulls its copy of the body toward the LAST synced place
+// (NetworkScene.Update, serializationInterval 2), so the gap between syncs depends on the server's frame rate (at most half
+// of it; a slow server far fewer). Between syncs the game pulls its copy of the body toward the LAST synced place
 // (NetworkRigidbody.ClientUpdate), so a sliding stone stalls and jumps; the Model is instead drawn at a
 // predicted place (MotionFollow), and StoneView (StoneLook.cs) puts it there every LateUpdate. Tested in MotionTests.cs.
 //
-//   the target   from the last sync: not kinematic, live + velocity x age (the age held to PredictMaxSeconds), its turn
-//                turned on by angular velocity x age; kinematic, live (a kinematic sync carries no velocity).
+//   the target   from the last sync: not kinematic, live + velocity x age, its turn turned on by angular velocity x age;
+//                kinematic, live (a kinematic sync carries no velocity). The age counts in full up to PredictMaxSeconds,
+//                then fades back to 0 over as long again, so a stone whose syncs stopped comes back to its synced place.
+//                The predicted length is held to the free distance the caller gives (the game sweeps the stone's own
+//                shape through the world along it): a stone is never predicted into a wall or a standing stone.
 //   the follow   shown = target + offset. The offset is all the follow keeps: when a new sync moves the target, the offset
-//                takes up the difference (so nothing jumps), and it falls to 0 by a critically damped spring of time constant
-//                SmoothSeconds. A steady motion is therefore followed with no lag (the target itself moves), and a correction
-//                is eased in over a few frames. The turn is the same, its offset a turn vector.
+//                takes up the difference (so nothing jumps), and it falls to 0 by a critically damped spring. A steady
+//                motion is therefore followed with no lag (the target itself moves), and a correction is eased in over a
+//                few frames. The spring's time constant is SmoothSeconds; a third of it for a correction against the way
+//                the stone was moving (the sync says stopped, frozen or going back), so an overshoot is short; and for a
+//                kinematic stone (a rise) at most half the gap between its last two syncs, so a rise is on time. The turn is
+//                the same, its offset a turn vector.
 //   the snap     an offset longer than SnapMetres (a teleport) is dropped: the stone is put on its target at once.
 namespace Earthbending {
     /// <summary>A turn (Unity's x, y, z, w order and conventions: <c>a * b</c> turns by b, then by a).</summary>
@@ -123,20 +129,51 @@ namespace Earthbending {
     }
 
     internal static class Motion {
-        /// <summary>How long ago the sync was heard, held to 0..<paramref name="predictMax"/>.</summary>
-        public static float Age(in MotionSync s, float now, float predictMax) {
-            float age = now - s.Time;
-            if (!(age > 0f)) return 0f;
-            return age > predictMax ? predictMax : age;
+        /// <summary>A speed under this (m/s) is a stone at rest.</summary>
+        public const float RestSpeed = 0.05f;
+        /// <summary>A correction against the way the stone was moving is eased this many times faster.</summary>
+        public const float AgainstFaster = 3f;
+
+        /// <summary>How long the prediction runs for a sync heard <paramref name="now"/> - its time ago: the age itself up to
+        /// <paramref name="predictMax"/>, then back down to 0 over as long again (syncs that stopped), 0 below 0.</summary>
+        public static float Age(in MotionSync s, float now, float predictMax) => PredictedAge(now - s.Time, predictMax);
+
+        public static float PredictedAge(float age, float predictMax) {
+            if (!(age > 0f) || !(predictMax > 0f)) return 0f;
+            if (age <= predictMax) return age;
+            if (age >= 2f * predictMax) return 0f;
+            // a cubic from (P, slope 1) to (2P, slope 0) at 0: the stone coasts on a little (at most 5% of P), then comes
+            // back to its synced place smoothly (at most 1.8 times its speed), never with a turn back in one frame
+            float u = (age - predictMax) / predictMax;
+            return predictMax * (1f + u - 5f * u * u + 3f * u * u * u);
         }
 
-        /// <summary>Where the body should be now: kinematic, the synced place; else the synced place plus velocity x age.</summary>
-        public static V3 Target(in MotionSync s, float now, float predictMax) =>
-            s.Kinematic ? s.Live : s.Live + s.Velocity * Age(s, now, predictMax);
+        /// <summary>Where the body should be now: kinematic, the synced place; else the synced place plus velocity x age, that
+        /// length held to <paramref name="free"/> metres (the free way ahead; endless or not a number: no cap).</summary>
+        public static V3 Target(in MotionSync s, float now, float predictMax, float free = float.PositiveInfinity) {
+            if (s.Kinematic) return s.Live;
+            V3 ahead = s.Velocity * Age(s, now, predictMax);
+            if (free >= 0f && !float.IsPositiveInfinity(free)) {
+                float l = ahead.Length;
+                if (l > free) ahead = l > 1e-9f ? ahead * (free / l) : V3.Zero;
+            }
+            else if (free < 0f) ahead = V3.Zero;
+            return s.Live + ahead;
+        }
 
         /// <summary>How the body should be turned now: the synced turn, turned on by angular velocity x age (not kinematic).</summary>
         public static Q TargetTurn(in MotionSync s, float now, float predictMax) =>
             s.Kinematic ? s.LiveTurn : (Q.FromRotVec(s.AngularVelocity * Age(s, now, predictMax)) * s.LiveTurn).Normalized;
+
+        /// <summary>True when <paramref name="next"/> says the body stopped, froze or goes back, against the way
+        /// <paramref name="was"/> had it moving (it moved at least <see cref="RestSpeed"/>).</summary>
+        public static bool Against(in MotionSync was, in MotionSync next) {
+            if (was.Kinematic) return false;
+            float speed = was.Velocity.Length;
+            if (!(speed >= RestSpeed)) return false;
+            V3 along = next.Kinematic ? V3.Zero : next.Velocity;
+            return V3.Dot(along, was.Velocity) / speed < RestSpeed;
+        }
 
         /// <summary>A critically damped spring pulling <paramref name="x"/> to 0 with time constant <paramref name="smooth"/>
         /// (exact for any step, so never unstable): x(t) = (x0 + (r0 + x0/T) t) e^(-t/T). A time constant of 0 is no easing.</summary>
@@ -162,20 +199,28 @@ namespace Earthbending {
         bool started;
         MotionSync last;
         V3 offset, offsetRate, turnOffset, turnRate;
+        float lastFree = float.PositiveInfinity;   // the free distance the last step used (the old target at a new sync)
+        float smoothNow = -1f;                     // the spring's time constant since the last sync (below 0: SmoothSeconds)
+        float kinematicGap;                        // the gap between the last two kinematic syncs (0: none known)
+
+        /// <summary>The spring's time constant in use now (seconds).</summary>
+        public float SmoothNow(MotionValues values) => smoothNow >= 0f ? smoothNow : values.Clamped().SmoothSeconds;
 
         /// <summary>Forget everything: the next step starts on the rigidbody again (before the first sync, a stone that came back).</summary>
-        public void Reset() { started = false; }
+        public void Reset() { started = false; smoothNow = -1f; kinematicGap = 0f; lastFree = float.PositiveInfinity; }
 
         /// <summary>One frame: <paramref name="s"/> is what the game last heard, <paramref name="now"/> the frame's time on the
         /// sync's clock, <paramref name="dt"/> the frame's length, <paramref name="body"/> and <paramref name="bodyTurn"/> where
         /// the rigidbody is (where the first frame is drawn). A step that is not above 0 or not a number, or a frame time that is
-        /// not a number, changes nothing. False, and nothing changes, for a sync that is not a number (draw the rigidbody).</summary>
-        public bool Step(in MotionSync s, float now, float dt, V3 body, Q bodyTurn, MotionValues values) {
+        /// not a number, changes nothing. False, and nothing changes, for a sync that is not a number (draw the rigidbody).
+        /// <paramref name="free"/>: the metres the stone can move from its synced place along its velocity before it meets the
+        /// world (endless: nothing known); the prediction never goes further.</summary>
+        public bool Step(in MotionSync s, float now, float dt, V3 body, Q bodyTurn, MotionValues values, float free = float.PositiveInfinity) {
             if (!s.Finite) return false;
             MotionValues m = values.Clamped();
             if (!started) {
                 if (!Q.IsFinite(now)) return false;
-                V3 target = Motion.Target(s, now, m.PredictMaxSeconds);
+                V3 target = Motion.Target(s, now, m.PredictMaxSeconds, free);
                 Q targetTurn = Motion.TargetTurn(s, now, m.PredictMaxSeconds);
                 Q bt = bodyTurn.Finite ? bodyTurn.Normalized : targetTurn;
                 V3 b = Q.IsFinite(body.X) && Q.IsFinite(body.Y) && Q.IsFinite(body.Z) ? body : target;
@@ -184,6 +229,7 @@ namespace Earthbending {
                 offsetRate = V3.Zero;
                 turnRate = V3.Zero;
                 last = s;
+                lastFree = free;
                 started = true;
                 Shown = b;
                 ShownTurn = bt;
@@ -193,17 +239,27 @@ namespace Earthbending {
 
             if (!s.Same(last)) {
                 // the target moved under the stone: the offset takes the difference up, so the drawn place does not move now
-                offset = offset + (Motion.Target(last, now, m.PredictMaxSeconds) - Motion.Target(s, now, m.PredictMaxSeconds));
+                offset = offset + (Motion.Target(last, now, m.PredictMaxSeconds, lastFree) - Motion.Target(s, now, m.PredictMaxSeconds, free));
                 Q was = Q.FromRotVec(turnOffset) * Motion.TargetTurn(last, now, m.PredictMaxSeconds);
                 turnOffset = (was * Motion.TargetTurn(s, now, m.PredictMaxSeconds).Inverse).ToRotVec();
+                // the spring until the next sync: a kinematic stone at most half its sync gap (a rise is not drawn late), a
+                // correction against the way the stone moved three times faster (an overshoot is short)
+                if (s.Kinematic && last.Kinematic) { if (s.Time > last.Time) kinematicGap = s.Time - last.Time; }
+                else kinematicGap = 0f;
+                float t = m.SmoothSeconds;
+                if (s.Kinematic && kinematicGap > 0f) t = Math.Min(t, kinematicGap * 0.5f);
+                if (Motion.Against(last, s)) t = Math.Min(t, m.SmoothSeconds / Motion.AgainstFaster);
+                smoothNow = t;
                 last = s;
             }
             if (offset.Length > m.SnapMetres) {
                 offset = V3.Zero; offsetRate = V3.Zero; turnOffset = V3.Zero; turnRate = V3.Zero;
             }
-            Motion.Damp(ref offset, ref offsetRate, dt, m.SmoothSeconds);
-            Motion.Damp(ref turnOffset, ref turnRate, dt, m.SmoothSeconds);
-            Shown = Motion.Target(s, now, m.PredictMaxSeconds) + offset;
+            float smooth = smoothNow >= 0f ? smoothNow : m.SmoothSeconds;
+            Motion.Damp(ref offset, ref offsetRate, dt, smooth);
+            Motion.Damp(ref turnOffset, ref turnRate, dt, smooth);
+            Shown = Motion.Target(s, now, m.PredictMaxSeconds, free) + offset;
+            lastFree = free;
             ShownTurn = (Q.FromRotVec(turnOffset) * Motion.TargetTurn(s, now, m.PredictMaxSeconds)).Normalized;
             return true;
         }

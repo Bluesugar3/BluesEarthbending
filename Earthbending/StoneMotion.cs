@@ -88,7 +88,7 @@ namespace Earthbending {
 
         // ---------------------------------------------------------------- the measured sync gap ([EarthLog] Debug only)
         // The server sends a body's place every second frame of its own, so the real gap is measured, not assumed: every 5 s, while
-        // any stone moves (not kinematic) and at least 5 syncs of moving stones came, one line with the gaps and how far the Model
+        // any stone moves (not kinematic, at least Motion.RestSpeed) and at least 5 syncs of moving stones came, one line with the gaps and how far the Model
         // is drawn from the game's own copy of the body. A sync is a change of lastSyncTime.
         const float ReportSeconds = 5f;
         const int ReportMinSyncs = 5;
@@ -107,26 +107,34 @@ namespace Earthbending {
                     MelonLogger.Msg($"[Earth] Motion: {syncs} sync(s) in {now - windowStart:0.0} s over {moving} moving stone(s): gap min {(gaps > 0 ? gapMin * 1000f : 0f):0} / mean {(gaps > 0 ? gapSum / gaps * 1000.0 : 0.0):0} / max {gapMax * 1000f:0} ms; the model's offset from the game's own copy of the body: mean {(offsets > 0 ? offsetSum / offsets : 0.0):0.###} / max {offsetMax:0.###} m");
                 Restart(now);
             }
-            if (body == null || !Read(body, out MotionSync s) || s.Kinematic) return;
-            if (seenWindow != window) { seenWindow = window; moving++; }
-            if (Q.IsFinite(offset)) {
-                offsetSum += offset;
-                offsets++;
-                if (offset > offsetMax) offsetMax = offset;
-            }
-            if (s.Time == seenSync) return;
-            if (seenSync != 0f) {
-                float gap = s.Time - seenSync;
-                if (gap > 0f) {
-                    if (gaps == 0 || gap < gapMin) gapMin = gap;
-                    if (gap > gapMax) gapMax = gap;
-                    gapSum += gap;
-                    gaps++;
+            if (body == null || !Read(body, out MotionSync s)) return;
+            // moving: not kinematic and at least RestSpeed (a stone at rest would pull the offsets toward 0)
+            bool moves = !s.Kinematic && s.Velocity.Length >= Motion.RestSpeed;
+            if (moves) {
+                if (seenWindow != window) { seenWindow = window; moving++; }
+                if (Q.IsFinite(offset)) {
+                    offsetSum += offset;
+                    offsets++;
+                    if (offset > offsetMax) offsetMax = offset;
                 }
             }
-            seenSync = s.Time;
+            if (s.Time == seenSync) return;
+            float prev = seenSync;
+            seenSync = s.Time;   // every sync, kinematic or at rest too, so a gap never spans a pause
+            if (!moves) return;
             syncs++;
+            float gap = s.Time - prev;
+            // a gap over MaxGapSeconds is a sleep or a hitstop, not the server's rate. Note: a gap is a whole number of this
+            // game's frames (two syncs read in one frame are one change of lastSyncTime), so it never reads below a frame
+            if (prev != 0f && gap > 0f && gap <= MaxGapSeconds) {
+                if (gaps == 0 || gap < gapMin) gapMin = gap;
+                if (gap > gapMax) gapMax = gap;
+                gapSum += gap;
+                gaps++;
+            }
         }
+
+        const float MaxGapSeconds = 1f;
 
         static void Restart(float now) {
             windowStart = now;

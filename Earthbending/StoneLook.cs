@@ -37,9 +37,9 @@ namespace Earthbending {
         const string BoulderPrefab = "Stone Boulder 01";
         const float BlockBevel = 0.05f;
         const string DefaultRiseEffect = "Digging Dirt Spray Effect;Digging Dirt Smoke Puff Effect", DefaultRiseSound = "Digging DirtFall Sound Set";
-        const string DefaultBreakEffect = "Destroyed Rock;Charged Axe Shatter Effect;Axe Shatter Damage Effect;Large Smoke Puff",DefaultBreakSound = "Rock Destroyed Sounds;Boulder Breaking Sounds";
+        const string DefaultBreakEffect = "Destroyed Rock;Charged Axe Shatter Effect;Axe Shatter Damage Effect;Large Smoke Puff", DefaultBreakSound = "Rock Destroyed Sounds;Boulder Breaking Sounds";
         const string DefaultStompEffect = "Turabada Ground Slam Effect", DefaultStompSound = "Heavy Turabada Step Sounds";
-        const string DefaultExplodeMarkEffect = "Mining Successful", DefaultExplodeEffect = "Shockwave Impact;Explosion;Charged Axe Shatter Effect",DefaultExplodeSound = "Shockwave Sounds";
+        const string DefaultExplodeMarkEffect = "Mining Successful", DefaultExplodeEffect = "Shockwave Impact;Explosion;Charged Axe Shatter Effect", DefaultExplodeSound = "Shockwave Sounds";
         const float DefaultShakeMetres = 0.02f, DefaultShakeSeconds = 0.15f;
 
         static bool searched, warnedModel, riseFailed, breakFailed, stompFailed, markFailed, explodeFailed, shakeFailed;
@@ -92,7 +92,10 @@ namespace Earthbending {
             shakeSecondsEntry = looks.CreateEntry("ShakeSeconds", DefaultShakeSeconds, description: "Per game. How long a clashing stone shakes (see ShakeMetres), in seconds. 0 or more (0: no shake).");
             ApplyShake();
             Cfg.Changed += ApplyShake;
-            StoneMotion.Init();   // [EarthLooks] SmoothMotion, PredictMaxSeconds, SmoothSeconds, SnapMetres
+            // [EarthLooks] SmoothMotion, PredictMaxSeconds, SmoothSeconds, SnapMetres; a game whose NetworkRigidbody types changed
+            // must not stop the break and explode looks below (StoneView's own try then draws every stone on its body)
+            try { StoneMotion.Init(); }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no smooth motion (its settings could not be set up: {e.GetType().Name}: {e.Message}); stones are drawn on their bodies"); }
             // a Net whose static initialiser failed (Main says so) throws on every touch: no break, stomp or explode looks, the rest still starts
             try { Net.AppliedReceived += OnApplied; }
             catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break, stomp or explode looks (message 19 is not set up: {e.GetType().Name})"); }
@@ -366,8 +369,8 @@ namespace Earthbending {
         void LateUpdate() {
             if (model == null) return;
             bool placed = false;
-            if (follow != null && !followBroken && StoneMotion.On) {
-                try { placed = Follow(model, follow); }
+            if (follow != null && !followBroken) {
+                try { placed = StoneMotion.On && Follow(model, follow); }
                 catch (Exception e) {
                     followBroken = true;   // this stone rides its rigidbody from now on
                     if (!followWarned) { followWarned = true; MelonLogger.Warning($"[Earth] Looks: a stone's smooth motion failed (said once; that stone is drawn on its body from now on): {e}"); }
@@ -406,7 +409,9 @@ namespace Earthbending {
             Transform t = transform;
             Vector3 bp = t.position;
             Quaternion br = t.rotation;
-            if (!f.Step(sync, Time.timeSinceLevelLoad, Time.deltaTime, new V3(bp.x, bp.y, bp.z), new Q(br.x, br.y, br.z, br.w), StoneMotion.Values)) {
+            float now = Time.timeSinceLevelLoad;
+            float free = FreeAhead(sync, now);
+            if (!f.Step(sync, now, Time.deltaTime, new V3(bp.x, bp.y, bp.z), new Q(br.x, br.y, br.z, br.w), StoneMotion.Values, free)) {
                 f.Reset();
                 return false;
             }
@@ -417,6 +422,50 @@ namespace Earthbending {
             m.SetPositionAndRotation(new Vector3(s.X, s.Y, s.Z) + turn * home, turn * homeTurn);
             followed = true;
             return true;
+        }
+
+        // I-1 of the review: how far this stone can go from its synced place along its synced velocity before it meets the world,
+        // so the prediction never draws it into a wall or a standing stone. One sweep of the stone's own shape (shrunk by Skin,
+        // so a stone sliding on the ground does not meet the ground), only for a stone that moves and only as far as the
+        // prediction reaches now. Not counted: the stone itself, triggers, players' bodies (Ground.SolidMask), anything loose or
+        // moving (a body that is not kinematic: other moving stones, items), a contact already there at the start, and a
+        // surface the sweep only grazes (its normal not against the way). Counted: the solid world and standing (kinematic)
+        // stones. Endless when nothing is in the way.
+        static readonly RaycastHit[] sweepHits = new RaycastHit[16];
+        const float Skin = 0.02f, GrazeCos = -0.2f;
+
+        float FreeAhead(in MotionSync s, float now) {
+            if (s.Kinematic || Shape == null) return float.PositiveInfinity;
+            var v = new Vector3(s.Velocity.X, s.Velocity.Y, s.Velocity.Z);
+            float speed = v.magnitude;
+            if (!(speed >= Motion.RestSpeed)) return float.PositiveInfinity;
+            float reach = speed * Motion.Age(s, now, StoneMotion.Values.PredictMaxSeconds);
+            if (!(reach > 1e-3f)) return float.PositiveInfinity;
+            Vector3 dir = v / speed;
+            var at = new Vector3(s.Live.X, s.Live.Y, s.Live.Z);
+            var turn = new Quaternion(s.LiveTurn.X, s.LiveTurn.Y, s.LiveTurn.Z, s.LiveTurn.W);
+            int n;
+            if (Shape is BoxCollider box) {
+                Vector3 half = box.size * 0.5f - new Vector3(Skin, Skin, Skin);
+                half = Vector3.Max(half, new Vector3(0.01f, 0.01f, 0.01f));
+                n = Physics.BoxCastNonAlloc(at + turn * box.center, half, dir, sweepHits, turn, reach, Ground.SolidMask, QueryTriggerInteraction.Ignore);
+            }
+            else if (Shape is SphereCollider sphere) {
+                n = Physics.SphereCastNonAlloc(at + turn * sphere.center, Mathf.Max(sphere.radius - Skin, 0.01f), dir, sweepHits, reach, Ground.SolidMask, QueryTriggerInteraction.Ignore);
+            }
+            else return float.PositiveInfinity;
+            float free = float.PositiveInfinity;
+            for (int i = 0; i < n; i++) {
+                RaycastHit h = sweepHits[i];
+                Collider c = h.collider;
+                if (c == null || !(h.distance > 0f) || h.distance >= free) continue;
+                Rigidbody rb = c.attachedRigidbody;
+                if (rb != null && (rb == Body || !rb.isKinematic)) continue;
+                if (Vector3.Dot(h.normal, dir) > GrazeCos) continue;
+                free = h.distance;
+            }
+            // the shrunk shape meets a thing Skin later than the stone itself would
+            return float.IsPositiveInfinity(free) ? free : Mathf.Max(0f, free - Skin);
         }
 
         // back exactly where Dress put it; while followed the smooth place set this frame stays (no jolt was added to it)
@@ -438,14 +487,17 @@ namespace Earthbending {
     /// <summary>Games: one of the game's assets ([EarthLooks]) found by name among everything loaded: the names split by ;
     /// are tried in order and the first one loaded is kept (until the setting changes, or it is unloaded). None loaded: one
     /// warning per setting value, nothing played, and it is looked for again every 10 s (each search walks every loaded
-    /// asset of the type).</summary>
+    /// asset of the type). A later name kept because an earlier one was not loaded: the earlier names are looked for again
+    /// every 10 s, without a warning, and the first of them that has loaded since takes over.</summary>
     internal sealed class LookAsset<T> where T : UnityEngine.Object {
         const float RetrySeconds = 10f;
 
         readonly string key, what;
         readonly Func<T, string, bool> named;
         string names = "";
+        string[] list = new string[0];
         T? found;
+        int foundAt;   // the index in list of the name found
         float retryAt;
         bool warned;
 
@@ -458,34 +510,39 @@ namespace Earthbending {
             string w = (wanted ?? "").Trim();
             if (w != names) {
                 names = w;
+                list = Split(w);
                 found = null;
                 retryAt = 0f;
                 warned = false;
             }
-            if (found != null) return found;   // Unity's null: one unloaded since is looked for again
-            if (names.Length == 0 || Time.unscaledTime < retryAt) return null;
+            // Unity's null: one unloaded since is looked for again at once
+            if (found == null && !ReferenceEquals(found, null)) { found = null; retryAt = 0f; }
+            if (found != null && (foundAt == 0 || Time.unscaledTime < retryAt)) return found;
+            if (list.Length == 0 || Time.unscaledTime < retryAt) return found;
             retryAt = Time.unscaledTime + RetrySeconds;
+            int upTo = found != null ? foundAt : list.Length;   // a fallback kept: only the names before it
             T[] all = Resources.FindObjectsOfTypeAll<T>();
-            foreach (string raw in names.Split(';')) {
-                string n = raw.Trim();
-                if (n.Length == 0) continue;
+            for (int i = 0; i < upTo; i++) {
+                string n = list[i];
                 foreach (T a in all)
                     if (a != null && named(a, n)) {
                         found = a;
+                        foundAt = i;
                         if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: [EarthLooks] {key} plays the {what} '{n}'");
                         return a;
                     }
             }
+            if (found != null) return found;
             if (!warned) {
                 warned = true;
-                MelonLogger.Warning($"[Earth] Looks: none of the {what}s '{string.Join("', '", Tried(names))}' is loaded ([EarthLooks] {key}): nothing is played; looked for again every {RetrySeconds:0} s");
+                MelonLogger.Warning($"[Earth] Looks: none of the {what}s '{string.Join("', '", list)}' is loaded ([EarthLooks] {key}): nothing is played; looked for again every {RetrySeconds:0} s");
             }
             return null;
         }
 
-        static string[] Tried(string list) {
+        static string[] Split(string names) {
             var r = new List<string>();
-            foreach (string raw in list.Split(';')) {
+            foreach (string raw in names.Split(';')) {
                 string n = raw.Trim();
                 if (n.Length > 0) r.Add(n);
             }
