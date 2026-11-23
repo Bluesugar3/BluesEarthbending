@@ -8,7 +8,8 @@ using UnityEngine;
 namespace Earthbending {
     // Games only: pushing the local player (Jump, Dash, Straight's pushback, and the server's knockback through message 19), the
     // hitstun that follows a knockback (spec 3.1 "Push the local player", 3.6, 3.7) and the movement moves' dust (Dust).
-    // [EarthMovement] PushEndSpeed, PushMaxSeconds and MaxPushSpeed, [EarthLooks] DustEffect, per game.
+    // [EarthMovement] PushEndSpeed, PushMaxSeconds, MaxPushSpeed and Straight's PushbackGrounded, PushbackFree and PushbackLift
+    // (Pushback), [EarthLooks] DustEffect, per game. "Grounded" is the game's own flag, LocomotionController.IsGrounded (Grounded).
     //
     // Public, with ZeroBelow: the game's own SmoothLocomotion.ApplyGravityAndMovement calls ZeroBelow once transpiled, and a
     // call into a type the game's assembly may not see could fail in the JIT, which would stop every player's walking.
@@ -39,13 +40,15 @@ namespace Earthbending {
         /// <summary>A safety net: the ground snap is held off at most this long after a push (a 6 m/s rise takes 0.75 s).</summary>
         const float MaxRiseSeconds = 3f;
         const float DefaultPushEndSpeed = 0.3f, DefaultPushMaxSeconds = 1.5f, DefaultMaxPushSpeed = 20f;
+        const float DefaultPushbackGrounded = 2.5f, DefaultPushbackFree = 1.7f, DefaultPushbackLift = 0.25f;
         const string DefaultDustEffect = "GroundPuffSmall";
         /// <summary>A dust effect that is not loaded is looked for again after this long (each search walks every loaded asset).</summary>
         const float DustRetrySeconds = 10f;
 
-        static MelonPreferences_Entry<float>? pushEndSpeed, pushMaxSeconds, maxPushSpeed;
+        static MelonPreferences_Entry<float>? pushEndSpeed, pushMaxSeconds, maxPushSpeed, pushbackGroundedEntry, pushbackFreeEntry, pushbackLiftEntry;
         static MelonPreferences_Entry<string>? dustEffect;
         static float endSpeed = DefaultPushEndSpeed, maxSeconds = DefaultPushMaxSeconds, maxSpeed = DefaultMaxPushSpeed;
+        static float pushbackGrounded = DefaultPushbackGrounded, pushbackFree = DefaultPushbackFree, pushbackLift = DefaultPushbackLift;
 
         static PooledObjectDefinition? dust;   // the effect found for dustFor
         static string dustFor = "";
@@ -66,6 +69,9 @@ namespace Earthbending {
             pushEndSpeed = cat.CreateEntry("PushEndSpeed", DefaultPushEndSpeed, description: "Per game. A push (a jump, a dash, Straight's pushback, a knockback) slides the player along the ground until its flat speed falls under this, in m/s; the game's own friction slows it.");
             pushMaxSeconds = cat.CreateEntry("PushMaxSeconds", DefaultPushMaxSeconds, description: "Per game. The longest a push slides the player along the ground, in seconds after the push (0: a push stops as soon as the player stands).");
             maxPushSpeed = cat.CreateEntry("MaxPushSpeed", DefaultMaxPushSpeed, description: "Per game. However many pushes stack (jumps, dashes, knockbacks), the player is never left faster than this, in m/s. Above 0.");
+            pushbackGroundedEntry = cat.CreateEntry("PushbackGrounded", DefaultPushbackGrounded, description: "Per game. A Straight at a stone anchored to the ground (standing still, or rising) pushes you back this many m/s, away from where you look (half in the air). 0 or more.");
+            pushbackFreeEntry = cat.CreateEntry("PushbackFree", DefaultPushbackFree, description: "Per game. A Straight at a stone that is not anchored (loose, or already sliding) pushes you back this many m/s (half in the air). 0 or more.");
+            pushbackLiftEntry = cat.CreateEntry("PushbackLift", DefaultPushbackLift, description: "Per game. A Straight's pushback also lifts you this many m/s (half in the air); above 0.1 keeps the game from stopping the push on the ground. 0 or more.");
             dustEffect = Cfg.Category("EarthLooks").CreateEntry("DustEffect", DefaultDustEffect, description: "Per game. The game's pooled effect played at the feet by a jump or a dash (its name; several names split by ; are tried in order, the first loaded one is used; empty: no dust).");
             Apply();
             Cfg.Changed += Apply;
@@ -78,6 +84,9 @@ namespace Earthbending {
             endSpeed = Cfg.NotNegative(pushEndSpeed, "EarthMovement", "PushEndSpeed", DefaultPushEndSpeed);
             maxSeconds = Cfg.NotNegative(pushMaxSeconds, "EarthMovement", "PushMaxSeconds", DefaultPushMaxSeconds);
             maxSpeed = Cfg.Positive(maxPushSpeed, "EarthMovement", "MaxPushSpeed", DefaultMaxPushSpeed);
+            pushbackGrounded = Cfg.NotNegative(pushbackGroundedEntry, "EarthMovement", "PushbackGrounded", DefaultPushbackGrounded);
+            pushbackFree = Cfg.NotNegative(pushbackFreeEntry, "EarthMovement", "PushbackFree", DefaultPushbackFree);
+            pushbackLift = Cfg.NotNegative(pushbackLiftEntry, "EarthMovement", "PushbackLift", DefaultPushbackLift);
             dustRetryAt = 0f;   // a changed name, or the same name saved again, is looked for at the next dust
         }
 
@@ -120,7 +129,7 @@ namespace Earthbending {
                 return false;
             }
             Vector3 was = loco.velocity;
-            bool grounded = loco.IsGrounded;
+            bool grounded = Grounded(pc);
             V3 next = PushRule.Next(new V3(was.x, was.y, was.z), new V3(velocity.x, velocity.y, velocity.z), grounded, maxSpeed);
             Vector3 v = new Vector3(next.X, next.Y, next.Z);
             loco.velocity = v;
@@ -133,6 +142,25 @@ namespace Earthbending {
             holdUntil = now + maxSeconds;
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: push {velocity} on {was} -> {v} (grounded {(grounded ? "yes" : "no: it only adds")})");
             return true;
+        }
+
+        /// <summary>The game's own grounded flag for <paramref name="pc"/>: LocomotionController.IsGrounded, the one
+        /// SmoothLocomotion zeroes a grounded player's velocity on and counts fall damage from (set from the
+        /// CharacterController at the end of each update). Not SmoothLocomotion.IsGrounded: that is only the collision flags of
+        /// the frame's last Move, the reposition, which often touches nothing below. False with no player or controller.</summary>
+        internal static bool Grounded(PlayerController? pc) {
+            LocomotionController? lc = pc != null ? pc.LocomotionController : null;
+            return lc != null && lc.IsGrounded;
+        }
+
+        /// <summary>Straight's push on the local player (spec 3.5): back along <paramref name="yawDeg"/> at [EarthMovement]
+        /// PushbackGrounded m/s when the target stone is anchored (<paramref name="targetGrounded"/>: its rigidbody is kinematic
+        /// on this game), PushbackFree when it is not, PushbackLift up; half of it in the air (MoveRules.Pushback). False when
+        /// no push was given (see <see cref="Push"/>).</summary>
+        internal static bool Pushback(float yawDeg, bool targetGrounded) {
+            bool airborne = !Grounded(PlayerController.Current);
+            V3 v = MoveRules.Pushback(yawDeg, targetGrounded, airborne, pushbackGrounded, pushbackFree, pushbackLift);
+            return Push(new Vector3(v.X, v.Y, v.Z));
         }
 
         /// <summary>[EarthLooks] DustEffect, the game's pooled effect, at <paramref name="at"/> (a jump's or a dash's feet).

@@ -133,6 +133,36 @@ namespace Earthbending {
         /// <summary>Whether the stone's rigidbody is kinematic in this state (spec 3.4: Rising is moved by the server each tick,
         /// Still is anchored); every other state is moved by physics.</summary>
         public static bool Kinematic(StoneState s) => s == StoneState.Rising || s == StoneState.Still;
+
+        // ---------------------------------------------------------------- Task 7: the modifiers' states
+
+        /// <summary>The state a modifier leaves a stone in. Straight (spec 2.3, 3.5): an anchored stone (Still, or Rising once it
+        /// has risen: StoneBody holds the push until then) slides;
+        /// every other state stays (Free flies, Sliding slides on, Flicked stays in the hands). A modifier this build does not
+        /// apply leaves the state as it is.</summary>
+        public static StoneState After(StoneState s, Modifier m) {
+            if (m == Modifier.Straight) return s == StoneState.Rising || s == StoneState.Still ? StoneState.Sliding : s;
+            return s;
+        }
+
+        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight only, to a stone in
+        /// any state; every other modifier is refused (later tasks add theirs).</summary>
+        public static bool CanApply(StoneState s, Modifier m) => m == Modifier.Straight;
+
+        /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once it is slower than this, in m/s.</summary>
+        public const float SlideStopSpeed = 0.1f;
+
+        /// <summary>A sliding stone's speed after <paramref name="dt"/> seconds of slowing by <paramref name="deceleration"/> m/s every second
+        /// (never below 0; a speed that is not a number is 0). Its height is frozen, so the ground has no weight on it to grip:
+        /// this is what slows it.</summary>
+        public static float SlideSpeed(float speed, float deceleration, float dt) {
+            if (!(speed > 0f) || float.IsInfinity(speed)) return 0f;
+            float slow = deceleration > 0f && dt > 0f ? deceleration * dt : 0f;
+            return speed > slow ? speed - slow : 0f;
+        }
+
+        /// <summary>Whether a sliding stone at this speed stands still again (under <see cref="SlideStopSpeed"/>, or not a number).</summary>
+        public static bool SlideStops(float speed) => !(speed >= SlideStopSpeed);
     }
 
     /// <summary>The server's cooldowns, per player and move (keyed as <c>(int)Move.X</c>). The game keeps its own cooldowns
@@ -280,6 +310,115 @@ namespace Earthbending {
             }
             unknown = string.Join(", ", bad.ToArray());
             return on;
+        }
+    }
+
+    // ==================================================================== Task 7: the modifiers (Straight first)
+
+    /// <summary>Which stone a modifier can reach (spec 2.4). A stone is in reach of a head looking along a yaw when its centre
+    /// is in the half-space in front of the head (ahead of the plane through the head square to the flat yaw), the nearest
+    /// point of its box is within <c>reach</c> of the head, and its centre is at most <c>maxHeight</c> above the feet. The
+    /// server adds its slack (<c>[EarthModifiers] RangeSlackMetres</c>) to both distances, never to the half-space. The box is
+    /// the stone's world AABB (its collider's bounds). Anything that is not a number is out of reach.</summary>
+    internal static class Reach {
+        /// <summary>Angles closer than this (degrees) are a tie, which the nearer stone wins.</summary>
+        const float TieDegrees = 1e-3f;
+
+        public static bool InReach(V3 head, float yawDeg, V3 boxMin, V3 boxMax, float feetY, float reach, float maxHeight, float slack) {
+            V3 centre = Centre(boxMin, boxMax);
+            if (!(V3.Dot(centre - head, SpawnPlan.Forward(yawDeg)) > 0f)) return false;
+            if (!(Nearest(head, boxMin, boxMax) <= reach + slack)) return false;
+            return centre.Y - feetY <= maxHeight + slack;
+        }
+
+        /// <summary>As the other, with the box as (min, max).</summary>
+        public static bool InReach(V3 head, float yawDeg, (V3 min, V3 max) box, float feetY, float reach, float maxHeight, float slack) =>
+            InReach(head, yawDeg, box.min, box.max, feetY, reach, maxHeight, slack);
+
+        /// <summary>The game's pick (no slack): of the stones in reach, the one whose centre is the smallest angle from the flat
+        /// forward, seen from above; on a tie the one whose box is nearer the head (then the first in the list). 0 when none is
+        /// in reach (0 is never a stone's id).</summary>
+        public static uint Pick(V3 head, float yawDeg, IList<(uint id, V3 min, V3 max)>? stones, float feetY, float reach, float maxHeight) {
+            if (stones == null) return 0;
+            V3 forward = SpawnPlan.Forward(yawDeg);
+            uint best = 0;
+            float bestAngle = float.PositiveInfinity, bestNear = float.PositiveInfinity;
+            for (int i = 0; i < stones.Count; i++) {
+                (uint id, V3 min, V3 max) s = stones[i];
+                if (s.id == 0 || !InReach(head, yawDeg, s.min, s.max, feetY, reach, maxHeight, 0f)) continue;
+                float angle = FlatAngle(Centre(s.min, s.max) - head, forward), near = Nearest(head, s.min, s.max);
+                bool better = angle < bestAngle - TieDegrees || (angle <= bestAngle + TieDegrees && near < bestNear);
+                if (!better) continue;
+                best = s.id;
+                bestAngle = angle;
+                bestNear = near;
+            }
+            return best;
+        }
+
+        public static V3 Centre(V3 min, V3 max) => (min + max) * 0.5f;
+
+        /// <summary>The distance from <paramref name="p"/> to the nearest point of the box (0 inside it).</summary>
+        public static float Nearest(V3 p, V3 min, V3 max) =>
+            (new V3(Clamp(p.X, min.X, max.X), Clamp(p.Y, min.Y, max.Y), Clamp(p.Z, min.Z, max.Z)) - p).Length;
+
+        static float Clamp(float v, float lo, float hi) => v < lo ? lo : v > hi ? hi : v;
+
+        /// <summary>The angle in degrees between <paramref name="d"/> and the flat <paramref name="forward"/>, seen from above.</summary>
+        static float FlatAngle(V3 d, V3 forward) {
+            double cross = d.Z * forward.X - d.X * forward.Z, dot = d.X * forward.X + d.Z * forward.Z;
+            return (float)(Math.Atan2(Math.Abs(cross), dot) * 180.0 / Math.PI);
+        }
+    }
+
+    /// <summary>Why the server refused a Modify claim. <see cref="Bad"/> (ruling 13): a modifier or hand byte out of range, or
+    /// a head or yaw that is not a finite number (or a yaw past a full turn): a claim no game of this mod sends.</summary>
+    internal enum ModifyRefusal { None, Cooldown, NoStone, OutOfReach, NotAllowed, Bad }
+
+    internal static class ModifyCheck {
+        public const int ModifierCount = (int)Modifier.Explode + 1;
+
+        /// <summary>The claim could have come from a game of this mod: a modifier, a hand of 0 (right) or 1 (left), a finite
+        /// head, a finite yaw within a turn (<see cref="SummonCheck.MaxYaw"/>).</summary>
+        public static bool Sane(in ModifyClaim c) =>
+            (int)c.Mod < ModifierCount && c.Hand <= 1 && Finite(c.Head.X) && Finite(c.Head.Y) && Finite(c.Head.Z) && Finite(c.Yaw) && Math.Abs(c.Yaw) <= SummonCheck.MaxYaw;
+
+        /// <summary>The server's decision on a claim, in this order: <see cref="ModifyRefusal.Bad"/>, the player's cooldown for
+        /// that modifier (<see cref="ModifyRefusal.Cooldown"/>), the target is no standing stone (<paramref name="state"/> null:
+        /// <see cref="ModifyRefusal.NoStone"/>), the stone's box out of reach of the SERVER's copy of the head and feet looking
+        /// along the claimed yaw, with <paramref name="slack"/> (<see cref="ModifyRefusal.OutOfReach"/>; a server head that is
+        /// not a number is out of reach), the modifier cannot be applied in the stone's state
+        /// (<see cref="ModifyRefusal.NotAllowed"/>). The claimed head is only checked for being a number.</summary>
+        public static ModifyRefusal Decide(in ModifyClaim c, bool cooldownOk, StoneState? state, V3 boxMin, V3 boxMax, V3 serverHead, float serverFeetY,
+            float reach, float maxHeight, float slack) {
+            if (!Sane(in c)) return ModifyRefusal.Bad;
+            if (!cooldownOk) return ModifyRefusal.Cooldown;
+            if (!(state is StoneState s)) return ModifyRefusal.NoStone;
+            if (!Reach.InReach(serverHead, c.Yaw, boxMin, boxMax, serverFeetY, reach, maxHeight, slack)) return ModifyRefusal.OutOfReach;
+            if (!StoneRules.CanApply(s, c.Mod)) return ModifyRefusal.NotAllowed;
+            return ModifyRefusal.None;
+        }
+
+        /// <summary>The modifier move of a modifier (Straight ... Explode in both enums' order): the ledger's key.</summary>
+        public static Move MoveOf(Modifier m) => (Move)((int)Move.Straight + (int)m);
+
+        /// <summary>The modifier a move is; false for every other move.</summary>
+        public static bool ModifierOf(Move m, out Modifier mod) {
+            mod = (Modifier)(m - Move.Straight);
+            return m >= Move.Straight && m <= Move.Explode;
+        }
+
+        static bool Finite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+    }
+
+    internal static class MoveRules {
+        /// <summary>Straight's push on the player who struck it (spec 3.5, on their own game): back along the yaw at
+        /// <paramref name="grounded"/> m/s when the target stone is anchored (as that game sees it), <paramref name="free"/> when
+        /// it is not, and <paramref name="lift"/> up; all of it halved while the player is in the air.</summary>
+        public static V3 Pushback(float yawDeg, bool targetGrounded, bool airborne, float grounded, float free, float lift) {
+            V3 back = -SpawnPlan.Forward(yawDeg) * (targetGrounded ? grounded : free);
+            V3 push = new V3(back.X, lift, back.Z);
+            return airborne ? push * 0.5f : push;
         }
     }
 }

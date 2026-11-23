@@ -194,14 +194,29 @@ namespace Earthbending {
 
     /// <summary>On every stone prefab (Prefabs.cs puts it on the templates and sets <see cref="Kind"/>; Instantiate copies both).
     /// It says which stone this is (<c>Prefabs.KindOf</c>). On a game it dresses the copy once it appears; on the headless server
-    /// it does nothing (no renderers or effects there).</summary>
+    /// it does nothing more (no renderers or effects there). Every copy that has started is in <see cref="Live"/> until it is
+    /// destroyed (the templates, under their inactive holder, never start), so a game finds the stones near it without a scene
+    /// search (Bend.cs picks a modifier's target from it).</summary>
     internal sealed class StoneView : MonoBehaviour {
         /// <summary>Public, so Unity serializes it and every copy of a template keeps its kind.</summary>
         public StoneKind Kind;
 
+        /// <summary>Every stone that has started and is not yet destroyed, on this machine. An entry may be inactive or being
+        /// destroyed: check before use.</summary>
+        internal static readonly List<StoneView> Live = new List<StoneView>();
+
+        /// <summary>This copy's entity, collider and rigidbody (from Start; null when it has none).</summary>
+        internal NetworkEntity? Entity { get; private set; }
+        internal Collider? Shape { get; private set; }
+        internal Rigidbody? Body { get; private set; }
+
         static bool warned;
 
         void Start() {
+            Entity = GetComponent<NetworkEntity>();
+            Shape = GetComponent<Collider>();
+            Body = GetComponent<Rigidbody>();
+            Live.Add(this);
             if (Main.IsServer) return;
             try { StoneLook.Dress(gameObject, Kind); }
             catch (Exception e) {
@@ -209,6 +224,8 @@ namespace Earthbending {
             }
             StoneLook.Rise(gameObject, Kind);   // never throws
         }
+
+        void OnDestroy() => Live.Remove(this);
     }
 
     /// <summary>Games: one of the game's assets ([EarthLooks]) found by name among everything loaded: the names split by ;

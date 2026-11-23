@@ -23,8 +23,16 @@ namespace Earthbending {
     // refuses), and the stone is spawned at the plan's start, its top at ground level, kinematic and Rising; StoneBody raises it.
     // Every stone is SaveMode.Ignore. Each frame Tick breaks a stone that lived [EarthStones] LifeSeconds, fell below the world,
     // or whose owner is no longer connected (StoneLife); the server's quit breaks them all (Shutdown).
+    //
+    // Modify claims (Task 7, spec 2.4, 3.5): the game picked the stone (Bend.cs). The server spends the player's cooldown for
+    // that modifier (the game's own, less CooldownSlackSeconds) for any claim a game of this mod could send, then checks it
+    // (Stones.cs's ModifyCheck): the target is a standing stone of this registry, its box (the collider's bounds here) is in
+    // reach of the SERVER's copy of the head and feet looking along the claimed yaw, with [EarthModifiers] Reach, MaxHeight and
+    // RangeSlackMetres, and the modifier applies in the stone's state. Then StoneBody.Apply, pushed along the claimed yaw. A
+    // refusal is one Debug line naming the reason.
     internal static class Server {
         const float DefaultLife = 60f, DefaultHeadSlack = 1f, DefaultCooldownSlack = 0.1f;
+        const float DefaultStraightGrounded = 2300f, DefaultStraightFree = 1800f, DefaultRangeSlack = 0.5f, DefaultDoubleStraight = 0.4f, DefaultSlideDeceleration = 4f;
         const int DefaultMaxPerPlayer = 8, DefaultMaxTotal = 64;
         const string DefaultEnabled = "Pillar";
 
@@ -44,10 +52,23 @@ namespace Earthbending {
         static readonly MelonPreferences_Entry<float>[] aheadEntries = new MelonPreferences_Entry<float>[StoneTable.Count];
         static readonly MelonPreferences_Entry<float>[] riseEntries = new MelonPreferences_Entry<float>[StoneTable.Count];
 
+        static MelonPreferences_Entry<float>? straightGroundedEntry, straightFreeEntry, rangeSlackEntry, doubleStraightEntry, slideDecelerationEntry;
+
         static bool[] enabled = new bool[StoneTable.Count];
         static int maxPerPlayer = DefaultMaxPerPlayer, maxTotal = DefaultMaxTotal;
-        static float life = DefaultLife, headSlack = DefaultHeadSlack, cooldownSlack = DefaultCooldownSlack;
-        static bool shutDown, tickFailed, summonFailed;
+        static float life = DefaultLife, headSlack = DefaultHeadSlack, cooldownSlack = DefaultCooldownSlack, rangeSlack = DefaultRangeSlack;
+        static bool shutDown, tickFailed, summonFailed, modifyFailed;
+
+        /// <summary>[EarthModifiers] StraightGrounded: Straight's impulse in N s on an anchored stone (Rising, Still,
+        /// Sliding), which then slides.</summary>
+        internal static float StraightGrounded { get; private set; } = DefaultStraightGrounded;
+        /// <summary>[EarthModifiers] StraightFree: Straight's impulse in N s on every other stone.</summary>
+        internal static float StraightFree { get; private set; } = DefaultStraightFree;
+        /// <summary>[EarthModifiers] DoubleStraightSeconds: read only, for Task 12 (two Straights on one stone this close
+        /// together explode it); StoneBody.LastStraightAt keeps each stone's last.</summary>
+        internal static float DoubleStraightSeconds { get; private set; } = DefaultDoubleStraight;
+        /// <summary>[EarthModifiers] SlideDeceleration: how fast a sliding stone slows, in m/s every second.</summary>
+        internal static float SlideDeceleration { get; private set; } = DefaultSlideDeceleration;
 
         /// <summary>From Main.OnInitializeMelon on the dedicated server only, after Prefabs.Init (which made [EarthStones]).</summary>
         internal static void Init() {
@@ -57,17 +78,26 @@ namespace Earthbending {
             maxTotalEntry = cat.CreateEntry("MaxTotal", DefaultMaxTotal, description: "Server. The most stones standing on the server; a summon past it is refused (unless that player is at MaxPerPlayer: then their oldest breaks). 1 or more.");
             lifeEntry = cat.CreateEntry("LifeSeconds", DefaultLife, description: "Server. A stone breaks this many seconds after it was summoned. Above 0.");
             headSlackEntry = cat.CreateEntry("HeadSlackMetres", DefaultHeadSlack, description: "Server. A summon is refused (HeadFar) when the head its game claims is further than this from the server's copy of that player's head, in metres (the server's copy lags; a fast run needs more). 0 or more.");
-            cooldownSlackEntry = cat.CreateEntry("CooldownSlackSeconds", DefaultCooldownSlack, description: "Server. A player's summons of one stone may come this much closer together than the game's own cooldown (0.3 s) before the server refuses one (Cooldown): two claims sent 0.3 s apart can arrive closer. 0 or more.");
+            cooldownSlackEntry = cat.CreateEntry("CooldownSlackSeconds", DefaultCooldownSlack, description: "Server. A player's summons of one stone, or uses of one modifier, may come this much closer together than the game's own cooldown (0.3 s for a stone, 0.3 to 0.8 s for a modifier) before the server refuses one (Cooldown): two claims sent a cooldown apart can arrive closer. 0 or more.");
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
                 aheadEntries[i] = cat.CreateEntry(k + "AheadMetres", SpawnPlan.DefaultAhead(k), description: $"Server. A summoned {k} rises this many metres in front of the head (spec 3.4). 0 or more.");
                 riseEntries[i] = cat.CreateEntry(k + "RiseSeconds", SpawnPlan.DefaultRise(k), description: $"Server. A summoned {k} rises out of the ground over this many seconds (0: it stands at once). 0 or more.");
             }
+            MelonPreferences_Category mods = Cfg.Category("EarthModifiers");   // Reach and MaxHeight are ReachSettings' (both sides)
+            straightGroundedEntry = mods.CreateEntry("StraightGrounded", DefaultStraightGrounded, description: "Server. Straight pushes a stone anchored to the ground (standing still, rising or sliding) along the look with this impulse, in N s (a 275 kg Pillar: 2300 is 8.4 m/s); it slides along the ground until it stops. 0 or more.");
+            straightFreeEntry = mods.CreateEntry("StraightFree", DefaultStraightFree, description: "Server. Straight pushes any other stone (loose, in the air) along the look with this impulse, in N s. 0 or more.");
+            rangeSlackEntry = mods.CreateEntry("RangeSlackMetres", DefaultRangeSlack, description: "Server. A modifier's stone is checked against Reach and MaxHeight from the server's copy of the head and feet, which lags the player: both get this many metres more on the server. 0 or more.");
+            doubleStraightEntry = mods.CreateEntry("DoubleStraightSeconds", DefaultDoubleStraight, description: "Server. Two Straights on one stone within this many seconds will explode it (not in this build yet). 0 or more.");
+            slideDecelerationEntry = mods.CreateEntry("SlideDeceleration", DefaultSlideDeceleration, description: "Server. A stone sliding along the ground after a Straight slows by this many m/s every second (its height is held, so the ground does not slow it), and stands still again under 0.1 m/s (8.4 m/s with 4: about 9 m). 0: only what it hits stops it.");
             Apply();
             Cfg.Changed += Apply;
             // a Net whose static initialiser failed (Main says so) throws on every touch: no summons, the rest still starts
-            try { Net.SummonReceived += OnSummon; }
-            catch (Exception e) { MelonLogger.Warning($"[Earth] Stones: no summons (message 19 is not set up: {e.GetType().Name})"); }
+            try {
+                Net.SummonReceived += OnSummon;
+                Net.ModifyReceived += OnModify;
+            }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Stones: no summons or modifiers (message 19 is not set up: {e.GetType().Name})"); }
             Player.OnPlayerRemoved += OnPlayerRemoved;
             // closing the server's window skips every mod's OnApplicationQuit (the archery mod's notes): quit from both
             try { MelonEvents.OnApplicationDefiniteQuit.Subscribe(Shutdown); }
@@ -82,6 +112,11 @@ namespace Earthbending {
             life = Cfg.Positive(lifeEntry, "EarthStones", "LifeSeconds", DefaultLife);
             headSlack = Cfg.NotNegative(headSlackEntry, "EarthStones", "HeadSlackMetres", DefaultHeadSlack);
             cooldownSlack = Cfg.NotNegative(cooldownSlackEntry, "EarthStones", "CooldownSlackSeconds", DefaultCooldownSlack);
+            StraightGrounded = Cfg.NotNegative(straightGroundedEntry, "EarthModifiers", "StraightGrounded", DefaultStraightGrounded);
+            StraightFree = Cfg.NotNegative(straightFreeEntry, "EarthModifiers", "StraightFree", DefaultStraightFree);
+            rangeSlack = Cfg.NotNegative(rangeSlackEntry, "EarthModifiers", "RangeSlackMetres", DefaultRangeSlack);
+            DoubleStraightSeconds = Cfg.NotNegative(doubleStraightEntry, "EarthModifiers", "DoubleStraightSeconds", DefaultDoubleStraight);
+            SlideDeceleration = Cfg.NotNegative(slideDecelerationEntry, "EarthModifiers", "SlideDeceleration", DefaultSlideDeceleration);
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
                 SpawnPlan.Set(k, Cfg.NotNegative(aheadEntries[i], "EarthStones", k + "AheadMetres", SpawnPlan.DefaultAhead(k)),
@@ -90,6 +125,7 @@ namespace Earthbending {
             var on = new List<string>();
             for (int i = 0; i < StoneTable.Count; i++) if (enabled[i]) on.Add(((StoneKind)i).ToString());
             MelonLogger.Msg($"[Earth] Stones: summons of {(on.Count == 0 ? "no stone" : string.Join(", ", on.ToArray()))}; at most {maxPerPlayer} a player and {maxTotal} in all, each for {life:0.#} s");
+            MelonLogger.Msg($"[Earth] Modifiers: Straight {StraightGrounded:0.#} N s on an anchored stone (it slides, slowing {SlideDeceleration:0.##} m/s every second), {StraightFree:0.#} on a loose one; reach {ReachSettings.Reach:0.##} m, at most {ReachSettings.MaxHeight:0.##} m above the feet, {rangeSlack:0.##} m of slack on the server");
         }
 
         static int AtLeastOne(MelonPreferences_Entry<int>? e, string key, int fallback) {
@@ -121,7 +157,7 @@ namespace Earthbending {
             // the server's within the slack). Only a claim for a kind that is on spends its cooldown; one refused after that (its
             // head, its ground) has still spent it, as the game's own fired pose has.
             bool sane = SummonCheck.Sane(in c), kindOn = sane && enabled[(int)c.Kind];
-            bool cooldownOk = kindOn && ledger.TrySpend(account, (int)SummonCheck.MoveOf(c.Kind), Time.unscaledTimeAsDouble, CooldownOf(c.Kind));
+            bool cooldownOk = kindOn && ledger.TrySpend(account, (int)SummonCheck.MoveOf(c.Kind), Time.unscaledTimeAsDouble, CooldownOf(SummonCheck.MoveOf(c.Kind)));
             SummonRefusal why = SummonCheck.Decide(in c, serverHead, true, kindOn, cooldownOk, headSlack);
             string ground = "";
             (V3 start, V3 end, float riseSeconds, float yawDeg) plan = default;
@@ -139,6 +175,12 @@ namespace Earthbending {
                 why = SummonCheck.Decide(in c, serverHead, natural, kindOn, cooldownOk, headSlack);
             }
             if (why != SummonRefusal.None) { Refused(p, c, why, serverHead, ground); return; }
+
+            // what Spawn needs (a registered prefab, a chunk at the end point) BEFORE the caps break anyone's stone for it
+            if (!Spawnable(c.Kind, U(plan.end), out _, out _, out string cannot)) {
+                MelonLogger.Warning($"[Earth] Summon: refused {c.Kind} for {NameOf(p)}: {cannot}");
+                return;
+            }
 
             // the caps: this player's oldest makes room, or a full server refuses
             List<StoneBody> owned = OwnedBy(account);
@@ -167,7 +209,54 @@ namespace Earthbending {
             MelonLogger.Msg($"[Earth] Summon: refused {kind} for {NameOf(p)}: {why}{heads}");
         }
 
-        static float CooldownOf(StoneKind k) => Math.Max(0f, poseDefaults.CooldownOf(SummonCheck.MoveOf(k)) - cooldownSlack);
+        /// <summary>The server's cooldown for a move: the game's own (PoseValues.Default) less CooldownSlackSeconds.</summary>
+        static float CooldownOf(Move m) => Math.Max(0f, poseDefaults.CooldownOf(m) - cooldownSlack);
+
+        // ---------------------------------------------------------------- a Modify claim
+
+        static void OnModify(Player p, ModifyClaim c) {
+            if (shutDown || p == null) return;
+            try { Modify(p, c); }
+            catch (Exception e) {
+                if (!modifyFailed) { modifyFailed = true; MelonLogger.Warning($"[Earth] Modifiers: a modifier failed (said once): {e}"); }
+                else if (Logs.Debug) MelonLogger.Msg($"[Earth] Modifiers: a modifier failed again: {e.Message}");
+            }
+        }
+
+        static void Modify(Player p, ModifyClaim c) {
+            PlayerController pc = p.PlayerController;
+            Transform? headT = pc != null ? pc.Head : null;
+            if (p.UserInfo == null || headT == null) { RefusedModify(p, c, ModifyRefusal.OutOfReach, null, null, 0f); return; }
+            ulong account = AccountOf(p);
+            V3 serverHead = V(headT.position);
+            float feetY = pc!.RealFeetPosition.y;
+
+            // the ledger first (any claim a game of this mod could send spends that modifier's cooldown, as the game's own
+            // fired pose has), then the check against the server's own head and feet
+            bool sane = ModifyCheck.Sane(in c);
+            bool cooldownOk = sane && ledger.TrySpend(account, (int)ModifyCheck.MoveOf(c.Mod), Time.unscaledTimeAsDouble, CooldownOf(ModifyCheck.MoveOf(c.Mod)));
+            StoneBody? b = sane && Stones.TryGetValue(c.Target, out StoneBody found) && found != null && !found.Broken ? found : null;
+            Bounds box = b != null ? b.Box : default;
+            ModifyRefusal why = ModifyCheck.Decide(in c, cooldownOk, b != null ? b.State : (StoneState?)null, V(box.min), V(box.max), serverHead, feetY,
+                ReachSettings.Reach, ReachSettings.MaxHeight, rangeSlack);
+            if (why != ModifyRefusal.None || b == null) { RefusedModify(p, c, why, b, serverHead, feetY); return; }
+
+            StoneState was = b.State;
+            b.Apply(c.Mod, p, c.Hand, U(SpawnPlan.Forward(c.Yaw)));
+            if (Logs.Debug)
+                MelonLogger.Msg($"[Earth] Modify: {c.Mod} on {b.Kind} #{b.Id} of {b.OwnerName} by {NameOf(p)}: {was} -> {b.State}{(b.StraightQueued ? " (it slides once it has risen)" : "")} along yaw {c.Yaw:0.#} (its box {Reach.Nearest(serverHead, V(box.min), V(box.max)):0.##} m from the server's head; heads {(c.Head - serverHead).Length:0.##} m apart)");
+        }
+
+        // One Debug line; nothing is built without [EarthLog] Debug.
+        static void RefusedModify(Player p, in ModifyClaim c, ModifyRefusal why, StoneBody? b, V3? serverHead, float feetY) {
+            if (!Logs.Debug) return;
+            string mod = (int)c.Mod < ModifyCheck.ModifierCount ? c.Mod.ToString() : "modifier " + (byte)c.Mod;
+            string stone = b != null ? $"{b.Kind} #{b.Id} ({b.State})" : $"#{c.Target}";
+            string where = serverHead is V3 h
+                ? $" (hand {c.Hand}, yaw {c.Yaw:0.#}, claimed head {c.Head}, the server's {h} and feet {feetY:0.##}{(b != null ? $", the stone's box {V(b.Box.min)} to {V(b.Box.max)}" : "")})"
+                : " (no body on the server)";
+            MelonLogger.Msg($"[Earth] Modify: refused {mod} on {stone} for {NameOf(p)}: {why}{where}");
+        }
 
         static void OnPlayerRemoved(Player p) {
             try { if (p != null && p.UserInfo != null) ledger.Forget(AccountOf(p)); }
@@ -183,10 +272,10 @@ namespace Earthbending {
         internal static StoneBody? Spawn(StoneKind kind, Vector3 at, Quaternion rot, Player? owner, StoneState state, Vector3 end, float riseSeconds) {
             if (!Main.IsServer) { MelonLogger.Warning($"[Earth] Spawn: refused, {kind} asked for on a game (only the server spawns stones)"); return null; }
             if (shutDown) return null;
-            NetworkPrefab? prefab = Prefabs.Of(kind);
-            if (prefab == null) { MelonLogger.Warning($"[Earth] Spawn: refused, no registered prefab for {kind}"); return null; }
-            LocationChunk chunk = LocationChunkHelper.GetBestContaining(end);   // the end: the start may be under the chunk's ground
-            if (chunk == null) { MelonLogger.Warning($"[Earth] Spawn: refused, no chunk holds {end} for the {kind}"); return null; }
+            if (!Spawnable(kind, end, out NetworkPrefab? prefab, out LocationChunk? chunk, out string cannot) || prefab == null || chunk == null) {
+                MelonLogger.Warning($"[Earth] Spawn: refused, {cannot}");
+                return null;
+            }
             bool ignored = false, kinematic = StoneRules.Kinematic(state);
             NetworkEntity e = SpawnHelper.Spawn(prefab, SpawnData.Default, chunk, at, rot, x => {
                 // never in the world save; the copy's own NetworkPrefab, not NetworkEntity.Prefab (see Prefabs.KindOf). Kinematic
@@ -207,6 +296,19 @@ namespace Earthbending {
             Stones[b.Id] = b;
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Spawn: {kind} #{b.Id} at {at} ({state}) for {b.OwnerName}");
             return b;
+        }
+
+        /// <summary>What <see cref="Spawn"/> needs for a stone that ends at <paramref name="end"/>: the kind's registered prefab
+        /// and the chunk that holds the end (not the start: that may be under the chunk's ground). False, with why, when either
+        /// is missing.</summary>
+        static bool Spawnable(StoneKind kind, Vector3 end, out NetworkPrefab? prefab, out LocationChunk? chunk, out string why) {
+            chunk = null;
+            prefab = Prefabs.Of(kind);
+            if (prefab == null) { why = $"no registered prefab for {kind}"; return false; }
+            chunk = LocationChunkHelper.GetBestContaining(end);
+            if (chunk == null) { why = $"no chunk holds {end} for the {kind}"; return false; }
+            why = "";
+            return true;
         }
 
         /// <summary>From StoneBody (its Break, or its destroy by anything else): it no longer stands.</summary>
@@ -254,6 +356,7 @@ namespace Earthbending {
             }
             catch (Exception e) {
                 if (!tickFailed) { tickFailed = true; MelonLogger.Warning($"[Earth] Stones: the stones' tick failed (said once): {e}"); }
+                else if (Logs.Debug) MelonLogger.Msg($"[Earth] Stones: the stones' tick failed again: {e.Message}");
             }
         }
 

@@ -125,18 +125,16 @@ namespace Earthbending {
             return i != null && !i.IsInteracting;
         }
 
-        /// <summary>The game's grounded flag for the local player (SmoothLocomotion.IsGrounded: the character controller's
-        /// last move touched below) and, only while grounded, whether the ground under the feet is natural (Ground.Under from
-        /// 0.5 m above the feet, as the Debug ground line reads it). Both false with no local player or no SmoothLocomotion.</summary>
+        /// <summary>The game's grounded flag for the local player (Moves.Grounded: LocomotionController.IsGrounded, the flag
+        /// the game zeroes velocity and counts fall damage on) and, only while grounded, whether the ground under the feet is
+        /// natural (Ground.Under from 0.5 m above the feet, as the Debug ground line reads it). Both false with no local player
+        /// or no LocomotionController.</summary>
         internal static void GroundState(out bool grounded, out bool natural) {
             grounded = false;
             natural = false;
             PlayerController pc = PlayerController.Current;
             if (pc == null) return;
-            var smooth = pc as SmoothLocomotionPlayerController;
-            SmoothLocomotion? loco = smooth != null ? smooth.SmoothLocomotion : null;
-            if (loco == null) return;
-            grounded = loco.IsGrounded;
+            grounded = Moves.Grounded(pc);
             if (grounded) natural = Ground.Under(pc.RealFeetPosition + Vector3.up * 0.5f, out _);
         }
 

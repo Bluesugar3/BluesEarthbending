@@ -20,6 +20,110 @@ internal static class StoneTests {
         Check("box bevelled", box.VertexCount == StoneBox.BevelledVertices && box.TriangleCount == StoneBox.BevelledTriangles);
 
         Summons();
+        Straights();
+    }
+
+    // A cube of side `size` centred at (x, y, z), as (min, max).
+    static (V3 min, V3 max) Box(float x, float y, float z, float size) {
+        float h = size * 0.5f;
+        return (new V3(x - h, y - h, z - h), new V3(x + h, y + h, z + h));
+    }
+
+    static (uint id, V3 min, V3 max) Stone(uint id, float x, float y, float z, float size) {
+        (V3 min, V3 max) b = Box(x, y, z, size);
+        return (id, b.min, b.max);
+    }
+
+    static ModifyClaim Mod(Modifier m, uint target, V3 head) => new ModifyClaim(m, 0, target, head, 0f);
+
+    // Task 7: Straight (the reach rule, the target pick, the server's check of a Modify claim, the states, the pushback)
+    static void Straights() {
+        // the head at the origin, the feet 1.6 m under it: a 1 m cube on the ground has its centre at -1.1
+        var head = V3.Zero;
+        const float feet = -1.6f;
+
+        // spec 2.4: the reach rule
+        Check("reach: cube 2 m ahead", Reach.InReach(head, 0f, Box(0, -1.1f, 2f, 1f), feet, 2.5f, 2.4f, 0f));
+        Check("reach: behind", !Reach.InReach(head, 0f, Box(0, -1.1f, -1.5f, 1f), feet, 2.5f, 2.4f, 0f));
+        Check("reach: 3.2 m", !Reach.InReach(head, 0f, Box(0, -1.1f, 3.7f, 1f), feet, 2.5f, 2.4f, 0f));
+        Check("reach: slack lets 2.9 m in", Reach.InReach(head, 0f, Box(0, -1.1f, 3.4f, 1f), feet, 2.5f, 2.4f, 0.5f));
+        Check("reach: too high", !Reach.InReach(head, 0f, Box(0, 1.2f, 1f, 1f), feet, 2.5f, 2.4f, 0f));
+        Check("reach: slack lifts the height too", Reach.InReach(head, 0f, Box(0, 1.2f, 1f, 1f), feet, 2.5f, 2.4f, 0.5f));
+        Check("reach: yaw 90 faces +x", Reach.InReach(head, 90f, Box(2f, -1.1f, 0f, 1f), feet, 2.5f, 2.4f, 0f)
+            && !Reach.InReach(head, 90f, Box(-2f, -1.1f, 0f, 1f), feet, 2.5f, 2.4f, 0f)
+            && !Reach.InReach(head, 90f, Box(-0.01f, -1.1f, 1f, 1f), feet, 2.5f, 2.4f, 0f));   // beside, its centre just behind the plane
+        Check("reach: the nearest point counts, not the centre", Reach.InReach(head, 0f, Box(0, -1.1f, 2.9f, 2f), feet, 2.5f, 2.4f, 0f));
+        Check("reach: separate corners", Reach.InReach(head, 0f, new V3(-0.5f, -1.6f, 1.5f), new V3(0.5f, -0.6f, 2.5f), feet, 2.5f, 2.4f, 0f));
+        Check("reach: a head that is not a number", !Reach.InReach(new V3(float.NaN, 0f, 0f), 0f, Box(0, -1.1f, 2f, 1f), feet, 2.5f, 2.4f, 0.5f));
+        Check("reach: a yaw that is not a number", !Reach.InReach(head, float.NaN, Box(0, -1.1f, 2f, 1f), feet, 2.5f, 2.4f, 0.5f));
+
+        // the client's pick: the smallest angle from the flat forward, ties to the nearer
+        double l = 40.0 * System.Math.PI / 180.0;
+        var left40 = Stone(1u, (float)(-1.5 * System.Math.Sin(l)), -1.1f, (float)(1.5 * System.Math.Cos(l)), 0.5f);
+        Check("pick: the one most in front", Reach.Pick(head, 0f, new[] { left40, Stone(2u, 0f, -1.1f, 2f, 1f) }, feet, 2.5f, 2.4f) == 2u);
+        Check("pick: ties to the nearer", Reach.Pick(head, 0f, new[] { Stone(3u, 0f, -1.1f, 2.4f, 1f), Stone(4u, 0f, -1.1f, 1.5f, 1f) }, feet, 2.5f, 2.4f) == 4u
+            && Reach.Pick(head, 0f, new[] { Stone(4u, 0f, -1.1f, 1.5f, 1f), Stone(3u, 0f, -1.1f, 2.4f, 1f) }, feet, 2.5f, 2.4f) == 4u);
+        Check("pick: one out of reach is never picked", Reach.Pick(head, 0f, new[] { Stone(5u, 0f, -1.1f, 3.7f, 1f), left40 }, feet, 2.5f, 2.4f) == 1u);
+        Check("pick: none in reach", Reach.Pick(head, 0f, new[] { Stone(5u, 0f, -1.1f, 3.7f, 1f), Stone(6u, 0f, -1.1f, -2f, 1f) }, feet, 2.5f, 2.4f) == 0u);
+        Check("pick: no stones", Reach.Pick(head, 0f, new (uint, V3, V3)[0], feet, 2.5f, 2.4f) == 0u && Reach.Pick(head, 0f, null, feet, 2.5f, 2.4f) == 0u);
+        Check("pick: id 0 is no stone", Reach.Pick(head, 0f, new[] { Stone(0u, 0f, -1.1f, 2f, 1f) }, feet, 2.5f, 2.4f) == 0u);
+        Check("pick: along the yaw", Reach.Pick(head, 90f, new[] { Stone(7u, 0f, -1.1f, 2f, 1f), Stone(8u, 2f, -1.1f, 0.6f, 1f) }, feet, 2.5f, 2.4f) == 8u);
+
+        // states
+        Check("straight on still -> sliding", StoneRules.After(StoneState.Still, Modifier.Straight) == StoneState.Sliding);
+        Check("straight on free -> free", StoneRules.After(StoneState.Free, Modifier.Straight) == StoneState.Free);
+        Check("straight on rising -> sliding", StoneRules.After(StoneState.Rising, Modifier.Straight) == StoneState.Sliding);
+        Check("straight on sliding -> sliding", StoneRules.After(StoneState.Sliding, Modifier.Straight) == StoneState.Sliding);
+        Check("straight on flicked -> flicked", StoneRules.After(StoneState.Flicked, Modifier.Straight) == StoneState.Flicked);
+        Check("explode leaves the state", StoneRules.After(StoneState.Free, Modifier.Explode) == StoneState.Free);
+        Check("straight applies to every state", StoneRules.CanApply(StoneState.Still, Modifier.Straight) && StoneRules.CanApply(StoneState.Free, Modifier.Straight)
+            && StoneRules.CanApply(StoneState.Rising, Modifier.Straight) && StoneRules.CanApply(StoneState.Sliding, Modifier.Straight));
+        Check("flick never on a still stone", !StoneRules.CanApply(StoneState.Still, Modifier.Flick));
+        Check("no modifier past Explode", !StoneRules.CanApply(StoneState.Free, (Modifier)8));
+
+        // the slide: slowed by its deceleration, still again under 0.1 m/s
+        Check("slide: slows", Near(StoneRules.SlideSpeed(8f, 4f, 0.5f), 6f) && Near(StoneRules.SlideSpeed(1f, 4f, 0.5f), 0f));
+        Check("slide: 0 deceleration keeps it", Near(StoneRules.SlideSpeed(8f, 0f, 0.5f), 8f));
+        Check("slide: a speed that is not a number stops", Near(StoneRules.SlideSpeed(float.NaN, 4f, 0.02f), 0f));
+        Check("slide: stops under 0.1 m/s", StoneRules.SlideStops(0.09f) && !StoneRules.SlideStops(0.1f) && !StoneRules.SlideStops(3f) && StoneRules.SlideStops(float.NaN));
+
+        // the server's check of a Modify claim (its own head and feet, the claimed yaw)
+        var still = (StoneState?)StoneState.Still;
+        (V3 min, V3 max) ahead = Box(0, -1.1f, 2f, 1f), far = Box(0f, 0f, 3.8f, 1f);   // far: its nearest point 3.3 m from the head
+        Check("modify: ok", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("modify: not a stone", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), true, null, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NoStone);
+        Check("modify: out of reach with slack", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), true, still, far.min, far.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.OutOfReach);
+        Check("modify: cooldown", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), false, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Cooldown);
+        Check("modify: not allowed", ModifyCheck.Decide(Mod(Modifier.Flick, 9u, head), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NotAllowed);
+        Check("modify: the server's head, not the claimed one", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, new V3(0f, 0f, 3f)), true, still, far.min, far.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.OutOfReach
+            && ModifyCheck.Decide(Mod(Modifier.Straight, 9u, new V3(0f, 0f, 3f)), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("modify: the server's head unknown", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), true, still, ahead.min, ahead.max, new V3(float.NaN, 0f, 0f), feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.OutOfReach);
+        Check("modify: the claimed yaw", ModifyCheck.Decide(new ModifyClaim(Modifier.Straight, 0, 9u, head, 180f), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.OutOfReach);
+        // the order: bad, cooldown, the stone, its reach, the state
+        Check("modify: cooldown before the stone", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), false, null, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Cooldown);
+        Check("modify: the stone before its reach", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, head), true, null, far.min, far.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.NoStone);
+        Check("modify: reach before the state", ModifyCheck.Decide(Mod(Modifier.Flick, 9u, head), true, still, far.min, far.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.OutOfReach);
+        // ruling 13: a claim no game of this mod sends
+        Check("modify bad: modifier byte out of range", ModifyCheck.Decide(Mod((Modifier)8, 9u, head), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad);
+        Check("modify bad: hand byte out of range", ModifyCheck.Decide(new ModifyClaim(Modifier.Straight, 2, 9u, head, 0f), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad
+            && ModifyCheck.Decide(new ModifyClaim(Modifier.Straight, 1, 9u, head, 0f), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
+        Check("modify bad: NaN head", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, new V3(0f, float.NaN, 0f)), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad);
+        Check("modify bad: infinite head", ModifyCheck.Decide(Mod(Modifier.Straight, 9u, new V3(float.PositiveInfinity, 0f, 0f)), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad);
+        Check("modify bad: NaN or infinite yaw", ModifyCheck.Decide(new ModifyClaim(Modifier.Straight, 0, 9u, head, float.NaN), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad
+            && ModifyCheck.Decide(new ModifyClaim(Modifier.Straight, 0, 9u, head, float.NegativeInfinity), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad);
+        Check("modify bad: yaw past a turn", ModifyCheck.Decide(new ModifyClaim(Modifier.Straight, 0, 9u, head, 1e30f), true, still, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad);
+        Check("modify bad before cooldown", ModifyCheck.Decide(Mod((Modifier)200, 9u, head), false, null, ahead.min, ahead.max, head, feet, 2.5f, 2.4f, 0.5f) == ModifyRefusal.Bad);
+        Check("modify sane", ModifyCheck.Sane(Mod(Modifier.Explode, 1u, head)) && !ModifyCheck.Sane(Mod((Modifier)8, 1u, head)));
+        Check("move of a modifier", ModifyCheck.MoveOf(Modifier.Straight) == Move.Straight && ModifyCheck.MoveOf(Modifier.Explode) == Move.Explode && ModifyCheck.MoveOf(Modifier.Hold) == Move.Hold);
+        Check("modifier of a move", ModifyCheck.ModifierOf(Move.Kick, out Modifier km) && km == Modifier.Kick && ModifyCheck.ModifierOf(Move.Explode, out Modifier em) && em == Modifier.Explode
+            && !ModifyCheck.ModifierOf(Move.Wall, out _) && !ModifyCheck.ModifierOf(Move.Jump, out _) && !ModifyCheck.ModifierOf(Move.None, out _));
+
+        // the player's own pushback (spec 3.5): back along the yaw, a little up, half in the air
+        Check("pushback grounded, yaw 0", Near(MoveRules.Pushback(0f, true, false, 2.5f, 1.7f, 0.25f).Z, -2.5f) && Near(MoveRules.Pushback(0f, true, false, 2.5f, 1.7f, 0.25f).Y, 0.25f));
+        Check("pushback airborne halves", Near(MoveRules.Pushback(0f, false, true, 2.5f, 1.7f, 0.25f).Z, -0.85f));
+        Check("pushback free, on the ground", Near(MoveRules.Pushback(0f, false, false, 2.5f, 1.7f, 0.25f).Z, -1.7f) && Near(MoveRules.Pushback(0f, false, false, 2.5f, 1.7f, 0.25f).X, 0f));
+        Check("pushback yaw 90 goes to -x", Near(MoveRules.Pushback(90f, true, false, 2.5f, 1.7f, 0.25f).X, -2.5f) && Near(MoveRules.Pushback(90f, true, false, 2.5f, 1.7f, 0.25f).Z, 0f));
+        Check("pushback airborne halves the lift", Near(MoveRules.Pushback(0f, true, true, 2.5f, 1.7f, 0.25f).Y, 0.125f) && Near(MoveRules.Pushback(0f, true, true, 2.5f, 1.7f, 0.25f).Z, -1.25f));
     }
 
     // Task 6: summoning (the server's checks, the cooldown ledger, where a stone rises, when it breaks, the caps)

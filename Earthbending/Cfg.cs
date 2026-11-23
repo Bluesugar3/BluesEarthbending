@@ -88,6 +88,34 @@ namespace Earthbending {
         }
     }
 
+    /// <summary>[EarthModifiers] Reach and MaxHeight (spec 2.4), on the server AND on every game: a game picks the stone its
+    /// modifier goes to with its own values (Bend.cs), the server checks the claim with its own plus RangeSlackMetres
+    /// (Server.cs). Keep them the same on both; the server's are the ones that count.</summary>
+    internal static class ReachSettings {
+        const float DefaultReach = 2.5f, DefaultMaxHeight = 2.4f;
+
+        static MelonPreferences_Entry<float>? reachEntry, maxHeightEntry;
+
+        /// <summary>Metres from the head to the nearest point of a stone's box.</summary>
+        internal static float Reach { get; private set; } = DefaultReach;
+        /// <summary>Metres a stone's centre may be above the feet.</summary>
+        internal static float MaxHeight { get; private set; } = DefaultMaxHeight;
+
+        /// <summary>From Main.OnInitializeMelon on every machine.</summary>
+        internal static void Init() {
+            MelonPreferences_Category cat = Cfg.Category("EarthModifiers");
+            reachEntry = cat.CreateEntry("Reach", DefaultReach, description: "Server and game. A modifier reaches a stone whose nearest point is within this many metres of the head, whose centre is in front of the head, and whose centre is at most MaxHeight above the feet (spec 2.4). The game picks the stone most in front with its own value; the server checks it with its own plus RangeSlackMetres, so keep both the same. Above 0.");
+            maxHeightEntry = cat.CreateEntry("MaxHeight", DefaultMaxHeight, description: "Server and game. A modifier reaches a stone only when its centre is at most this many metres above the feet (see Reach). 0 or more.");
+            Apply();
+            Cfg.Changed += Apply;
+        }
+
+        static void Apply() {
+            Reach = Cfg.Positive(reachEntry, "EarthModifiers", "Reach", DefaultReach);
+            MaxHeight = Cfg.NotNegative(maxHeightEntry, "EarthModifiers", "MaxHeight", DefaultMaxHeight);
+        }
+    }
+
     /// <summary>[EarthLog] Debug (per game, off): the per-frame, per-hit and per-claim lines. Written
     /// <c>if (Logs.Debug) MelonLogger.Msg(...)</c>, so the string is never built while it is off.</summary>
     internal static class Logs {

@@ -11,9 +11,11 @@ namespace Earthbending {
     // the ground (Hands.GroundState, through the GroundGrace of [EarthPose] GroundGraceSeconds: ruling 16) and the hitstun,
     // and steps the PoseMachine. A fired move gives one haptic tick on both hands ([EarthLooks] PoseHaptic, PoseHapticSeconds),
     // does what it does (Jump: Moves.Push straight up at [EarthMovement] JumpSpeed, and Moves.Dust at the feet; an armed
-    // structure: a Summon claim to the server, Net.SendSummon, only when the server runs this mod), logs one Debug
-    // line, then raises Fired. Nothing fires while the pose recorder runs ([EarthPose] Capture), while downed or dead (as in
-    // hitstun: a pose held through it does not fire after it), or with no local player (the machine then starts over).
+    // structure: a Summon claim to the server, Net.SendSummon, only when the server runs this mod; a modifier: the stone in
+    // reach most in front (Reach.Pick over StoneView.Live) gets a Modify claim, Net.SendModify, and a Straight pushes the player
+    // back, Moves.Pushback; no stone in reach sends nothing), logs one Debug line, then raises Fired. Nothing fires while the
+    // pose recorder runs ([EarthPose] Capture), while downed or dead (as in hitstun: a pose held through it does not fire after
+    // it), or with no local player (the machine then starts over).
     //
     // The machine is built once, from the poses (PoseLibrary.Defaults, each replaced by UserData\Earthbending\poses.txt's pose
     // of the same move when that file has one: PoseLibrary.Merge; a line of it that does not parse is one warning, and its pose
@@ -30,7 +32,7 @@ namespace Earthbending {
     }
 
     internal static class Bend {
-        const float DefaultGroundGraceSeconds = 0.15f, DefaultJumpSpeed = 6f, DefaultPoseHaptic = 0.4f, DefaultPoseHapticSeconds = 0.05f;
+        const float DefaultGroundGraceSeconds = 0.15f, MaxGroundGraceSeconds = 0.5f, DefaultJumpSpeed = 6f, DefaultPoseHaptic = 0.4f, DefaultPoseHapticSeconds = 0.05f;
         const float PosesLookSeconds = 2f;
 
         static MelonPreferences_Entry<float>? minHold, rearm, structureWindow, moveCooldown, groundGrace, jumpSpeedEntry, poseHaptic, poseHapticSeconds;
@@ -60,7 +62,7 @@ namespace Earthbending {
             rearm = pose.CreateEntry("RearmSeconds", d.RearmSeconds, description: "Per game. A pose fires again only after the hands have left it for this long. 0 or more.");
             structureWindow = pose.CreateEntry("StructureWindowSeconds", d.StructureWindowSeconds, description: "Per game. A structure pose fires only when the base pose was held within this many seconds before it. 0 or more.");
             moveCooldown = pose.CreateEntry("MoveCooldownSeconds", d.MoveCooldownSeconds, description: "Per game. After a Jump (or a Dash) fires, the same move waits this long before it can fire again. 0 or more.");
-            groundGrace = pose.CreateEntry("GroundGraceSeconds", DefaultGroundGraceSeconds, description: "Per game. A pose counts you as standing for this long after the game last had you on the ground, on the ground you stood on then (the game's on-the-ground flag flickers while walking, and a pose judged in a flicker would be used up). 0 or more.");
+            groundGrace = pose.CreateEntry("GroundGraceSeconds", DefaultGroundGraceSeconds, description: "Per game. A pose counts you as standing for this long after the game last had you on the ground, on the ground you stood on then (the game's on-the-ground flag flickers while walking, and a pose judged in a flicker would be used up). 0 to 0.5 (more is used as 0.5: a longer grace would let a Jump fire well after leaving the ground).");
             jumpSpeedEntry = Cfg.Category("EarthMovement").CreateEntry("JumpSpeed", DefaultJumpSpeed, description: "Per game. The Jump pose pushes you up at this many m/s (6: about 2.2 m high). 0 or more.");
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
             poseHaptic = looks.CreateEntry("PoseHaptic", DefaultPoseHaptic, description: "Per game. Every move a pose fires buzzes both hands this strongly (0 to 1; 0: no buzz).");
@@ -71,7 +73,12 @@ namespace Earthbending {
         }
 
         static void Apply() {
-            grace.Seconds = Cfg.NotNegative(groundGrace, "EarthPose", "GroundGraceSeconds", DefaultGroundGraceSeconds);
+            float g = Cfg.NotNegative(groundGrace, "EarthPose", "GroundGraceSeconds", DefaultGroundGraceSeconds);
+            if (g > MaxGroundGraceSeconds) {
+                MelonLogger.Warning($"[Earth] Settings: [EarthPose] GroundGraceSeconds {g} is more than {MaxGroundGraceSeconds}; using {MaxGroundGraceSeconds}");
+                g = MaxGroundGraceSeconds;
+            }
+            grace.Seconds = g;
             jumpSpeed = Cfg.NotNegative(jumpSpeedEntry, "EarthMovement", "JumpSpeed", DefaultJumpSpeed);
             haptic = Mathf.Min(1f, Cfg.NotNegative(poseHaptic, "EarthLooks", "PoseHaptic", DefaultPoseHaptic));
             hapticSeconds = Cfg.NotNegative(poseHapticSeconds, "EarthLooks", "PoseHapticSeconds", DefaultPoseHapticSeconds);
@@ -85,8 +92,10 @@ namespace Earthbending {
         }
 
         /// <summary>Reads poses.txt and builds the machine again when the poses or the timings differ from what it was built
-        /// with. A file that cannot be read keeps the poses as they were (and is read again at the next look).</summary>
+        /// with. A file that cannot be read keeps the poses as they were (and is read again at the next look). Runs at every
+        /// settings reload and every change of poses.txt, each of which lets a failing frame warn once more.</summary>
         static void Build() {
+            failed = false;
             string[]? lines = posesLines;
             if (ReadPoses(out string[]? read, out DateTime stamp)) {
                 lines = read;
@@ -172,7 +181,7 @@ namespace Earthbending {
             catch (Exception e) {
                 if (failed) return;
                 failed = true;
-                MelonLogger.Warning($"[Earth] Bend: the pose machine's frame failed (said once): {e}");
+                MelonLogger.Warning($"[Earth] Bend: the pose machine's frame failed (said once until the next settings reload): {e}");
             }
         }
 
@@ -194,6 +203,7 @@ namespace Earthbending {
             try {
                 if (move == Move.Jump) { if (Moves.Push(new Vector3(0f, jumpSpeed, 0f))) Moves.Dust(pc.RealFeetPosition); }
                 else if (PoseMachine.IsStructure(move)) Summon(move, head, yawDeg);
+                else if (PoseMachine.IsModifier(move)) Modify(pc, move, rightIsA, head, yawDeg);
             }
             catch (Exception e) {
                 MelonLogger.Warning($"[Earth] Bend: {move} failed: {e.Message}");
@@ -217,6 +227,53 @@ namespace Earthbending {
             }
             bool sent = Net.SendSummon(new SummonClaim(kind, new V3(head.x, head.y, head.z), yawDeg));
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: Summon {kind} {(sent ? "sent" : "NOT sent (no connection to the server)")} (head {head}, yaw {yawDeg:0.#})");
+        }
+
+        /// <summary>A modifier fired: picks the stone it goes to (<see cref="Target"/>) and asks the server to apply it (spec
+        /// 3.2, 3.8) with this frame's head and yaw and the pose's A hand (0 right, 1 left). No stone in reach: nothing is sent,
+        /// and a Straight pushes no one. Only for a stone whose prefab this server registered (ruling 12). A Straight that was
+        /// sent pushes the local player back (Moves.Pushback), harder when the stone is anchored as this game sees it (its
+        /// rigidbody kinematic); the server may still refuse the claim (its log says why).</summary>
+        static void Modify(PlayerController pc, Move move, bool rightIsA, Vector3 head, float yawDeg) {
+            if (!ModifyCheck.ModifierOf(move, out Modifier mod)) return;
+            StoneView? target = Target(pc, head, yawDeg);
+            if (target == null) {
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: {mod} not sent: no stone in reach ({StoneView.Live.Count} stone(s) on this game)");
+                return;
+            }
+            uint id = target.Entity != null ? target.Entity.Identifier : 0u;
+            if (Prefabs.Of(target.Kind) == null) {
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: {mod} not sent: this server does not run Blue's Earthbending (no stone prefabs)");
+                return;
+            }
+            bool anchored = target.Body != null && target.Body.isKinematic;
+            bool sent = Net.SendModify(new ModifyClaim(mod, (byte)(rightIsA ? 0 : 1), id, new V3(head.x, head.y, head.z), yawDeg));
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: Modify {mod} on {target.Kind} #{id} ({(anchored ? "anchored" : "loose")}) {(sent ? "sent" : "NOT sent (no connection to the server)")} (head {head}, yaw {yawDeg:0.#})");
+            if (sent && mod == Modifier.Straight) Moves.Pushback(yawDeg, anchored);
+        }
+
+        static readonly List<(uint id, V3 min, V3 max)> candidates = new List<(uint id, V3 min, V3 max)>();
+        static readonly List<StoneView> candidateViews = new List<StoneView>();
+
+        /// <summary>The stone a modifier struck now goes to: of the live stones on this game (StoneView.Live, no scene
+        /// search), the one Reach.Pick picks from this head, yaw and the local player's feet, with [EarthModifiers] Reach and
+        /// MaxHeight (no slack); each stone's box is its collider's world bounds. Null when none is in reach.</summary>
+        static StoneView? Target(PlayerController pc, Vector3 head, float yawDeg) {
+            candidates.Clear();
+            candidateViews.Clear();
+            foreach (StoneView v in StoneView.Live) {
+                if (v == null || !v.isActiveAndEnabled || v.Shape == null || v.Entity == null || v.Entity.IsBeingDestroyed || v.Entity.Identifier == 0u) continue;
+                Bounds b = v.Shape.bounds;
+                candidates.Add((v.Entity.Identifier, new V3(b.min.x, b.min.y, b.min.z), new V3(b.max.x, b.max.y, b.max.z)));
+                candidateViews.Add(v);
+            }
+            uint id = Reach.Pick(new V3(head.x, head.y, head.z), yawDeg, candidates, pc.RealFeetPosition.y, ReachSettings.Reach, ReachSettings.MaxHeight);
+            StoneView? picked = null;
+            if (id != 0u)
+                for (int i = 0; i < candidates.Count; i++) if (candidates[i].id == id) { picked = candidateViews[i]; break; }
+            candidates.Clear();
+            candidateViews.Clear();
+            return picked;
         }
 
         /// <summary>One tick on both hands. TriggerHaptic's second argument is the buzz's length in seconds (PlayerInput.Haptic
