@@ -86,6 +86,18 @@ internal static class StoneTests {
         Check("approaching: nothing to go by", !StoneRules.Approaching(V3.Zero, new V3(0f, 0f, 1f)) && !StoneRules.Approaching(new V3(0f, 0f, 5f), V3.Zero)
             && !StoneRules.Approaching(new V3(float.NaN, 0f, 5f), new V3(0f, 0f, 1f)));
         Check("player radius 0.3 m", Near(StoneRules.PlayerRadius, 0.3f));
+        // the controller's rulings on Task 8: a creature is hit on the STONE's own speed (a creature walking into a standing
+        // stone is not hit and does not break it); a player only by a stone coming toward them, and not at all with HurtPlayers off
+        Check("creature: a standing stone is never a hit", !StoneRules.CanHit(StoneState.Still, 0f, 2f) && !StoneRules.CanHit(StoneState.Sliding, 1.5f, 2f));
+        Check("creature: a stone moving at MinHitSpeed hits", StoneRules.CanHit(StoneState.Sliding, 2f, 2f));
+        var toward = new V3(0f, 0f, 1f);
+        Check("player: a fast stone coming toward them", StoneRules.HitsPlayer(StoneState.Sliding, new V3(0f, 0f, 8f), toward, 2f, true));
+        Check("player: HurtPlayers off ignores players", !StoneRules.HitsPlayer(StoneState.Sliding, new V3(0f, 0f, 8f), toward, 2f, false)
+            && !StoneRules.HitsPlayer(StoneState.Free, new V3(0f, 0f, 20f), toward, 0f, false));
+        Check("player: going away is no hit", !StoneRules.HitsPlayer(StoneState.Sliding, new V3(0f, 0f, -8f), toward, 2f, true));
+        Check("player: too slow is no hit", !StoneRules.HitsPlayer(StoneState.Sliding, new V3(0f, 0f, 1.9f), toward, 2f, true));
+        Check("player: never by a rising stone", !StoneRules.HitsPlayer(StoneState.Rising, new V3(0f, 8f, 0f), new V3(0f, 1f, 0f), 2f, true));
+        Check("player: a velocity that is not a number", !StoneRules.HitsPlayer(StoneState.Free, new V3(float.NaN, 0f, 8f), toward, 2f, true));
 
         // ruling 24: a player is a capsule from the head down to the feet, radius 0.3, against the stone's box (in its own frame)
         var half = new V3(0.5f, 0.5f, 0.5f);   // a 1 m cube centred at the origin

@@ -257,10 +257,17 @@ namespace Earthbending {
         /// <summary>Spec 2.6: a struck player's hitstun, power x 0.7 / 3 seconds; never from a Disc (and 0 at power 0 or below).</summary>
         public static float HitstunSeconds(StoneKind k, int power) => k == StoneKind.Disc || power <= 0 ? 0f : power * HitstunPerPower;
 
-        /// <summary>Whether a stone in state <paramref name="s"/> can hit at <paramref name="speed"/> m/s: never while Rising
-        /// (ruling 25), and only at <paramref name="minHitSpeed"/> or faster. A creature's hit is judged on the collision's
-        /// relative speed, a player's on the stone's own speed (ruling 24).</summary>
+        /// <summary>Whether a stone in state <paramref name="s"/> moving at <paramref name="speed"/> m/s (its OWN speed, for a
+        /// creature and a player alike: the controller's ruling on Task 8, so a creature walking into a standing stone is not
+        /// hit and does not break it) can hit: never while Rising (ruling 25), and only at <paramref name="minHitSpeed"/> or faster.</summary>
         public static bool CanHit(StoneState s, float speed, float minHitSpeed) => s != StoneState.Rising && speed >= minHitSpeed;
+
+        /// <summary>Whether a stone moving at <paramref name="velocity"/> that touches a player's capsule hits them: only with
+        /// <paramref name="hurtPlayers"/> ([EarthDamage] HurtPlayers; off, stones ignore players entirely: no damage, no
+        /// knockback, no break), when it can hit at its own speed (<see cref="CanHit"/>) and while it comes toward them
+        /// (<see cref="Approaching"/>, <paramref name="toward"/> from the stone's nearest point to the player's).</summary>
+        public static bool HitsPlayer(StoneState s, V3 velocity, V3 toward, float minHitSpeed, bool hurtPlayers) =>
+            hurtPlayers && CanHit(s, velocity.Length, minHitSpeed) && Approaching(velocity, toward);
 
         /// <summary>Whether two touching stones clash: neither is Rising (ruling 25), and they meet at
         /// <paramref name="minHitSpeed"/> or faster relative to each other.</summary>

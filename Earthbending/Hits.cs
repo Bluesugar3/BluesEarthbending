@@ -15,24 +15,26 @@ namespace Earthbending {
     //     MovingSpeed, from the stone's velocity BEFORE the physics step (StoneBody.Velocity): a collision callback comes after
     //     the step, which has already slowed the stone against what it struck.
     //   - A creature (a health object that is not a player's, with a cripple stat or an Alta.Intelligence.Agent) is hit
-    //     through the stone's own collisions (StoneBody.OnCollisionEnter -> OnContact), judged on the collision's relative
-    //     speed: at least MinHitSpeed, and never by a Rising stone (ruling 25).
+    //     through the stone's own collisions (StoneBody.OnCollisionEnter -> OnContact), judged on the STONE's own speed before
+    //     the step (the controller's ruling on Task 8): at least MinHitSpeed, and never by a Rising stone (ruling 25). A
+    //     creature that walks into a standing stone is not hit and does not break it. Only a new contact counts: a creature
+    //     already touching a stone when it is pushed is not hit by it (accepted for now).
     //   - A player is hit by the server testing each moving stone (its own speed at least MinHitSpeed, not Rising) against
     //     each player's capsule, from the head (PlayerController.Head) down to the feet (RealFeetPosition), radius 0.3 m, in the
     //     stone's own frame (Contact, Stones.cs), every physics step before the step (StoneBody.FixedUpdate -> TestPlayers):
     //     the headless server's player colliders are not known to be where the players are (ruling 24). Only a stone that
     //     comes toward the player hits them (StoneRules.Approaching, this step's velocity or the last one's, so a bounce off
     //     the player's own collider in between still counts): one that slides away from a player touching it, as its owner
-    //     who just pushed it, does not. Its owner CAN be hit by it otherwise (ruling 25).
+    //     who just pushed it, does not. Its owner CAN be hit by it otherwise (ruling 25). With HurtPlayers off, stones ignore
+    //     players entirely: no damage, no knockback, no break (StoneRules.HitsPlayer; the capsule test does not even run).
     //   - The hit: DamagePerPower x power (Blunt) and CripplePerPower x power, one plain ImpactHit (no tool, so never the
     //     game's PvP gate) through the health object's DetectImpact, as Explosive.Trigger does; the game's own multipliers,
     //     armour, damage protection and spawn invincibility still apply. The wielder is the stone owner's PlayerController
-    //     (and its entity) while they are online, so a creature turns on them and a kill names them; else none. A player is
-    //     hurt only with HurtPlayers; a struck player is knocked back on their own game either way (Net.SendKnockback:
-    //     KnockDir of the stone's velocity x KnockbackSpeed, hitstun power x 0.7 / 3 s, none from a Disc; Moves pushes and
-    //     stuns them). A struck creature still alive is stunned (its Agent's own Stun(float), which Turabada, Gotera,
-    //     GreaterGotera, Babu and Dragonfly have) with power x 0.3 s as the strength; the game's Stun ignores the number and
-    //     plays the creature's own stunned action.
+    //     (and its entity) while they are online, so a creature turns on them and a kill names them; else none. A struck
+    //     player is also knocked back on their own game (Net.SendKnockback: KnockDir of the stone's velocity x
+    //     KnockbackSpeed, hitstun power x 0.7 / 3 s, none from a Disc; Moves pushes and stuns them). A struck creature still
+    //     alive is stunned (its Agent's own Stun(float), which Turabada, Gotera, GreaterGotera, Babu and Dragonfly have) with
+    //     power x 0.3 s as the strength; the game's Stun ignores the number and plays the creature's own stunned action.
     //   - One stone hits one target at most once per HitCooldownSeconds (HitLedger); with BreakOnHit the stone then breaks,
     //     so it hits once. A stone that has broken hits nothing more, in the same physics step too.
     //   - Two stones that touch clash when neither is Rising and they meet at MinHitSpeed or faster relative to each other:
@@ -49,7 +51,7 @@ namespace Earthbending {
         static MelonPreferences_Entry<bool>? hurtPlayersEntry, breakOnHitEntry;
         static MelonPreferences_Entry<float>? damagePerPowerEntry, cripplePerPowerEntry, minHitSpeedEntry, movingSpeedEntry, knockbackSpeedEntry, hitCooldownEntry;
 
-        /// <summary>[EarthDamage] HurtPlayers: a stone's hit damages players (they are knocked back either way).</summary>
+        /// <summary>[EarthDamage] HurtPlayers: stones hit players (damage, knockback, the break); off, they ignore players entirely.</summary>
         internal static bool HurtPlayers { get; private set; } = DefaultHurtPlayers;
         internal static float DamagePerPower { get; private set; } = DefaultDamagePerPower;
         internal static float CripplePerPower { get; private set; } = DefaultCripplePerPower;
@@ -78,10 +80,10 @@ namespace Earthbending {
         /// <summary>From Server.Init on the dedicated server: the [EarthDamage] settings.</summary>
         internal static void Init() {
             MelonPreferences_Category cat = Cfg.Category("EarthDamage");
-            hurtPlayersEntry = cat.CreateEntry("HurtPlayers", DefaultHurtPlayers, description: "Server. A stone's hit damages players too (always, whatever the server's PvP setting; the game's spawn invincibility still applies). Off: a struck player takes no damage, but is still knocked back and the stone still breaks.");
+            hurtPlayersEntry = cat.CreateEntry("HurtPlayers", DefaultHurtPlayers, description: "Server. Stones hit players: a moving stone that comes at a player damages them (whatever the server's PvP setting; the game's spawn invincibility still applies), knocks them back and breaks on them. Off: stones ignore players entirely (no damage, no knockback, no break; they still hit creatures and clash), for a public server: a knockback alone can push someone off a cliff.");
             damagePerPowerEntry = cat.CreateEntry("DamagePerPower", DefaultDamagePerPower, description: "Server. A stone's hit deals this much damage per point of its power (Blunt; power is the stone's own, +1 grounded, +1 moving faster than MovingSpeed: a still Cube is 3, a sliding Pillar pushed by Straight 3). A guess to tune from the Debug lines' health before and after. 0 or more (0: no damage).");
             cripplePerPowerEntry = cat.CreateEntry("CripplePerPower", DefaultCripplePerPower, description: "Server. A stone's hit also deals this much cripple per point of power, which knocks a creature down once its stagger pool runs out. 0 or more.");
-            minHitSpeedEntry = cat.CreateEntry("MinHitSpeed", DefaultMinHitSpeed, description: "Server. A stone hits a creature only when they meet at this many m/s or more, a player only when the stone itself moves this fast toward them, and two stones clash only when they meet this fast. A rising stone never hits or clashes. 0 or more.");
+            minHitSpeedEntry = cat.CreateEntry("MinHitSpeed", DefaultMinHitSpeed, description: "Server. A stone hits a creature or a player only when the stone itself moves this many m/s or more (toward the player; a creature walking into a standing stone is not hit), and two stones clash only when they meet this fast. A rising stone never hits or clashes. 0 or more.");
             movingSpeedEntry = cat.CreateEntry("MovingSpeed", DefaultMovingSpeed, description: "Server. A stone moving faster than this many m/s has one more power for its hits and clashes. 0 or more.");
             knockbackSpeedEntry = cat.CreateEntry("KnockbackSpeed", DefaultKnockbackSpeed, description: "Server. A struck player is pushed this many m/s along the stone's way (flat, or 45 degrees up when the stone rose that steeply), on their own game, and cannot bend for power x 0.7 / 3 s (never after a Disc). 0 or more.");
             breakOnHitEntry = cat.CreateEntry("BreakOnHit", DefaultBreakOnHit, description: "Server. A stone breaks once it has hit a creature or a player (so each stone hits once). Off: it carries on, and may hit the same one again after HitCooldownSeconds.");
@@ -99,7 +101,7 @@ namespace Earthbending {
             MovingSpeed = Cfg.NotNegative(movingSpeedEntry, "EarthDamage", "MovingSpeed", DefaultMovingSpeed);
             KnockbackSpeed = Cfg.NotNegative(knockbackSpeedEntry, "EarthDamage", "KnockbackSpeed", DefaultKnockbackSpeed);
             HitCooldownSeconds = Cfg.NotNegative(hitCooldownEntry, "EarthDamage", "HitCooldownSeconds", DefaultHitCooldown);
-            MelonLogger.Msg($"[Earth] Hits: {DamagePerPower:0.##} damage and {CripplePerPower:0.##} cripple per power from {MinHitSpeed:0.##} m/s (+1 power over {MovingSpeed:0.##} m/s); players {(HurtPlayers ? "hurt" : "not hurt")}, knocked back {KnockbackSpeed:0.##} m/s; a stone {(BreakOnHit ? "breaks on its hit" : "carries on after a hit")}, one hit per target every {HitCooldownSeconds:0.##} s");
+            MelonLogger.Msg($"[Earth] Hits: {DamagePerPower:0.##} damage and {CripplePerPower:0.##} cripple per power from {MinHitSpeed:0.##} m/s (+1 power over {MovingSpeed:0.##} m/s); {(HurtPlayers ? $"players hurt and knocked back {KnockbackSpeed:0.##} m/s" : "players ignored ([EarthDamage] HurtPlayers off)")}; a stone {(BreakOnHit ? "breaks on its hit" : "carries on after a hit")}, one hit per target every {HitCooldownSeconds:0.##} s");
         }
 
         /// <summary>From Server.Forget: a stone that no longer stands is forgotten by the hit record.</summary>
@@ -112,8 +114,8 @@ namespace Earthbending {
         internal static void OnContact(StoneBody stone, Collision c) {
             try {
                 if (stone == null || stone.Broken || c == null || stone.State == StoneState.Rising) return;
-                float rel = c.relativeVelocity.magnitude;
-                if (!(rel >= MinHitSpeed)) return;   // most contacts (a stone on the ground) end here
+                float rel = c.relativeVelocity.magnitude, own = stone.Velocity.magnitude;
+                if (!(rel >= MinHitSpeed) && !(own >= MinHitSpeed)) return;   // most contacts (a stone on the ground) end here
                 Collider other = c.collider;
                 if (other == null) return;
                 StoneBody that = other.GetComponentInParent<StoneBody>();
@@ -121,7 +123,7 @@ namespace Earthbending {
                     if (!ReferenceEquals(that, stone)) Clash(stone, that, rel);
                     return;
                 }
-                if (!StoneRules.CanHit(stone.State, rel, MinHitSpeed)) return;
+                if (!StoneRules.CanHit(stone.State, own, MinHitSpeed)) return;   // the stone's own speed (the ruling on concern 4)
                 HealthObject? h = HealthOf(other);
                 if (h == null || h is PlayerHealth || !IsCreature(h)) return;   // players: TestPlayers (ruling 24)
                 Vector3 point = other.transform.position, normal = Vector3.up;
@@ -152,7 +154,7 @@ namespace Earthbending {
         static void HitCreature(StoneBody stone, HealthObject h, Vector3 point, Vector3 normal, float rel) {
             int power = stone.Power;
             if (power <= 0) return;   // a slow loose Disc touches without a hit (spec 2.2)
-            float damage = StoneRules.Damage(power, rel, DamagePerPower, MinHitSpeed), cripple = StoneRules.Cripple(power, CripplePerPower);
+            float damage = StoneRules.Damage(power, stone.Velocity.magnitude, DamagePerPower, MinHitSpeed), cripple = StoneRules.Cripple(power, CripplePerPower);
             if (!ledger.TryHit(stone.Id, h.GetInstanceID(), Time.unscaledTimeAsDouble, HitCooldownSeconds)) return;
             string name = h.name;
             Vector3 dir = Direction(stone.Velocity, -normal);
@@ -171,11 +173,11 @@ namespace Earthbending {
         // ---------------------------------------------------------------- players: the capsule test
 
         /// <summary>Server, from StoneBody.FixedUpdate (before the physics step, after the stone's own update): a moving stone
-        /// (its own speed, this step's or the last one's, at least MinHitSpeed; never Rising) against every player's capsule.
-        /// Never throws.</summary>
+        /// (its own speed, this step's or the last one's, at least MinHitSpeed; never Rising) against every player's capsule;
+        /// nothing at all with HurtPlayers off (StoneRules.HitsPlayer decides). Never throws.</summary>
         internal static void TestPlayers(StoneBody stone) {
             try {
-                if (stone == null || stone.Broken) return;
+                if (stone == null || stone.Broken || !HurtPlayers) return;   // HurtPlayers off: stones ignore players entirely
                 Vector3 now = stone.Velocity, last = stone.LastVelocity;
                 if (!StoneRules.CanHit(stone.State, Mathf.Max(now.magnitude, last.magnitude), MinHitSpeed)) return;
                 Collider? shape = stone.Shape;
@@ -187,8 +189,8 @@ namespace Earthbending {
                     Vector3 toward = onPlayer - onStone;
                     if (toward.sqrMagnitude < 1e-8f) toward = onPlayer - centre;   // the head's line runs through the stone
                     Vector3 vel;
-                    if (StoneRules.CanHit(stone.State, now.magnitude, MinHitSpeed) && StoneRules.Approaching(V(now), V(toward))) vel = now;
-                    else if (StoneRules.CanHit(stone.State, last.magnitude, MinHitSpeed) && StoneRules.Approaching(V(last), V(toward))) vel = last;   // it bounced off them in the last step
+                    if (StoneRules.HitsPlayer(stone.State, V(now), V(toward), MinHitSpeed, HurtPlayers)) vel = now;
+                    else if (StoneRules.HitsPlayer(stone.State, V(last), V(toward), MinHitSpeed, HurtPlayers)) vel = last;   // it bounced off them in the last step
                     else continue;
                     HitPlayer(stone, v, vel, onStone, toward);
                 }
@@ -211,7 +213,7 @@ namespace Earthbending {
             Sane(ref point, ref normal, v.Head);
             Vector3 dir = Direction(vel, -normal);
             float before = ph.Health, after = before;
-            bool hurt = HurtPlayers && (damage > 0f || cripple > 0f);
+            bool hurt = damage > 0f || cripple > 0f;   // HurtPlayers is on here (TestPlayers returns without it)
             if (hurt) {
                 PlayerController? wielder = OwnerController(stone);
                 var hit = new ImpactHit(damage, cripple, 1f, 1f, null, ImpactType.Blunt, point, normal, dir, null, wielder != null ? wielder.Entity : null, wielder);
@@ -227,7 +229,7 @@ namespace Earthbending {
                 if (!sendFailed) { sendFailed = true; MelonLogger.Warning($"[Earth] Hits: sending a knockback failed (said once): {e.Message}"); }
             }
             if (Logs.Debug) {
-                string dealt = hurt ? $"damage {damage:0.##}, cripple {cripple:0.##}" : !HurtPlayers ? "not hurt ([EarthDamage] HurtPlayers off)" : "not hurt (DamagePerPower and CripplePerPower are 0)";
+                string dealt = hurt ? $"damage {damage:0.##}, cripple {cripple:0.##}" : "not hurt (DamagePerPower and CripplePerPower are 0)";
                 MelonLogger.Msg($"[Earth] Hits: {stone.Kind} #{stone.Id} of {stone.OwnerName} ({stone.State}, power {power}, {speed:0.##} m/s) hit player {v.Name}{(stone.Owner != 0UL && stone.Owner == Server.AccountOf(v.Player) ? " (its owner)" : "")}: {dealt}; health {before:0.##} -> {after:0.##} of {(ph != null ? ph.MaxHealth : 0f):0.##}; knockback {knock}, hitstun {hitstun:0.###} s{(sent ? "" : " (NOT sent)")}{(BreakOnHit ? "; it breaks" : "")}");
             }
             if (BreakOnHit) stone.Break(Logs.Debug ? $"hit player {v.Name}" : "hit a player");
