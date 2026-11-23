@@ -38,6 +38,7 @@ namespace Earthbending {
         const float PosesLookSeconds = 2f;
 
         static MelonPreferences_Entry<float>? minHold, rearm, structureWindow, moveCooldown, groundGrace, jumpSpeedEntry, poseHaptic, poseHapticSeconds;
+        static MelonPreferences_Entry<float>? structureDeep, structureStillMetres, structureStillSeconds;
         static float jumpSpeed = DefaultJumpSpeed, haptic = DefaultPoseHaptic, hapticSeconds = DefaultPoseHapticSeconds;
 
         static PoseMachine? machine;
@@ -69,6 +70,9 @@ namespace Earthbending {
             rearm = pose.CreateEntry("RearmSeconds", d.RearmSeconds, description: "Per game. A pose fires again only after the hands have left it for this long. 0 or more.");
             structureWindow = pose.CreateEntry("StructureWindowSeconds", d.StructureWindowSeconds, description: "Per game. A structure pose fires only when the base pose was held within this many seconds before it. 0 or more.");
             moveCooldown = pose.CreateEntry("MoveCooldownSeconds", d.MoveCooldownSeconds, description: "Per game. After a Jump (or a Dash) fires, the same move waits this long before it can fire again. 0 or more.");
+            structureDeep = pose.CreateEntry("StructureDeepScore", d.StructureDeepScore, description: "Per game. A structure (Disc, Ball, Pillar, Cube, Wall) is not fired as the hands enter it but at its deepest point, so the edge of one crossed on the way to another fires nothing: of the structures the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.5: half way in), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). 0 or more; 1 or more fires on entry.");
+            structureStillMetres = pose.CreateEntry("StructureStillMetres", d.StructureStillMetres, description: "Per game. A structure struck loosely (never as deep as StructureDeepScore) fires once both hands have stayed within this many metres of where they were for StructureStillSeconds, and it has got no deeper meanwhile. Hands moving slower than this over that time count as stopped (0.01 m in 0.06 s: about 0.17 m/s). 0 or more.");
+            structureStillSeconds = pose.CreateEntry("StructureStillSeconds", d.StructureStillSeconds, description: "Per game. See StructureStillMetres: how long the hands must be still in a structure struck loosely before it fires. 0 or more.");
             groundGrace = pose.CreateEntry("GroundGraceSeconds", DefaultGroundGraceSeconds, description: "Per game. A pose counts you as standing for this long after the game last had you on the ground, on the ground you stood on then (the game's on-the-ground flag flickers while walking, and a pose judged in a flicker would be used up). 0 to 0.5 (more is used as 0.5: a longer grace would let a Jump fire well after leaving the ground).");
             jumpSpeedEntry = Cfg.Category("EarthMovement").CreateEntry("JumpSpeed", DefaultJumpSpeed, description: "Per game. The Jump pose pushes you up at this many m/s (6: about 2.2 m high). 0 or more.");
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
@@ -94,6 +98,9 @@ namespace Earthbending {
             v.RearmSeconds = Cfg.NotNegative(rearm, "EarthPose", "RearmSeconds", v.RearmSeconds);
             v.StructureWindowSeconds = Cfg.NotNegative(structureWindow, "EarthPose", "StructureWindowSeconds", v.StructureWindowSeconds);
             v.MoveCooldownSeconds = Cfg.NotNegative(moveCooldown, "EarthPose", "MoveCooldownSeconds", v.MoveCooldownSeconds);
+            v.StructureDeepScore = Cfg.NotNegative(structureDeep, "EarthPose", "StructureDeepScore", v.StructureDeepScore);
+            v.StructureStillMetres = Cfg.NotNegative(structureStillMetres, "EarthPose", "StructureStillMetres", v.StructureStillMetres);
+            v.StructureStillSeconds = Cfg.NotNegative(structureStillSeconds, "EarthPose", "StructureStillSeconds", v.StructureStillSeconds);
             wanted = v;
             Build();
         }
@@ -122,7 +129,8 @@ namespace Earthbending {
             emptyGate.Reset();
             grace.Reset();
             MelonLogger.Msg($"[Earth] Poses: the machine runs {poses.Length} poses ({(lines == null ? "all built in; no " + posesPath : fromFileCount + " from " + posesPath + ", the rest built in")}); "
-                + $"hold {wanted.MinHoldSeconds:0.###} s, rearm {wanted.RearmSeconds:0.###} s, a structure within {wanted.StructureWindowSeconds:0.###} s of the base, Jump and Dash cooldown {wanted.MoveCooldownSeconds:0.###} s");
+                + $"hold {wanted.MinHoldSeconds:0.###} s, rearm {wanted.RearmSeconds:0.###} s, a structure within {wanted.StructureWindowSeconds:0.###} s of the base, "
+                + $"fired at a score of {wanted.StructureDeepScore:0.###} or with the hands within {wanted.StructureStillMetres:0.###} m for {wanted.StructureStillSeconds:0.###} s, Jump and Dash cooldown {wanted.MoveCooldownSeconds:0.###} s");
         }
 
         static bool ReadPoses(out string[]? lines, out DateTime stamp) {
@@ -152,7 +160,8 @@ namespace Earthbending {
         }
 
         static bool SameTimings(PoseValues a, PoseValues b) =>
-            a.MinHoldSeconds == b.MinHoldSeconds && a.RearmSeconds == b.RearmSeconds && a.StructureWindowSeconds == b.StructureWindowSeconds && a.MoveCooldownSeconds == b.MoveCooldownSeconds;
+            a.MinHoldSeconds == b.MinHoldSeconds && a.RearmSeconds == b.RearmSeconds && a.StructureWindowSeconds == b.StructureWindowSeconds && a.MoveCooldownSeconds == b.MoveCooldownSeconds
+            && a.StructureDeepScore == b.StructureDeepScore && a.StructureStillMetres == b.StructureStillMetres && a.StructureStillSeconds == b.StructureStillSeconds;
 
         static bool SameLines(string[]? a, string[]? b) {
             if (a == null || b == null) return a == b;

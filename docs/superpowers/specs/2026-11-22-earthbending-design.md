@@ -144,6 +144,8 @@ Frame: the origin is the head (camera) position. +Z is the head's forward flatte
 Rules of the pose machine (all settings, `[EarthPose]`):
 - A pose fires the first frame the hands are inside it (`MinHoldSeconds` 0: passing through counts). It fires again only after it has stopped matching for `RearmSeconds` 0.1.
 - While a structure is armed (the base pose within `StructureWindowSeconds`), Jump and Dash do not fire: moving from the base pose into a structure must not dash on the way (RUMBLE's own wiki warns of that accident). Modifiers still fire.
+- (Ruling 33) An armed structure fires at its deepest point, not on entry: the hands moving from Base to Cube cross the edge of Ball's zone first, and Ball must not fire. While armed, the structure zones the hands are in are followed. A structure fires once the hands are deep inside it, or once they stop going deeper into it while it is the best-scored structure. Passing the edge of one structure on the way to another fires only the other. The rule is tested by straight-line hand paths from Base to each structure: each fires exactly that structure, with either hand as A.
+- (Ruling 34) The base pose arms only from a frame where no structure matches (a clean base), so one loose pose in a zone that both Base and a structure reach never summons on its own.
 - Structure poses count only while armed: the base pose matched within the last `StructureWindowSeconds` 1.2, and the player is grounded on natural ground now. Firing a structure disarms; the base pose must be struck again.
 - Movement needs grounded on natural ground. Modifiers work grounded on natural ground or in the air; never while standing on other ground.
 - Both hands empty, or nothing counts and the machine resets.

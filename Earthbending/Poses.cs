@@ -330,6 +330,7 @@ namespace Earthbending {
         public const int MoveCount = (int)Move.Dash + 1;
 
         public float MinHoldSeconds, RearmSeconds, StructureWindowSeconds, MoveCooldownSeconds;
+        public float StructureDeepScore, StructureStillMetres, StructureStillSeconds;
         public float[]? Cooldown;
 
         public static PoseValues Default {
@@ -345,7 +346,8 @@ namespace Earthbending {
                 c[(int)Move.Flick] = 0.8f;
                 c[(int)Move.Explode] = 0.3f;
                 // MinHoldSeconds 0: a pose fires the first frame the hands are inside it (spec 3.3, "flow, not hold")
-                return new PoseValues { MinHoldSeconds = 0f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f, Cooldown = c };
+                return new PoseValues { MinHoldSeconds = 0f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f,
+                    StructureDeepScore = 0.5f, StructureStillMetres = 0.01f, StructureStillSeconds = 0.06f, Cooldown = c };
             }
         }
 
@@ -366,6 +368,9 @@ namespace Earthbending {
                 RearmSeconds = Ok(RearmSeconds, d.RearmSeconds),
                 StructureWindowSeconds = Ok(StructureWindowSeconds, d.StructureWindowSeconds),
                 MoveCooldownSeconds = Ok(MoveCooldownSeconds, d.MoveCooldownSeconds),
+                StructureDeepScore = Ok(StructureDeepScore, d.StructureDeepScore),
+                StructureStillMetres = Ok(StructureStillMetres, d.StructureStillMetres),
+                StructureStillSeconds = Ok(StructureStillSeconds, d.StructureStillSeconds),
                 Cooldown = c,
             };
         }
@@ -379,10 +384,16 @@ namespace Earthbending {
     /// first frame the hands are inside it, so a hand passing through a pose fires it), and that entry is judged once, then:
     /// it fires, or it is used up (a gate, its cooldown or a better pose the same frame), and it fires again only after it
     /// has stopped matching for <see cref="PoseValues.RearmSeconds"/>;</item>
-    /// <item><see cref="Move.Base"/> never fires: while it counts it arms the structures, which fire only when the base
-    /// counted within <see cref="PoseValues.StructureWindowSeconds"/> before the structure's pose started matching, with the
-    /// player grounded on natural ground; firing a structure disarms. While armed (the base counted within that window of
-    /// now) Jump and Dash do not fire, so moving from the base into a structure never dashes on the way;</item>
+    /// <item><see cref="Move.Base"/> never fires: while it counts on a frame where no structure matches (a clean base,
+    /// Ruling 34) it arms the structures, which fire only when the base counted within
+    /// <see cref="PoseValues.StructureWindowSeconds"/> before the structure's pose started matching, with the player grounded
+    /// on natural ground; firing a structure disarms. While armed (the base counted within that window of now) Jump and Dash
+    /// do not fire, so moving from the base into a structure never dashes on the way;</item>
+    /// <item>an armed structure is not judged on entry but followed (Ruling 33): of the armed structures the hands are in,
+    /// the best-scored fires once its score is at most <see cref="PoseValues.StructureDeepScore"/>, or once the hands have
+    /// stopped going deeper into it (both hands within <see cref="PoseValues.StructureStillMetres"/> of where they were, and
+    /// its score no better, for <see cref="PoseValues.StructureStillSeconds"/>). So the edge of one structure crossed on
+    /// the way to another fires nothing, and a structure struck loosely fires when the hands stop in it;</item>
     /// <item>modifiers need natural ground under a grounded player, or the air; movement needs natural ground under a
     /// grounded player; each move waits out its own cooldown;</item>
     /// <item>with anything in a hand nothing counts and every pose and the arming start over (the cooldowns stay); while
@@ -395,15 +406,25 @@ namespace Earthbending {
             public bool Matching, Used, RightIsA, Counts;
             public double Since, LeftAt;
             public float Score;
+            public float Deepest;       // the best score since it started matching (to follow a structure) ...
+            public double DeepestAt;    // ... and when that was
         }
 
         const double Eps = 1e-6;   // seconds: frame times that land on a threshold count as reaching it
+        // a followed structure's score counts as deeper only when it is this much better than its best so far (a score's
+        // noise from a hand's tracking jitter is well under this at the default zones)
+        const float DeeperBy = 0.01f;
 
         readonly PoseSpec[] specs;
         readonly State[] states;
         readonly PoseValues values;
         readonly double[] lastFired = new double[PoseValues.MoveCount];
         double baseAt = double.NegativeInfinity;
+
+        // the hands' stillness: where both were when one last moved more than StructureStillMetres, and since when
+        V3 stillRight, stillLeft;
+        bool stillKnown;
+        double stillSince = double.PositiveInfinity;
 
         /// <summary>The score of the last move fired (for the log).</summary>
         public float LastScore { get; private set; }
@@ -432,7 +453,10 @@ namespace Earthbending {
                 return Move.None;
             }
 
+            Still(now, in right, in left);
+
             // every pose's state first, so the base's arming does not depend on the order of the list
+            bool baseCounts = false, structureMatches = false;
             for (int i = 0; i < specs.Length; i++) {
                 ref State st = ref states[i];
                 bool matches = PoseMatch.Match(in specs[i], in right, in left, out bool rA, out float score);
@@ -444,25 +468,46 @@ namespace Earthbending {
                 if (!st.Matching) {
                     st.Matching = true;
                     st.Since = now;
+                    st.Deepest = score;
+                    st.DeepestAt = now;
                     if (st.Used && now - st.LeftAt >= values.RearmSeconds - Eps) st.Used = false;
+                }
+                else if (score < st.Deepest - DeeperBy) {
+                    st.Deepest = score;
+                    st.DeepestAt = now;
                 }
                 st.RightIsA = rA;
                 st.Score = score;
                 st.Counts = now - st.Since >= values.MinHoldSeconds - Eps;
-                if (st.Counts && specs[i].Move == Move.Base) baseAt = now;
+                if (IsStructure(specs[i].Move)) structureMatches = true;
+                if (st.Counts && specs[i].Move == Move.Base) baseCounts = true;
             }
+            if (baseCounts && !structureMatches) baseAt = now;   // Ruling 34: only a clean base arms
 
-            int best = -1, bestRank = int.MaxValue;
-            float bestScore = float.PositiveInfinity;
+            int best = -1, bestRank = int.MaxValue, lead = -1;
+            float bestScore = float.PositiveInfinity, leadScore = float.PositiveInfinity;
             for (int i = 0; i < specs.Length; i++) {
                 ref State st = ref states[i];
                 Move move = specs[i].Move;
                 if (!st.Counts || st.Used || move == Move.Base) continue;
-                st.Used = true;   // an entry is judged once: it fires now or not at all
+                // a modifier's or a movement's entry is judged once: it fires now or not at all. A structure is followed
+                // (Ruling 33): it is used up only when it may not fire (stunned, its cooldown, not armed, not on natural
+                // ground) or when it fires
+                bool followed = IsStructure(move);
+                if (!followed || stunned) st.Used = true;
                 if (stunned) continue;
                 int rank = Rank(move, st.Since, now, grounded, onNatural);
-                if (rank < 0) continue;
+                if (rank < 0) { st.Used = true; continue; }
+                if (followed) {
+                    if (st.Score < leadScore) { lead = i; leadScore = st.Score; }
+                    continue;
+                }
                 if (rank < bestRank || (rank == bestRank && st.Score < bestScore)) { best = i; bestRank = rank; bestScore = st.Score; }
+            }
+            // the best-scored armed structure the hands are in fires at its deepest point, before anything else
+            if (lead >= 0 && Ready(in states[lead], now)) {
+                best = lead;
+                states[lead].Used = true;
             }
             if (best < 0) return Move.None;
 
@@ -485,10 +530,38 @@ namespace Earthbending {
             return -1;
         }
 
-        /// <summary>Every pose and the base's arming start over; the cooldowns stay. Also what a frame with a hand full does.</summary>
+        /// <summary>A followed structure fires now: deep inside it, or the hands have stopped going deeper into it (both
+        /// hands still, and its score no better, for StructureStillSeconds).</summary>
+        bool Ready(in State st, double now) {
+            if (st.Score <= values.StructureDeepScore) return true;
+            double wait = values.StructureStillSeconds - Eps;
+            return now - stillSince >= wait && now - st.DeepestAt >= wait;
+        }
+
+        /// <summary>Follows the hands' stillness: both within StructureStillMetres of where they were at
+        /// <see cref="stillSince"/>; a hand that moved further, or a place that is not a number, starts it over.</summary>
+        void Still(double now, in HandSample right, in HandSample left) {
+            if (!Finite(right.Pos) || !Finite(left.Pos)) {
+                stillKnown = false;
+                stillSince = double.PositiveInfinity;
+                return;
+            }
+            if (stillKnown && (right.Pos - stillRight).Length <= values.StructureStillMetres && (left.Pos - stillLeft).Length <= values.StructureStillMetres) return;
+            stillRight = right.Pos;
+            stillLeft = left.Pos;
+            stillKnown = true;
+            stillSince = now;
+        }
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+
+        /// <summary>Every pose, the base's arming and the hands' stillness start over; the cooldowns stay. Also what a frame
+        /// with a hand full does.</summary>
         public void Reset() {
             for (int i = 0; i < states.Length; i++) states[i] = new State { LeftAt = double.NegativeInfinity };
             baseAt = double.NegativeInfinity;
+            stillKnown = false;
+            stillSince = double.PositiveInfinity;
         }
     }
 

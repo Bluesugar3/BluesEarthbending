@@ -52,6 +52,40 @@ internal static class PoseTests {
 
     static HandSample Moved(HandSample h, V3 by) => new HandSample(h.Pos + by, h.Palm, h.Fingers);
 
+    /// <summary>Part of the way from one hand to another: the place along the straight line, the directions blended and
+    /// made length 1 (the reviewer's sweep).</summary>
+    static HandSample Toward(HandSample a, HandSample b, float u) =>
+        new HandSample(a.Pos + (b.Pos - a.Pos) * u, (a.Palm + (b.Palm - a.Palm) * u).Normalized, (a.Fingers + (b.Fingers - a.Fingers) * u).Normalized);
+
+    /// <summary>Steps the machine at 90 Hz: the hands held at <paramref name="from"/> for <paramref name="hold"/> s, moved
+    /// along straight lines to <paramref name="to"/> over <paramref name="move"/> s, then held there for <paramref name="after"/>
+    /// s. Returns each move fired and when.</summary>
+    static List<(Move move, double at)> RunPath(PoseMachine m, (HandSample r, HandSample l) from, (HandSample r, HandSample l) to, double hold, double move, double after) {
+        var fired = new List<(Move, double)>();
+        int frames = (int)Math.Round((hold + move + after) / Dt);
+        for (int n = 0; n < frames; n++) {
+            double t = n * Dt;
+            float u = t < hold ? 0f : t < hold + move ? (float)((t - hold) / move) : 1f;
+            Move mv = m.Step(t, Toward(from.r, to.r, u), Toward(from.l, to.l, u), true, true, true, false, out _);
+            if (mv != Move.None) fired.Add((mv, t));
+        }
+        return fired;
+    }
+
+    /// <summary>Two hands inside both poses at once (each hand inside both poses' hands as the two are written, or the
+    /// second mirrored), from the overlap search's witness; false when there is none.</summary>
+    static bool Between(PoseSpec p, PoseSpec q, bool mirrored, out (HandSample r, HandSample l) hands) {
+        hands = default;
+        PoseSpec o = mirrored ? q.Mirrored() : q;
+        HandSpec qr = mirrored ? o.B : o.A, ql = mirrored ? o.A : o.B;
+        var orients = Orientations(600, 24);
+        if (!Witness(p.A, qr, orients, out HandSample r) || !Witness(p.B, ql, orients, out HandSample l)) return false;
+        hands = (r, l);
+        return PoseMatch.Match(p, r, l, out _, out _) && PoseMatch.Match(q, r, l, out _, out _);
+    }
+
+    static readonly Move[] Structures = { Move.Disc, Move.Ball, Move.Pillar, Move.Cube, Move.Wall };
+
     /// <summary>A poses.txt line with its tolerances (the part after the last |) replaced.</summary>
     static string Tail(string line, string tolerances) => line.Substring(0, line.LastIndexOf('|') + 1) + " " + tolerances;
 
@@ -196,7 +230,8 @@ internal static class PoseTests {
         // the machine: entry (the first frame inside a pose counts: flow, not hold), rearm
         Check("a hand passing through a pose for one frame fires it once", Run(M(), OneFrame(Move.Jump), 0.5).SequenceEqual(new[] { Move.Jump }));
         Check("held jump fires once", Run(M(), Hold(Move.Jump, 0.3), 0.3).SequenceEqual(new[] { Move.Jump }));
-        var held = new PoseValues { MinHoldSeconds = 0.05f, RearmSeconds = 0.1f, StructureWindowSeconds = 1.2f, MoveCooldownSeconds = 0.6f, Cooldown = PoseValues.Default.Cooldown };
+        PoseValues held = PoseValues.Default;
+        held.MinHoldSeconds = 0.05f;
         Check("MinHoldSeconds above 0 still asks for a hold: one frame fires nothing, a held pose fires",
             Run(new PoseMachine(PoseLibrary.Defaults, held), OneFrame(Move.Jump), 0.5).Count == 0 && Run(new PoseMachine(PoseLibrary.Defaults, held), Hold(Move.Jump, 0.3), 0.3).SequenceEqual(new[] { Move.Jump }));
         Check("held mirrored jump fires once, left is A", Run(M(), Hold(Move.Jump, 0.3, mirrored: true), 0.3, true, true, out var jumpA).SequenceEqual(new[] { Move.Jump }) && !jumpA[0]);
@@ -220,6 +255,8 @@ internal static class PoseTests {
         Check("armed: a jump blocked by the arming is used up (held on past the window, it still does not fire)", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Jump, 2.0)), 2.2).Count == 0);
         Check("armed: once the window is over a jump fires", Run(M(), Seq(Hold(Move.Base, 0.2), Idle(1.3), Hold(Move.Jump, 0.3)), 1.8).SequenceEqual(new[] { Move.Jump }));
         Check("armed: a structure fired disarms, so a jump after it fires", Run(M(), Seq(Hold(Move.Base, 0.2), Hold(Move.Pillar, 0.2), Hold(Move.Jump, 0.3)), 0.7).SequenceEqual(new[] { Move.Pillar, Move.Jump }));
+
+        StructureFlowChecks();
 
         // rearm and cooldown
         Check("rearm: hold straight 1 s fires once; leave 0.15 s, re-enter fires again after cooldown", Run(M(), Seq(Hold(Move.Straight, 1.0), Idle(0.15), Hold(Move.Straight, 0.3)), 1.45).SequenceEqual(new[] { Move.Straight, Move.Straight }));
@@ -312,6 +349,67 @@ internal static class PoseTests {
         PoseSpec[] mixed = PoseLibrary.Parse(new[] { Tail(wallLine, "0.18 40 45"), Tail(PoseLibrary.Format(new[] { Spec(Move.Base) })[2], "0.3 0.25 0.4 50 55") }, out List<string> mixedErrors);
         Check("parse: old and new tails in one file", mixedErrors.Count == 0 && mixed.Length == 2 && mixed[0].A.TolY == 0.18f
             && mixed[1].A.TolX == 0.3f && mixed[1].B.TolY == 0.25f && mixed[1].A.TolZ == 0.4f && mixed[1].B.PalmDeg == 50f && mixed[1].A.FingerDeg == 55f);
+    }
+
+    // Rulings 33 and 34 (fix round 1): an armed structure fires at its deepest point, not on entry, so the edge of one
+    // structure on the way to another fires nothing; and the base arms only from a frame where no structure matches
+    static void StructureFlowChecks() {
+        var (baseR, baseL) = At(Move.Base);
+        PoseValues pv = PoseValues.Default;
+        Check("structures: the numbers (deep at a score of 0.5, or both hands within 1 cm for 0.06 s)",
+            Near(pv.StructureDeepScore, 0.5f) && Near(pv.StructureStillMetres, 0.01f) && Near(pv.StructureStillSeconds, 0.06f));
+
+        // the reviewer's acceptance: a straight line from Base's hands to each structure's, both ways round, at three speeds
+        foreach (double seconds in new[] { 0.15, 0.3, 0.6 }) {
+            var wrong = new List<string>();
+            foreach (Move s in Structures)
+                for (int mirrored = 0; mirrored < 2; mirrored++) {
+                    List<(Move move, double at)> got = RunPath(M(), (baseR, baseL), At(s, mirrored == 1), 0.2, seconds, 0.3);
+                    bool ok = got.Count == 1 && got[0].move == s && got[0].at <= 0.2 + seconds + 2 * Dt;
+                    if (!ok) wrong.Add($"{s}{(mirrored == 1 ? " mirrored" : "")}: [{string.Join(", ", got.Select(g => $"{g.move} at {g.at - 0.2:0.000} s"))}]");
+                }
+            Check($"structures: Base to each structure in a straight line over {seconds} s fires exactly that structure, by the time the hands reach it, either hand as A"
+                + (wrong.Count > 0 ? " (wrong: " + string.Join("; ", wrong) + ")" : ""), wrong.Count == 0);
+        }
+        List<(Move move, double at)> cube = RunPath(M(), (baseR, baseL), At(Move.Cube), 0.2, 0.3, 0.3);
+        Check("structures: Base to Cube crosses Ball's edge first (score 0.75 at best) and fires only Cube", cube.Count == 1 && cube[0].move == Move.Cube);
+        // the reviewer's rest: arms at the sides, 1 m under the head
+        var rest = (new HandSample(new V3(0.22f, -1.0f, 0.05f), new V3(-1f, 0f, 0f), new V3(0f, -1f, 0f)), new HandSample(new V3(-0.22f, -1.0f, 0.05f), new V3(1f, 0f, 0f), new V3(0f, -1f, 0f)));
+        var wallWrong = new List<string>();
+        foreach (double seconds in new[] { 0.3, 0.6, 1.0, 1.5 }) {
+            List<(Move move, double at)> wall = RunPath(M(), rest, At(Move.Wall), 0.2, seconds, 0.3);
+            if (!(wall.Count == 1 && wall[0].move == Move.Wall)) wallWrong.Add($"{seconds} s: [{string.Join(", ", wall.Select(g => g.move))}]");
+        }
+        Check("structures: raising the hands from rest to Wall (through Base, then Ball's edge) fires Wall, never Ball, at 0.3 to 1.5 s"
+            + (wallWrong.Count > 0 ? " (wrong: " + string.Join("; ", wallWrong) + ")" : ""), wallWrong.Count == 0);
+        List<(Move move, double at)> direct = RunPath(M(), (baseR, baseL), At(Move.Disc), 0.2, 1e-9, 0.3);
+        double firstThere = Enumerable.Range(0, 100).Select(n => n * Dt).First(t => !(t < 0.2 + 1e-9));
+        Check("structures: struck straight at its centre, a structure fires on the first frame there", direct.Count == 1 && direct[0].move == Move.Disc && direct[0].at == firstThere);
+
+        // a structure struck loosely (never deeper than 0.5) fires once the hands stop in it
+        (HandSample r, HandSample l) disc = At(Move.Disc), halfway = (Toward(baseR, disc.r, 0.5f), Toward(baseL, disc.l, 0.5f));
+        PoseMatch.Match(Spec(Move.Disc), halfway.r, halfway.l, out _, out float halfScore);
+        List<(Move move, double at)> loose = RunPath(M(), (baseR, baseL), halfway, 0.2, 0.15, 0.5);
+        Check($"structures: half way to Disc (score {halfScore:0.00}, not deep) and held still, Disc fires once the hands have stopped, within 0.06 s and a frame or two",
+            halfScore > 0.5f && halfScore <= 1f && loose.Count == 1 && loose[0].move == Move.Disc && loose[0].at >= 0.35 + 0.06 - 1e-6 && loose[0].at <= 0.35 + 0.06 + 3 * Dt);
+        List<(Move move, double at)> slow = RunPath(M(), (baseR, baseL), disc, 0.2, 1.5, 0.3);
+        Check("structures: a slow, steady move into Disc fires Disc once", slow.Count == 1 && slow[0].move == Move.Disc);
+
+        // Ruling 34: a pose in a place both Base and a structure reach is no base, so one loose pose there never summons
+        foreach (Move s in new[] { Move.Disc, Move.Ball })
+            for (int mirrored = 0; mirrored < 2; mirrored++) {
+                string name = s + (mirrored == 1 ? " mirrored" : "");
+                bool found = Between(Spec(Move.Base), Spec(s), mirrored == 1, out (HandSample r, HandSample l) both);
+                var idleHands = (IdleR, IdleL);
+                List<(Move move, double at)> alone = found ? RunPath(M(), idleHands, both, 0.2, Dt, 1.0) : new List<(Move, double)>();
+                Check($"base: held still for 1 s in a place inside both Base and {name} summons nothing (found the place: {found})",
+                    found && !alone.Any(g => PoseMachine.IsStructure(g.move)));
+                // the same place after a clean base is a loose structure, struck and held: the best-scored structure there fires
+                Move bestThere = Structures.OrderBy(x => PoseMatch.Match(Spec(x), both.r, both.l, out _, out float sc) ? sc : float.PositiveInfinity).First();
+                List<(Move move, double at)> after = found ? RunPath(M(), (baseR, baseL), both, 0.2, 0.15, 1.0) : new List<(Move, double)>();
+                Check($"base: after a clean base, the same place fires the structure best struck there ({bestThere}) once",
+                    found && after.Count(g => PoseMachine.IsStructure(g.move)) == 1 && after.First(g => PoseMachine.IsStructure(g.move)).move == bestThere);
+            }
     }
 
     // the measured body scale ([EarthPose] BodyScale 0): standing eye height over 1.63 m, held to 0.7..1.3
