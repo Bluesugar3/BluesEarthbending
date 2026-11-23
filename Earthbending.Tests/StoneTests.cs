@@ -12,6 +12,10 @@ internal static class StoneTests {
     static SummonClaim Claim(StoneKind kind, V3 head) => new SummonClaim(kind, head, 0f);
 
     internal static void Run() {
+        // Ruling 42: every test below but PushScales checks the numbers as written, at PushScale 1 ("1.0 gives today's numbers
+        // exactly"); PushScales checks the default 1.25 and what it reaches, then puts the default back
+        Check("push scale (R42): the default is 1.25", Near(StoneRules.DefaultPushScale, 1.25f) && Near(StoneRules.PushScale, 1.25f));
+        StoneRules.SetPushScale(1f);
         // spec 3.4: the table's numbers
         Check("table wall", StoneTable.Of(StoneKind.Wall).Power == 3 && Near(StoneTable.Of(StoneKind.Wall).Mass, 400f));
         Check("table disc", StoneTable.Of(StoneKind.Disc).Power == 0 && Near(StoneTable.Of(StoneKind.Disc).Size.Y, 0.14f));
@@ -28,6 +32,402 @@ internal static class StoneTests {
         Holds();
         Flicks();
         DashAndHitstop();
+        Follows();
+        PushScales();
+        ReviewFixes();
+    }
+
+    // ---------------------------------------------------------------- the review of Task 17c (its I1 to I4, and Minors)
+
+    // The review's cases, each started at 20 moments inside a physics step (`when` = 1 s + p/20 of a step), on a settled Ball:
+    // how many of the 20 throw (Holder: HoldStep, the server's own step).
+    const int Phases = 20;
+    static int Count(float hz, System.Func<double, System.Func<double, V3>> hand) {
+        int n = 0;
+        for (int p = 0; p < Phases; p++) {
+            double when = 1.0 + p / (double)Phases / hz;
+            if (Holder(150f, false, hz, HeadStill, hand(when), LookAhead, 1.3f, null, 3.0, 0.0, out _, out _, out _, out _, out _)) n++;
+        }
+        return n;
+    }
+    // one jump of the hand's copy by `by` at `when`
+    static System.Func<double, V3> JumpAt(double when, V3 by) => t => HandOut(t) + (t >= when ? by : V3.Zero);
+    // a hand that speeds up and slows down, `by` in `seconds` from `when`
+    static System.Func<double, V3> BellAt(double when, V3 by, double seconds) => t => {
+        double u = System.Math.Min(System.Math.Max((t - when) / seconds, 0.0), 1.0);
+        return HandOut(t) + by * (float)(u - System.Math.Sin(2.0 * System.Math.PI * u) / (2.0 * System.Math.PI));
+    };
+    // a snap turn of 45 degrees about the head at `when`, the hand 0.6 m out
+    static System.Func<double, V3> SnapAt(double when) => t => t >= when ? HeadAt + new V3(0.6f * 0.70710678f, -0.3f, 0.6f * 0.70710678f) : HandOut(t);
+    // a hand moving a steady 2 m/s for 1 s from `when` - 0.5 s, whose copy freezes 150 ms at `when` and then catches up in one step
+    static System.Func<double, V3> FrozenAt(double when) => t => {
+        double u = System.Math.Min(System.Math.Max(t - when + 0.5, 0.0), 1.0);
+        if (u > 0.5 && u < 0.65) u = 0.5;
+        return HandOut(t) + new V3((float)(2.0 * u), 0f, 0f);
+    };
+
+    static void ReviewFixes() {
+        var report = new System.Text.StringBuilder();
+        float[] rates = { 15f, 20f, 25f, 30f, 35f, 40f, 45f, 50f };
+        var x = new V3(1f, 0f, 0f);
+        var rows = new (string name, System.Func<double, System.Func<double, V3>> hand)[] {
+            ("one jump of 0.45 m", w => JumpAt(w, x * 0.45f)),
+            ("one jump of 1 m", w => JumpAt(w, x)),
+            ("a 45 degree snap turn, the hand 0.6 m out", SnapAt),
+            ("a 2 m/s hand whose copy freezes 150 ms", FrozenAt),
+            ("a swing of 1 m in 0.25 s", w => BellAt(w, x, 0.25)),
+            ("a swing of 0.8 m in 0.25 s", w => BellAt(w, x * 0.8f, 0.25)),
+            ("a hard flick, 0.6 m in 0.15 s", w => BellAt(w, x * 0.6f, 0.15)),
+            ("a pull back toward the holder, 0.8 m in 0.2 s", w => BellAt(w, new V3(0f, 0f, -0.8f), 0.2)),
+        };
+        var counts = new int[rows.Length, rates.Length];
+        report.Append("  throws of 20 start moments, steps a second:      ");
+        foreach (float hz in rates) report.Append($"{hz,5}");
+        report.Append("\n");
+        for (int r = 0; r < rows.Length; r++) {
+            report.Append($"  {rows[r].name,-48}");
+            for (int i = 0; i < rates.Length; i++) {
+                counts[r, i] = Count(rates[i], rows[r].hand);
+                report.Append($"{counts[r, i],5}");
+            }
+            report.Append("\n");
+        }
+        int At(int row, float hz) => counts[row, System.Array.IndexOf(rates, hz)];
+        bool jumps = true, snaps = true, frozen = true, swings = true, back = true;
+        foreach (float hz in new[] { 15f, 25f, 35f, 45f }) {
+            jumps &= At(0, hz) == 0 && At(1, hz) == 0;
+            snaps &= At(2, hz) == 0;
+            frozen &= At(3, hz) == 0;
+        }
+        foreach (float hz in new[] { 30f, 45f, 50f }) swings &= At(4, hz) >= 18 && At(5, hz) >= 18;
+        foreach (float hz in rates) back &= At(7, hz) == 0;
+        Check("review I1: a lone jump of the hand's copy (0.45 m, 1 m) throws 0 of 20 at 15, 25, 35 and 45 steps a second", jumps);
+        Check("review I1: a 45 degree snap turn with the hand 0.6 m out throws 0 of 20 at 15, 25, 35 and 45", snaps);
+        Check("review I1: a hand copy frozen 150 ms then caught up throws 0 of 20 at 15, 25, 35 and 45", frozen);
+        Check("review I1: a swing of 1 m and of 0.8 m in 0.25 s throws at least 18 of 20 at 30, 45 and 50", swings);
+        Check("review I2: a pull back toward the holder throws 0 of 20 at every rate from 15 to 50", back);
+        // I2: the pull back is let pass (the stone stays held: HoldOutcome.Back), and a forward swing after it still throws
+        bool passes = true, after = true;
+        foreach (float hz in new[] { 30f, 45f, 50f }) {
+            passes &= !Holder(150f, false, hz, HeadStill, BellAt(1.0, new V3(0f, 0f, -0.8f), 0.2), LookAhead, 1.3f, null, 3.0, 0.0, out _, out _, out _, out _, out _) && LastBacks > 0;
+            after &= Holder(150f, false, hz, HeadStill, t => BellAt(1.0, new V3(0f, 0f, -0.8f), 0.2)(t) + new V3((float)(BellAt(2.0, x, 0.25)(t) - HandOut(t)).X, 0f, 0f),
+                LookAhead, 1.3f, null, 4.0, 0.0, out V3 v, out _, out _, out _, out _) && LastThrowAt > 2.0 && v.X > 0f;
+        }
+        Check("review I2: the pull back is a swing let pass (HoldOutcome.Back: the stone stays held), at 30, 45 and 50", passes);
+        Check("review I2: the swing starts over: a forward swing after it still throws, along the swing (30, 45, 50)", after);
+        Check("review I2: back is the flat part of the swing against the way from the head to the target, below 0", StoneRules.ThrowsBack(new V3(0f, 5f, -1f), new V3(0f, -1f, 2f))
+            && !StoneRules.ThrowsBack(new V3(5f, 0f, 0f), new V3(0f, 0f, 2f)) && !StoneRules.ThrowsBack(new V3(1f, -9f, 0.1f), new V3(0f, 0f, 2f))
+            && !StoneRules.ThrowsBack(new V3(0f, 0f, -5f), V3.Zero) && !StoneRules.ThrowsBack(new V3(float.NaN, 0f, -5f), new V3(0f, 0f, 1f)));
+        Check("review I2: the holder is spared for 0.5 s after any let-go, not after", StoneRules.SparesHolder(0.0) && StoneRules.SparesHolder(0.5) && !StoneRules.SparesHolder(0.51)
+            && !StoneRules.SparesHolder(-0.1) && !StoneRules.SparesHolder(double.NaN) && Near(StoneRules.HolderSpareSeconds, 0.5f));
+        // I3: a push lets a held stone go first; Flick, Parry, Explode and Hold do not
+        Check("review I3: Straight, Kick, Uppercut and Stomp let a held stone go first", StoneRules.PushLetsGo(Modifier.Straight) && StoneRules.PushLetsGo(Modifier.Kick)
+            && StoneRules.PushLetsGo(Modifier.Uppercut) && StoneRules.PushLetsGo(Modifier.Stomp));
+        Check("review I3: Flick, Parry, Explode and Hold do not", !StoneRules.PushLetsGo(Modifier.Flick) && !StoneRules.PushLetsGo(Modifier.Parry)
+            && !StoneRules.PushLetsGo(Modifier.Explode) && !StoneRules.PushLetsGo(Modifier.Hold));
+        // let go (Held is Free, a held slide slides on), then the push of an unheld stone
+        Check("review I3: Straight on a held stone: Free and pushed loose (2250 N s); on a held slide: it slides on, pushed anchored",
+            StoneRules.After(StoneState.Free, Modifier.Straight) == StoneState.Free && StoneRules.After(StoneState.Held, Modifier.Straight) == StoneState.Free
+            && StoneRules.Straight(false, 2300f, 1800f) == 1800f * StoneRules.PushScale && StoneRules.After(StoneState.Sliding, Modifier.Straight) == StoneState.Sliding);
+        Check("review I3: Kick and Uppercut on a held stone: Free and pushed loose", StoneRules.After(StoneState.Free, Modifier.Kick) == StoneState.Free
+            && StoneRules.After(StoneState.Free, Modifier.Uppercut) == StoneState.Free && StoneRules.Impulse(Modifier.Kick, false).up > 0f
+            && StoneRules.Impulse(Modifier.Uppercut, false).forward > 0f && StoneRules.After(StoneState.Sliding, Modifier.Kick) == StoneState.Free);
+        Check("review I3: Stomp on a held stone: Stomped and driven down; on a held slide: let go, nothing to push", StoneRules.After(StoneState.Free, Modifier.Stomp) == StoneState.Stomped
+            && StoneRules.Impulse(Modifier.Stomp, false).up < 0f && StoneRules.After(StoneState.Sliding, Modifier.Stomp) == StoneState.Sliding && StoneRules.Impulse(Modifier.Stomp, true) == (0f, 0f, 0f));
+        Check("review I3: Parry, Explode and Flick on a held stone as before (Floating; Held; Flicked)", StoneRules.After(StoneState.Held, Modifier.Parry) == StoneState.Floating
+            && StoneRules.After(StoneState.Held, Modifier.Explode) == StoneState.Held && StoneRules.After(StoneState.Held, Modifier.Flick) == StoneState.Flicked);
+        // I4: a face-on held Wall, the hand up to 0.6 m ahead of the head (0.25 m under it), is inside the game's reach of 3 m with
+        // no slack, also trailing 0.67 m behind its target (walking backward at 3 m/s)
+        bool inReach = true;
+        var head = new V3(0f, 1.6f, 0f);
+        V3 wall = StoneTable.Of(Wall).Size * 0.5f;
+        for (int cm = 0; cm <= 60; cm += 5)
+            foreach (float trail in new[] { 0f, 0.67f }) {
+                V3 centre = Pd.HoldTarget(new V3(0f, 1.35f, cm / 100f), new V3(0f, 0f, 1f), Pd.HoldReach(Wall, Pd.DefaultHoldDistance)) + new V3(0f, 0f, trail);
+                inReach &= Reach.InReach(head, 0f, centre - wall, centre + wall, 0f, 3f, 2.4f, 0f);
+            }
+        Check("review I4: a face-on held Wall, the hand up to 0.6 m ahead of the head, is in the game's reach (3 m, no slack), trailing a backward walk too", inReach);
+
+        // M6: the gate at the server's normal step (1/45 s) with the default HoldSwingSeconds 0.11: 5 fast readings reach the
+        // first slow one 5/45 = 0.111 s after the swing began (sustained: it throws), 4 reach it at 0.089 s (it does not)
+        Check("review M6: at 45 steps a second with HoldSwingSeconds 0.11, a swing fast for 5 readings throws, for 4 it does not",
+            Swung45(new[] { 2f, 5f, 5f, 5f, 5f, 5f, 2f }) && !Swung45(new[] { 2f, 5f, 5f, 5f, 5f, 2f }));
+        // M9: Flick's trail behind a 1 m/s target
+        Model(FlickRule, 150f, 50f, t => t, 0.0, 6.0, out _, out _, out double ballFlickTrail, out _, out _, out _);
+        Model(FlickRule, 400f, 50f, t => t, 0.0, 6.0, out _, out _, out double wallFlickTrail, out _, out _, out _);
+        Check("review M9: a flicked Ball trails a 1 m/s target by at most 0.2 m, a Wall by under 0.3", ballFlickTrail <= 0.2 + 1e-3 && wallFlickTrail < 0.3);
+        System.Console.Write("REVIEW FIXES\n" + report);
+    }
+
+    static bool Swung45(float[] speeds) {
+        var gate = new SwingGate();
+        bool swung = false;
+        for (int i = 0; i < speeds.Length; i++) swung |= gate.Step(i / 45.0, speeds[i], new V3(speeds[i], 0f, 0f), 3.5f, Pd.DefaultHoldSwingSeconds, 0.2f, out _);
+        return swung;
+    }
+
+    // Task 17c: every push a modifier, a launch or a lift-off gives a stone x [EarthModifiers] PushScale (Ruling 42); nothing else
+    static void PushScales() {
+        var z = new V3(0f, 0f, 1f);
+        // at 1 the numbers as written, exactly
+        StoneRules.SetPushScale(1f);
+        Check("push scale (R42): 1 is today's numbers exactly", StoneRules.Impulse(Modifier.Kick, false) == (0f, 1500f, 0f) && StoneRules.Impulse(Modifier.Stomp, false) == (0f, -1500f, 0f)
+            && StoneRules.Impulse(Modifier.Uppercut, false) == (0f + 900f, 900f, 0f) && StoneRules.Impulse(Modifier.Uppercut, true) == (1300f, 1300f, 5f)
+            && StoneRules.Straight(true, 2300f, 1800f) == 2300f && StoneRules.Straight(false, 2300f, 1800f) == 1800f
+            && SpawnPlan.Launch(Disc).first.Y == 300f && SpawnPlan.Launch(Disc).second.Z == 1400f && SpawnPlan.Launch(Ball).first.Y == 750f
+            && StoneRules.SummonUnder(StoneState.Still).lift == 4f);
+        // the default, 1.25: every push it names
+        StoneRules.SetPushScale(StoneRules.DefaultPushScale);
+        Check("push scale (R42): Straight x 1.25 on anchored and loose stones", Near(StoneRules.Straight(true, 2300f, 1800f), 2875f) && Near(StoneRules.Straight(false, 2300f, 1800f), 2250f));
+        Check("push scale (R42): Kick x 1.25, anchored or loose", NearV(StoneRules.Push(Modifier.Kick, false, z).impulse, new V3(0f, 1875f, 0f))
+            && NearV(StoneRules.Push(Modifier.Kick, true, z).impulse, new V3(0f, 1875f, 0f)));
+        Check("push scale (R42): Stomp x 1.25 on a loose stone (none on an anchored one)", NearV(StoneRules.Push(Modifier.Stomp, false, z).impulse, new V3(0f, -1875f, 0f))
+            && NearV(StoneRules.Push(Modifier.Stomp, true, z).impulse, V3.Zero));
+        Check("push scale (R42): Uppercut x 1.25 both ways, its spin as it is", NearV(StoneRules.Push(Modifier.Uppercut, false, z).impulse, new V3(0f, 1125f, 1125f))
+            && NearV(StoneRules.Push(Modifier.Uppercut, true, z).impulse, new V3(0f, 1625f, 1625f)) && Near(StoneRules.Impulse(Modifier.Uppercut, true).spin, 5f)
+            && NearV(StoneRules.Push(Modifier.Uppercut, true, z).spin, new V3(5f, 0f, 0f)));
+        Check("push scale (R42): the Disc's two launch pushes x 1.25, its delay as it is", Near(SpawnPlan.Launch(Disc).first.Y, 375f) && Near(SpawnPlan.Launch(Disc).second.Z, 1750f)
+            && SpawnPlan.Launch(Disc).delay == SpawnPlan.DefaultDiscPushDelay);
+        Check("push scale (R42): the Ball's launch speed x 1.25 (6.25 m/s on its 150 kg)", Near(SpawnPlan.Launch(Ball).first.Y, 6.25f * 150f));
+        Check("push scale (R42): SummonUnderLift x 1.25 (5 m/s)", Near(StoneRules.SummonUnder(StoneState.Still).lift, 5f) && Near(StoneRules.SummonUnder(StoneState.Stomped).lift, 5f)
+            && StoneRules.SummonUnder(StoneState.Free).lift == 0f);
+        // and not what it excludes: a player's pushback and knockback, Dash, a blast's share, Hold, Flick, the cap
+        StoneRules.SetPushScale(2f);
+        Check("push scale (R42): not Straight's pushback on the player", NearV(MoveRules.Pushback(0f, true, false, 2.5f, 1.7f, 0.25f), new V3(0f, 0.25f, -2.5f)));
+        Check("push scale (R42): not Dash", NearV(MoveRules.Dash(90f, 8f, 0.5f), new V3(8f, 0.5f, 0f)));
+        Check("push scale (R42): not a player's knockback way or a blast's share", NearV(StoneRules.KnockDir(new V3(3f, 0f, 0f)), new V3(1f, 0f, 0f)) && StoneRules.ExplodeShare(1f, 3f) == 1f
+            && Near(StoneRules.ExplodeShare(3f, 3f), 0.25f));
+        Check("push scale (R42): not Hold or Flick", NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 150f, false, 12f, 1f, 0.02f), new V3(144f, 0f, 0f))
+            && NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), V3.Zero, 10f, 1f, 0.02f), new V3(100f, 0f, 0f)));
+        Check("push scale (R42): not the cap (a push past it still stops at MaxStoneSpeed)", Near(StoneRules.Pushed(V3.Zero, new V3(0f, StoneRules.Impulse(Modifier.Kick, false).up, 0f), 100f, 25f).Length, 25f));
+        Check("push scale (R42): x 2 reaches Kick and Straight", StoneRules.Impulse(Modifier.Kick, false).up == 3000f && StoneRules.Straight(true, 2300f, 1800f) == 4600f);
+        // a setting not above 0 or not a number is the default
+        foreach (float bad in new[] { 0f, -1f, float.NaN, float.PositiveInfinity }) {
+            StoneRules.SetPushScale(bad);
+            Check($"push scale (R42): {bad} is the default 1.25", Near(StoneRules.PushScale, 1.25f));
+        }
+        StoneRules.SetPushScale(StoneRules.DefaultPushScale);
+    }
+
+    // ---------------------------------------------------------------- Task 17c: the firm follow (Ruling 40)
+
+    // A follow rule: the acceleration (m/s every second) on a stone of `mass` kg that is `error` off its target (target minus
+    // its centre) and moving at `velocity`, for one physics step of `dt` s. A fresh one per run (a rule may keep state).
+    delegate V3 FollowRule(V3 error, V3 velocity, float mass, float dt);
+
+    static FollowRule HoldRule() => (e, v, m, dt) => Pd.Follow(e, v, m, false, Pd.DefaultHoldFollowRate, Pd.DefaultHoldDamping, dt);
+    static FollowRule FlickRule() => (e, v, m, dt) => Pd.Follow(e, v, m, false, Pd.DefaultFlickFollowRate, Pd.DefaultFlickDamping, dt);
+
+    // One stone along x under `rule`, at rest at x0 under the target `target(t)`, stepped as PhysX steps a body
+    // (semi-implicit Euler: the velocity, then the place) every 1/hz s, each step's pull held to the default MaxStoneSpeed
+    // (Pd.CappedPull, as StoneHold and StoneFlick do). `closeAt`: the first time it is within 0.1 m of the target and stays
+    // so (infinity: never); `past`: how far it went past a still target (the far side from where it started); `trail`: how
+    // far behind it is at the end; `early`, `late`: its largest distance from the target in the first and the last second.
+    static void Model(System.Func<FollowRule> make, float mass, float hz, System.Func<double, double> target, double x0, double seconds,
+        out double closeAt, out double past, out double trail, out double early, out double late, out double peak) {
+        FollowRule rule = make();
+        double x = x0, v = 0.0, dt = 1.0 / hz, t = 0.0;
+        closeAt = double.PositiveInfinity;
+        past = 0.0;
+        early = 0.0;
+        late = 0.0;
+        peak = 0.0;
+        double side = System.Math.Sign(target(0.0) - x0);
+        for (; t < seconds - 1e-9; t += dt) {
+            var vel = new V3((float)v, 0f, 0f);
+            V3 a = rule(new V3((float)(target(t) - x), 0f, 0f), vel, mass, (float)dt);
+            V3 f = Pd.CappedPull(a * mass, vel, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
+            v += f.X / mass * dt;
+            x += v * dt;
+            double off = target(t + dt) - x, d = System.Math.Abs(off);
+            if (double.IsNaN(x) || d > 1e6) { closeAt = past = trail = early = late = peak = double.NaN; return; }
+            peak = System.Math.Max(peak, System.Math.Abs(v));
+            if (d <= 0.1) { if (double.IsPositiveInfinity(closeAt)) closeAt = t + dt; }
+            else closeAt = double.PositiveInfinity;
+            past = System.Math.Max(past, -off * side);
+            if (t + dt <= 1.0 + 1e-9) early = System.Math.Max(early, d);
+            if (t + dt > seconds - 1.0 + 1e-9) late = System.Math.Max(late, d);
+        }
+        trail = System.Math.Abs(target(t) - x);
+    }
+
+    // The turn about one axis under the flick's turn rule (Pd.FlickTurn's acceleration at the defaults), `wanted` radians from
+    // where it starts at rest, every 1/hz s: when it is first within 5 degrees and stays so, and how far it swings past.
+    static void TurnModel(float hz, double wanted, double seconds, out double closeAt, out double past, out double end) {
+        double angle = 0.0, spin = 0.0, dt = 1.0 / hz, five = 5.0 * System.Math.PI / 180.0;
+        closeAt = double.PositiveInfinity;
+        past = 0.0;
+        for (double t = 0.0; t < seconds - 1e-9; t += dt) {
+            double off = (wanted - angle) * 0.5;
+            V3 turn = Pd.TurnVector((float)System.Math.Sin(off), 0f, 0f, (float)System.Math.Cos(off));
+            V3 acc = Pd.FlickTorque(turn, new V3((float)spin, 0f, 0f), Pd.DefaultFlickTurnRate, Pd.DefaultFlickTurnDamping, (float)dt);
+            spin += acc.X * dt;
+            angle += spin * dt;
+            if (double.IsNaN(angle) || System.Math.Abs(angle) > 1e6) { closeAt = past = end = double.NaN; return; }
+            if (System.Math.Abs(wanted - angle) <= five) { if (double.IsPositiveInfinity(closeAt)) closeAt = t + dt; }
+            else closeAt = double.PositiveInfinity;
+            past = System.Math.Max(past, (angle - wanted) * System.Math.Sign(wanted));
+        }
+        end = System.Math.Abs(wanted - angle);
+    }
+
+    static string F(double v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+    static void Follows() {
+        var report = new System.Text.StringBuilder();
+        foreach (float hz in new[] { 50f, 20f }) {
+            foreach ((string name, System.Func<FollowRule> make) in new (string, System.Func<FollowRule>)[] { ("hold", HoldRule), ("flick", FlickRule) }) {
+                foreach ((StoneKind k, double closeMax, double trailMax) in new[] { (Ball, 0.6, 0.2), (Wall, 0.9, 0.3) }) {
+                    float mass = StoneTable.Default(k).Mass;
+                    Model(make, mass, hz, _ => 0.0, -2.0, 5.0, out double closeAt, out double past, out _, out _, out _, out _);
+                    Model(make, mass, hz, t => t, 0.0, 6.0, out _, out _, out double trail, out _, out _, out _);
+                    Model(make, mass, hz, _ => 0.0, -1.0, 5.0, out _, out _, out _, out double early, out double late, out _);
+                    report.Append($"  {name} {k} {hz} Hz: closes 2 m to 0.1 m in {F(closeAt)} s, past by {F(past)} m, trails 1 m/s by {F(trail)} m, swing first second {F(early)} m, last {F(late)} m\n");
+                    Check($"follow (R40): {name}, {k}, {hz} Hz: 2 m off a still target, within 0.1 m in under {closeMax} s", closeAt < closeMax);
+                    Check($"follow (R40): {name}, {k}, {hz} Hz: never past the target by more than 0.05 m", past <= 0.05);
+                    if (name == "hold") Check($"follow (R40): hold, {k}, {hz} Hz: behind a target at a steady 1 m/s it trails under {trailMax} m", trail < trailMax);
+                    Check($"follow (R40): {name}, {k}, {hz} Hz: settles within 1 mm in 5 s, no growing swing", late < 1e-3 && late <= early);
+                }
+            }
+            TurnModel(hz, System.Math.PI / 2.0, 3.0, out double turnAt, out double turnPast, out double turnEnd);
+            report.Append($"  turn {hz} Hz: 90 degrees to under 5 in {F(turnAt)} s, past by {F(turnPast * 180.0 / System.Math.PI)} degrees, {F(turnEnd * 180.0 / System.Math.PI)} off after 3 s\n");
+            Check($"follow (R40): the flick's turn closes 90 degrees to under 5 in under 0.7 s ({hz} Hz)", turnAt < 0.7);
+            Check($"follow (R40): the flick's turn swings past by at most 5 degrees ({hz} Hz)", turnPast <= 5.0 * System.Math.PI / 180.0);
+        }
+        // every stone, free and grounded, at the server's slowest steps too: no growing swing (Pd.StepRate keeps a slow step stable)
+        bool stable = true;
+        foreach (float hz in new[] { 10f, 15f, 20f, 30f, 50f, 90f })
+            foreach (StoneKind k in new[] { Disc, Ball, Pillar, Cube, Wall })
+                foreach (System.Func<FollowRule> make in new System.Func<FollowRule>[] { HoldRule, FlickRule }) {
+                    Model(make, StoneTable.Default(k).Mass, hz, _ => 0.0, -1.0, 5.0, out _, out double p, out _, out double e, out double l, out _);
+                    stable &= l < 1e-3 && l <= e && p <= 0.05;
+                }
+        Check("follow (R40): every stone, hold and flick, settles with no growing swing from 10 to 90 Hz", stable);
+
+        // the throw (Ruling 43): judged on the hand's speed relative to the head (HandTrack), never on the stone's
+        foreach (float hz in new[] { 50f, 20f }) {
+            foreach (StoneKind k in new[] { Ball, Wall }) {
+                float mass = StoneTable.Default(k).Mass, reach = Pd.HoldReach(k, Pd.DefaultHoldDistance);
+                foreach (double deg in new[] { 180.0, 270.0 }) {
+                    bool body = Holder(mass, false, hz, HeadStill, BodyTurnHand(deg), BodyTurnLook(deg), reach, null, 2.0, 0.0, out _, out _, out _, out _, out double bodyHand);
+                    bool head = Holder(mass, false, hz, HeadStill, HandOut, BodyTurnLook(deg), reach, null, 2.0, 0.0, out _, out _, out _, out _, out double headHand);
+                    report.Append($"  throw {k} {hz} Hz: a {deg} degree/s body turn, arm out 0.6 m: the hand {F(bodyHand)} m/s relative to the head, {(body ? "THROWS" : "no throw")}; the head alone: the hand {F(headHand)} m/s, {(head ? "THROWS" : "no throw")}\n");
+                }
+                foreach (double metres in new[] { 1.0, 2.5 }) {
+                    bool thrown = Holder(mass, false, hz, HeadStill, Swing(metres), LookAhead, reach, null, 2.0, 0.0, out V3 v, out float handAt, out _, out _, out double swingHand);
+                    report.Append($"  throw {k} {hz} Hz: a swing of {metres} m in 0.25 s ({F(metres / 0.25)} m/s): {(thrown ? $"thrown when the hand read {F(handAt)} m/s, at {F(v.Length)} m/s along {v}" : "NOT thrown")}\n");
+                }
+                bool walk = Holder(mass, false, hz, Walk(3.0), WalkHand(3.0), LookAhead, reach, null, 3.0, 0.0, out _, out _, out _, out _, out double walkHand);
+                bool dash = Holder(mass, false, hz, Walk(8.0), WalkHand(8.0), LookAhead, reach, null, 3.0, 0.02, out _, out _, out _, out _, out double dashHand);
+                bool lagged = Holder(mass, false, hz, Walk(8.0), WalkHand(8.0), LookAhead, reach, null, 3.0, 0.05, out _, out _, out _, out _, out double laggedHand);
+                report.Append($"  throw {k} {hz} Hz: walking 3 m/s: the hand {F(walkHand)} m/s, {(walk ? "THROWS" : "no throw")}; an 8 m/s dash, the hand's copy 20 ms behind the head's: the hand {F(dashHand)} m/s, {(dash ? "THROWS" : "no throw")}; 50 ms behind: {F(laggedHand)} m/s, {(lagged ? "THROWS" : "no throw")}\n");
+            }
+        }
+        foreach (float hz in new[] { 50f, 20f }) {
+            foreach (float sustain in new[] { 0.05f, Pd.DefaultHoldSwingSeconds }) {
+                SwingSeconds = sustain;
+                report.Append($"  dash {hz} Hz, HoldSwingSeconds {F(sustain)}: the longest hand-copy lag an 8 m/s dash does not throw: {F(LongestSafeLag(hz))} ms\n");
+            }
+            SwingSeconds = Pd.DefaultHoldSwingSeconds;
+            foreach (double metres in new[] { 1.0, 2.0, 4.0 }) {
+                bool thrown = Holder(150f, false, hz, HeadStill, Bell(metres, 0.25), LookAhead, 1.3f, null, 2.0, 0.0, out V3 v, out float handAt, out _, out _, out _);
+                report.Append($"  bell swing {hz} Hz: {metres} m in 0.25 s (its true peak {F(2.0 * metres / 0.25)} m/s at 0.125 s): {(thrown ? $"thrown {F(LastThrowAt - 0.625)} s after the true peak, the swing read {F(handAt)} m/s, the stone at {F(v.Length)} m/s" : "NOT thrown")}\n");
+            }
+        }
+        foreach (float hz in new[] { 50f, 45f, 30f, 20f })
+            foreach (double metres in new[] { 1.0, 1.25, 1.5 }) {
+                bool thrown = Holder(150f, false, hz, HeadStill, Bell(metres, 0.25), LookAhead, 1.3f, null, 2.0, 0.0, out V3 v, out _, out _, out _, out _);
+                report.Append($"  bell swing {hz} Hz: {metres} m in 0.25 s: {(thrown ? $"thrown {F(LastThrowAt - 0.625)} s after the true peak at {F(v.Length)} m/s" : "NOT thrown")}\n");
+            }
+        System.Console.Write("FOLLOW\n" + report);
+    }
+
+    // ---------------------------------------------------------------- Ruling 43: the holder's model
+
+    static V3 HeadAt => new V3(0f, 1.6f, 0f);
+    static V3 HeadStill(double t) => HeadAt;
+    static V3 LookAhead(double t) => new V3(0f, 0f, 1f);
+    // the hand held out in front, 0.6 m from the head's axis and 0.3 m under the head
+    static V3 HandOut(double t) => HeadAt + new V3(0f, -0.3f, 0.6f);
+    static System.Func<double, V3> BodyTurnLook(double degPerSec) => t => {
+        double a = degPerSec * System.Math.PI / 180.0 * System.Math.Max(t, 0.0);
+        return new V3((float)System.Math.Sin(a), 0f, (float)System.Math.Cos(a));
+    };
+    // the whole body turns with the arm out: the hand goes round the head's axis 0.6 m out
+    static System.Func<double, V3> BodyTurnHand(double degPerSec) => t => HeadAt + BodyTurnLook(degPerSec)(t) * 0.6f + new V3(0f, -0.3f, 0f);
+    // the hand swings `metres` to the side in 0.25 s, starting 0.5 s into the hold (the stone settled by then)
+    static System.Func<double, V3> Swing(double metres) => t => HandOut(t) + new V3((float)Ramp(metres, 0.25)(t - 0.5), 0f, 0f);
+    // walking (or a dash) along the look at `speed`, starting at once 0.5 s into the hold (the stone settled by then), the
+    // hand held out
+    static System.Func<double, V3> Walk(double speed) => t => HeadAt + new V3(0f, 0f, (float)(speed * System.Math.Max(t - 0.5, 0.0)));
+    static System.Func<double, V3> WalkHand(double speed) => t => Walk(speed)(t) + new V3(0f, -0.3f, 0.6f);
+
+    // The longest hand-copy lag (ms, in 5 ms steps) behind the head's copy with which an 8 m/s dash from a settled hold of a
+    // Ball does not throw it, at `hz` and SwingSeconds.
+    static double LongestSafeLag(float hz) {
+        for (int lag = 0; lag <= 300; lag += 5)
+            if (Holder(150f, false, hz, Walk(8.0), WalkHand(8.0), LookAhead, 1.3f, null, 3.0, lag / 1000.0, out _, out _, out _, out _, out _)) return lag - 5;
+        return 300;
+    }
+
+    // A swing shaped as a real one: the hand speeds up and slows down (1 - cos), `metres` to the side in `seconds`, starting
+    // 0.5 s into the hold; its true peak, 2 x metres / seconds, comes half way.
+    static System.Func<double, V3> Bell(double metres, double seconds) => t => {
+        double u = System.Math.Min(System.Math.Max((t - 0.5) / seconds, 0.0), 1.0);
+        return HandOut(t) + new V3((float)(metres * (u - System.Math.Sin(2.0 * System.Math.PI * u) / (2.0 * System.Math.PI))), 0f, 0f);
+    };
+
+    // When the last Holder run threw (s into it; not a number when it did not).
+    static double LastThrowAt = double.NaN, LastSwingLength = double.NaN;
+    // How many swings back toward the holder the last Holder run let pass (HoldOutcome.Back).
+    static int LastBacks;
+    // HoldSwingSeconds for Holder (the default, but for the report's search).
+    static float SwingSeconds = Pd.DefaultHoldSwingSeconds;
+
+    // Ruling 43's model of a hold, in space: the server's head and hand (the hand's copy `handLag` s behind the head's) go into
+    // a HandTrack each step of 1/hz s; the stone, at `start` (null: on its target) and at rest, is pulled by Pd.Follow toward
+    // Pd.HoldTarget(hand, look, reach) and held to the default MaxStoneSpeed; each step runs HoldStep.Step, the very step
+    // StoneHold.DriveHold runs (the swing gate, a swing back let pass, the throw, the arming), with the defaults. True when it is thrown: `thrown`
+    // its velocity then (Pd.ThrowVelocity), `handAt` the swing's highest relative speed, which threw it; LastThrowAt when. `armed`, `left` (how far from its target at the end or the throw), `handPeak` the fastest relative hand.
+    static bool Holder(float mass, bool grounded, float hz, System.Func<double, V3> head, System.Func<double, V3> hand, System.Func<double, V3> look, float reach,
+        V3? start, double seconds, double handLag, out V3 thrown, out float handAt, out bool armed, out float left, out double handPeak) {
+        double dt = 1.0 / hz;
+        var track = new HandTrack();
+        var gate = new SwingGate();
+        LastThrowAt = double.NaN;
+        LastBacks = 0;
+        V3 x = start ?? Pd.HoldTarget(hand(0.0), look(0.0), reach), v = V3.Zero;
+        thrown = V3.Zero;
+        handAt = float.NaN;
+        armed = false;
+        handPeak = 0.0;
+        for (double t = 0.0; t < seconds; t += dt) {
+            V3 target = Pd.HoldTarget(hand(t), look(t), reach);
+            bool fed = track.Add(t, hand(t - handLag), head(t));
+            bool tracked = fed & track.Velocities(out V3 rel, out V3 headVel);
+            float hs = tracked ? rel.Length : float.NaN;
+            if (tracked) handPeak = System.Math.Max(handPeak, hs);
+            V3 error = target - x;
+            double since = gate.Swinging ? gate.Since : t;
+            var settings = HoldThrowSettings.Default;
+            settings.SwingSeconds = SwingSeconds;
+            HoldOutcome o = HoldStep.Step(gate, ref armed, t, tracked, rel, headVel, v, Pd.Trail(error, grounded), target - head(t), grounded, settings, out V3 th, out V3 swingVel);
+            if (o == HoldOutcome.Back) LastBacks++;
+            if (o == HoldOutcome.Thrown) {
+                LastSwingLength = t - since;
+                thrown = th;
+                handAt = swingVel.Length;
+                LastThrowAt = t;
+                left = error.Length;
+                return true;
+            }
+            V3 a = Pd.Follow(error, v, mass, grounded, Pd.DefaultHoldFollowRate, Pd.DefaultHoldDamping, (float)dt);
+            V3 f = Pd.CappedPull(a * mass, v, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
+            v = v + f * (float)(dt / mass);
+            x = x + v * (float)dt;
+        }
+        left = (Pd.HoldTarget(hand(seconds), look(seconds), reach) - x).Length;
+        return false;
     }
 
     // Task 15: Dash and hitstop (spec 2.2, 2.5, 3.6, 3.7; rulings C17-C20)
@@ -85,13 +485,7 @@ internal static class StoneTests {
     // Task 14: Flick (spec 2.3, 2.4, 3.5; rulings C13, C15, C16)
     static void Flicks() {
         // the brief's checks
-        Check("flick gains: 120 kg is (1, 0.1, 6)", Pd.FlickGains(120f) == (1f, 0.1f, 6f));
-        Check("flick gains: 350 kg is (1, 0.1, 8.5)", Pd.FlickGains(350f) == (1f, 0.1f, 8.5f));
-        V3 sum = V3.Zero;
-        Pd.Flick(new V3(1f, 2f, -1f), ref sum, V3.Zero, 150f, 0.25f, 1000f, 0.02f);
-        bool once = NearV(sum, new V3(0.25f, 0.5f, -0.25f));
-        Pd.Flick(new V3(-2f, 0f, 4f), ref sum, V3.Zero, 150f, 0.5f, 1000f, 0.02f);
-        Check("pd flick: the integral grows by error x dt", once && NearV(sum, new V3(-0.75f, 0.5f, 1.75f)));
+        Check("follow (R40): a flick pulls a still stone 1 m off by its rate squared (Ball: 10 x 1.0)", NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 150f, false, 10f, 1f, 0.02f), new V3(100f, 0f, 0f)));
         Check("flick on still is refused", !StoneRules.CanApply(StoneState.Still, Modifier.Flick));
         Check("flick on free is allowed", StoneRules.CanApply(StoneState.Free, Modifier.Flick));
         (V3 forward, V3 up) upright = Pd.FlickTurn(new V3(0.1f, 1.2f, 0.4f), new V3(0.1f, 0.9f, 0.4f), new V3(0f, 0f, 1f));
@@ -101,69 +495,46 @@ internal static class StoneTests {
             && StoneRules.CanApply(StoneState.Flicked, Modifier.Straight) && !StoneRules.IsGrounded(StoneState.Flicked));
 
         // the defaults (the settings')
-        Check("defaults (C30): flick x 1000, turn gain 8, turn damp 4", Near(Pd.DefaultFlickScale, 1000f) && Near(Pd.DefaultFlickTurnGain, 8f) && Near(Pd.DefaultFlickTurnDamp, 4f));
+        Check("defaults (R40): flick follows at 10 rad/s, damping 1; turns at 10 rad/s, damping 1", Near(Pd.DefaultFlickFollowRate, 10f) && Near(Pd.DefaultFlickDamping, 1f)
+            && Near(Pd.DefaultFlickTurnRate, 10f) && Near(Pd.DefaultFlickTurnDamping, 1f));
+        Check("defaults (R40): hold follows at 12 rad/s, damping 1", Near(Pd.DefaultHoldFollowRate, 12f) && Near(Pd.DefaultHoldDamping, 1f));
 
-        // ruling C15: FlickGains at every band edge (Hold's bands: up to 150, up to 300, past it)
-        Check("flick gains: 0, 100, 150 kg (and below 0) are (1, 0.1, 6)", Pd.FlickGains(0f) == (1f, 0.1f, 6f) && Pd.FlickGains(100f) == (1f, 0.1f, 6f)
-            && Pd.FlickGains(150f) == (1f, 0.1f, 6f) && Pd.FlickGains(-5f) == (1f, 0.1f, 6f));
-        Check("flick gains: just past 150 to 300 is (1, 0.1, 7)", Pd.FlickGains(150.01f) == (1f, 0.1f, 7f) && Pd.FlickGains(275f) == (1f, 0.1f, 7f) && Pd.FlickGains(300f) == (1f, 0.1f, 7f));
-        Check("flick gains: just past 300 is (1, 0.1, 8.5)", Pd.FlickGains(300.01f) == (1f, 0.1f, 8.5f) && Pd.FlickGains(400f) == (1f, 0.1f, 8.5f) && Pd.FlickGains(1e6f) == (1f, 0.1f, 8.5f));
-        Check("flick gains: a mass that is not a number is the heaviest band", Pd.FlickGains(float.NaN) == (1f, 0.1f, 8.5f) && Pd.FlickGains(float.PositiveInfinity) == (1f, 0.1f, 8.5f));
-        Check("flick gains: the five stones", Pd.FlickGains(StoneTable.Default(Disc).Mass) == (1f, 0.1f, 6f) && Pd.FlickGains(StoneTable.Default(Ball).Mass) == (1f, 0.1f, 6f)
-            && Pd.FlickGains(StoneTable.Default(Pillar).Mass) == (1f, 0.1f, 7f) && Pd.FlickGains(StoneTable.Default(Cube).Mass) == (1f, 0.1f, 7f) && Pd.FlickGains(StoneTable.Default(Wall).Mass) == (1f, 0.1f, 8.5f));
+        // Ruling 40: the weight factor, clamp(1.15 - mass / 1000, 0.7, 1.05)
+        Check("weight factor (R40): Disc 1.05, Ball 1.0, Pillar 0.875, Cube 0.85, Wall 0.75", Near(Pd.WeightFactor(StoneTable.Default(Disc).Mass), 1.05f)
+            && Near(Pd.WeightFactor(StoneTable.Default(Ball).Mass), 1f) && Near(Pd.WeightFactor(StoneTable.Default(Pillar).Mass), 0.875f)
+            && Near(Pd.WeightFactor(StoneTable.Default(Cube).Mass), 0.85f) && Near(Pd.WeightFactor(StoneTable.Default(Wall).Mass), 0.75f));
+        Check("weight factor (R40): held to 1.05 below 100 kg and to 0.7 past 450", Near(Pd.WeightFactor(0f), 1.05f) && Near(Pd.WeightFactor(-5f), 1.05f)
+            && Near(Pd.WeightFactor(100f), 1.05f) && Near(Pd.WeightFactor(450f), 0.7f) && Near(Pd.WeightFactor(1e6f), 0.7f));
+        Check("weight factor (R40): a mass that is not a number is the heaviest", Near(Pd.WeightFactor(float.NaN), 0.7f) && Near(Pd.WeightFactor(float.PositiveInfinity), 0.7f));
 
-        // ruling C13 (as Hold): scale x (p x error + i x integral - d x dStep x velocity), the integral first grown by error x dt
-        V3 i0 = V3.Zero;
-        Check("pd flick: error (1, 0, 0) from a zero integral: 1000 x (1 + 0.1 x 0.25)", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref i0, V3.Zero, 150f, 0.25f, 1000f, 0.02f), new V3(1025f, 0f, 0f))
-            && NearV(i0, new V3(0.25f, 0f, 0f)));
-        V3 i1 = V3.Zero;
-        Check("pd flick: dt 0 is p alone, and the integral stays", NearF(Pd.Flick(new V3(1f, -2f, 0.5f), ref i1, V3.Zero, 150f, 0f, 1000f, 0.02f), new V3(1000f, -2000f, 500f)) && NearV(i1, V3.Zero));
-        V3 i2 = new V3(2f, 0f, -4f);
-        Check("pd flick: the integral pulls on its own", NearF(Pd.Flick(V3.Zero, ref i2, V3.Zero, 150f, 0.02f, 1000f, 0.02f), new V3(200f, 0f, -400f)) && NearV(i2, new V3(2f, 0f, -4f)));
-        V3 iz = V3.Zero;
-        Check("pd flick: a 150 kg stone at 1 m/s is damped by 1000 x 6 x 0.02", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), 150f, 0.02f, 1000f, 0.02f), new V3(-120f, 0f, 0f)));
-        iz = V3.Zero;
-        Check("pd flick: 250 kg by 7, every axis", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 2f, -1f), 250f, 0.02f, 1000f, 0.02f), new V3(-140f, -280f, 140f)));
-        iz = V3.Zero;
-        Check("pd flick: 400 kg by 8.5", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), 400f, 0.02f, 1000f, 0.02f), new V3(-170f, 0f, 0f)));
-        iz = V3.Zero;
-        Check("pd flick: PdStepSeconds 1 is the per-second reading", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), 150f, 0.02f, 1000f, 1f), new V3(-6000f, 0f, 0f)));
-        iz = V3.Zero;
-        Check("pd flick: PdStepSeconds 0 does not damp", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref iz, new V3(5f, 5f, 5f), 150f, 0f, 1000f, 0f), new V3(1000f, 0f, 0f)));
-        V3 i3 = new V3(1f, 0f, -1f);
-        Check("pd flick: p, i and d together (350 kg)", NearF(Pd.Flick(new V3(0.5f, -0.2f, 1f), ref i3, new V3(2f, 0f, 0f), 350f, 0.5f, 1000f, 0.02f), new V3(285f, -210f, 950f))
-            && NearV(i3, new V3(1.25f, -0.1f, -0.5f)));
-        iz = V3.Zero;
-        Check("pd flick: the scale from the settings", NearF(Pd.Flick(new V3(1f, 1f, 0f), ref iz, V3.Zero, 150f, 0f, 500f, 0.02f), new V3(500f, 500f, 0f)));
-        // nothing that is not a number gets out, the force or the integral
-        V3 keep = new V3(1f, 1f, 1f);
-        Check("pd flick: an error that is not a number pulls nothing and leaves the integral",
-            NearV(Pd.Flick(new V3(float.NaN, 0f, 0f), ref keep, V3.Zero, 150f, 0.02f, 1000f, 0.02f), V3.Zero) && NearV(keep, new V3(1f, 1f, 1f))
-            && NearV(Pd.Flick(new V3(0f, float.PositiveInfinity, 0f), ref keep, new V3(1f, 0f, 0f), 150f, 0.02f, 1000f, 0.02f), V3.Zero) && NearV(keep, new V3(1f, 1f, 1f)));
-        iz = V3.Zero;
-        Check("pd flick: a velocity that is not a number counts as none", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref iz, new V3(float.NaN, 0f, 0f), 150f, 0f, 1000f, 0.02f), new V3(1000f, 0f, 0f)));
-        V3 bad = new V3(float.NaN, 3f, 0f);
-        Check("pd flick: an integral that is not a number starts again from zero", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref bad, V3.Zero, 150f, 0.25f, 1000f, 0.02f), new V3(1025f, 0f, 0f))
-            && NearV(bad, new V3(0.25f, 0f, 0f)));
-        bool dts = true;
-        foreach (float dt in new[] { float.NaN, -0.02f, float.PositiveInfinity }) {
-            V3 i = V3.Zero;
-            dts &= NearF(Pd.Flick(new V3(1f, 0f, 0f), ref i, V3.Zero, 150f, dt, 1000f, 0.02f), new V3(1000f, 0f, 0f)) && NearV(i, V3.Zero);
-        }
-        Check("pd flick: a dt that is not above 0 or not a number does not grow the integral", dts);
-        bool scales = true;
-        foreach (float sc in new[] { float.NaN, 0f, -1f, float.PositiveInfinity }) {
-            V3 i = new V3(1f, 0f, 0f);
-            scales &= NearV(Pd.Flick(new V3(1f, 1f, 1f), ref i, V3.Zero, 150f, 0.02f, sc, 0.02f), V3.Zero) && NearV(i, new V3(1f, 0f, 0f));
-        }
-        Check("pd flick: a scale not above 0 or not a number pulls nothing and leaves the integral", scales);
-        iz = V3.Zero;
-        Check("pd flick: a step that is not a number does not damp", NearF(Pd.Flick(new V3(1f, 0f, 0f), ref iz, new V3(1f, 0f, 0f), 150f, 0f, 1000f, float.NaN), new V3(1000f, 0f, 0f)));
-        iz = V3.Zero;
-        Check("pd flick: a mass that is not a number damps as the heaviest", NearF(Pd.Flick(V3.Zero, ref iz, new V3(1f, 0f, 0f), float.NaN, 0f, 1000f, 0.02f), new V3(-170f, 0f, 0f)));
-        V3 hugeI = new V3(3e38f, -3e38f, 3e38f);
-        V3 hugeF = Pd.Flick(new V3(3e38f, -3e38f, 3e38f), ref hugeI, new V3(-3e38f, 3e38f, 0f), 150f, 3e38f, 3e38f, 3e38f);
-        Check("pd flick: huge numbers stay finite, the force and the integral", FiniteV(hugeF) && FiniteV(hugeI));
+        // Ruling 40: w^2 x error - 2 x damping x w x velocity, w = rate x the weight factor, an acceleration
+        Check("follow (R40): a Ball at rate 12: 144 per metre off", NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 150f, false, 12f, 1f, 0.02f), new V3(144f, 0f, 0f)));
+        Check("follow (R40): a Wall at rate 12: (12 x 0.75)^2 = 81 per metre off", NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 400f, false, 12f, 1f, 0.02f), new V3(81f, 0f, 0f)));
+        Check("follow (R40): damped by 2 x damping x w x velocity", NearF(Pd.Follow(V3.Zero, new V3(1f, 0f, 0f), 150f, false, 12f, 1f, 0.02f), new V3(-24f, 0f, 0f))
+            && NearF(Pd.Follow(V3.Zero, new V3(1f, 0f, 0f), 400f, false, 12f, 0.5f, 0.02f), new V3(-9f, 0f, 0f)));
+        Check("follow (R40): every axis, both terms", NearF(Pd.Follow(new V3(0.5f, -0.2f, 1f), new V3(2f, 1f, 0f), 150f, false, 10f, 1f, 0.02f), new V3(10f, -40f, 100f)));
+        Check("follow (R40): the same acceleration on every mass of one weight factor", SameV(Pd.Follow(new V3(1f, 2f, 3f), new V3(1f, 0f, 0f), 450f, false, 12f, 1f, 0.02f),
+            Pd.Follow(new V3(1f, 2f, 3f), new V3(1f, 0f, 0f), 900f, false, 12f, 1f, 0.02f)));
+        Check("follow (R40): grounded pulls and damps along x and z only", NearF(Pd.Follow(new V3(1f, 1f, -2f), new V3(0f, -5f, 0f), 150f, true, 10f, 1f, 0.02f), new V3(100f, 0f, -200f)));
+        // the guard against a slow step (Pd.StepLimit): the rate a step of dt uses is at most 0.6 / (dt x max(damping, 1))
+        Check("step rate (R40): 0.6 / dt at damping 1 or less, 0.6 / (dt x damping) above", Near((float)Pd.StepRate(30.0, 1.0, 0.05f), 12f)
+            && Near((float)Pd.StepRate(30.0, 0.3, 0.05f), 12f) && Near((float)Pd.StepRate(30.0, 2.0, 0.05f), 6f) && Near((float)Pd.StepRate(10.0, 1.0, 0.05f), 10f));
+        Check("step rate (R40): a dt not above 0 or not a number leaves the rate", Near((float)Pd.StepRate(50.0, 1.0, 0f), 50f) && Near((float)Pd.StepRate(50.0, 1.0, float.NaN), 50f)
+            && Near((float)Pd.StepRate(50.0, 1.0, float.PositiveInfinity), 50f));
+        Check("follow (R40): the defaults are never held at 50 steps a second; at 20 only the Disc's 12.6 is (to 12)", NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 100f, false, 12f, 1f, 0.02f), new V3(12.6f * 12.6f, 0f, 0f))
+            && NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 100f, false, 12f, 1f, 0.05f), new V3(144f, 0f, 0f)) && NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, 150f, false, 12f, 1f, 0.05f), new V3(144f, 0f, 0f)));
+        // never a number that is not one
+        Check("follow (R40): an error that is not a number pulls nothing", NearV(Pd.Follow(new V3(float.NaN, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 12f, 1f, 0.02f), V3.Zero)
+            && NearV(Pd.Follow(new V3(0f, float.PositiveInfinity, 0f), V3.Zero, 150f, false, 12f, 1f, 0.02f), V3.Zero));
+        Check("follow (R40): a velocity that is not a number counts as none", NearF(Pd.Follow(new V3(1f, 0f, 0f), new V3(float.NaN, 0f, 0f), 150f, false, 12f, 1f, 0.02f), new V3(144f, 0f, 0f)));
+        bool rates = true;
+        foreach (float rate in new[] { 0f, -1f, float.NaN, float.PositiveInfinity }) rates &= NearV(Pd.Follow(new V3(1f, 1f, 1f), new V3(1f, 0f, 0f), 150f, false, rate, 1f, 0.02f), V3.Zero);
+        Check("follow (R40): a rate not above 0 or not a number pulls nothing", rates);
+        Check("follow (R40): a damping below 0 or not a number does not damp", NearF(Pd.Follow(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 12f, -1f, 0.02f), new V3(144f, 0f, 0f))
+            && NearF(Pd.Follow(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 12f, float.NaN, 0.02f), new V3(144f, 0f, 0f)));
+        Check("follow (R40): a mass that is not a number follows as the heaviest", NearF(Pd.Follow(new V3(1f, 0f, 0f), V3.Zero, float.NaN, false, 10f, 1f, 0.02f), new V3(49f, 0f, 0f)));
+        Check("follow (R40): huge numbers stay finite", FiniteV(Pd.Follow(new V3(3e38f, -3e38f, 3e38f), new V3(-3e38f, 3e38f, 0f), 150f, false, 3e38f, 3e38f, 3e38f))
+            && FiniteV(Pd.Follow(new V3(3e38f, -3e38f, 3e38f), new V3(-3e38f, 3e38f, 0f), 150f, false, 1e19f, 1e19f, 1e-30f)));
 
         // the target: the midpoint of the two hands plus the head's flat forward x HoldDistance
         var a = new V3(0.1f, 1.2f, 0.4f);
@@ -233,48 +604,43 @@ internal static class StoneTests {
         Check("turn vector: not a number is none", NearV(Pd.TurnVector(float.NaN, 0f, 0f, 1f), V3.Zero) && NearV(Pd.TurnVector(0f, 0f, float.PositiveInfinity, 1f), V3.Zero));
         Check("turn vector: huge numbers stay finite", FiniteV(Pd.TurnVector(3e38f, -3e38f, 3e38f, 1f)));
 
-        // the turn's torque (an acceleration, ForceMode.Acceleration): FlickTurnGain x the turn - FlickTurnDamp x the spin
-        Check("flick torque: gain x turn", NearV(Pd.FlickTorque(new V3(0f, 1f, 0f), V3.Zero, 8f, 1f), new V3(0f, 8f, 0f)));
-        Check("flick torque: damp x spin", NearV(Pd.FlickTorque(V3.Zero, new V3(0f, 2f, -1f), 8f, 1f), new V3(0f, -2f, 1f)));
-        Check("flick torque: both", NearF(Pd.FlickTorque(new V3(halfPi, 0f, 0f), new V3(1f, 0f, 0f), 8f, 1f), new V3(8f * halfPi - 1f, 0f, 0f)));
-        Check("flick torque: from the settings", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 3f, 2f), new V3(1f, 0f, 0f)));
-        Check("flick torque: a turn that is not a number only damps", NearV(Pd.FlickTorque(new V3(float.NaN, 0f, 0f), new V3(1f, 0f, 0f), 8f, 1f), new V3(-1f, 0f, 0f)));
-        Check("flick torque: a spin that is not a number counts as none", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(0f, float.NaN, 0f), 8f, 1f), new V3(8f, 0f, 0f)));
-        Check("flick torque: a gain or damp below 0 or not a number is 0", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), float.NaN, -1f), V3.Zero)
-            && NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), -8f, float.PositiveInfinity), V3.Zero));
-        Check("flick torque: huge numbers stay finite", FiniteV(Pd.FlickTorque(new V3(3e38f, 3e38f, 3e38f), new V3(-3e38f, -3e38f, -3e38f), 3e38f, 3e38f)));
+        // the turn (an acceleration, ForceMode.Acceleration; Ruling 40): FlickTurnRate^2 x the turn - 2 x FlickTurnDamping x
+        // FlickTurnRate x the spin, the rate held by Pd.StepRate
+        Check("flick turn (R40): rate squared x turn", NearV(Pd.FlickTorque(new V3(0f, 1f, 0f), V3.Zero, 10f, 1f, 0.02f), new V3(0f, 100f, 0f)));
+        Check("flick turn (R40): 2 x damping x rate x spin", NearV(Pd.FlickTorque(V3.Zero, new V3(0f, 2f, -1f), 10f, 1f, 0.02f), new V3(0f, -40f, 20f))
+            && NearV(Pd.FlickTorque(V3.Zero, new V3(1f, 0f, 0f), 10f, 0.5f, 0.02f), new V3(-10f, 0f, 0f)));
+        Check("flick turn (R40): both", NearF(Pd.FlickTorque(new V3(halfPi, 0f, 0f), new V3(1f, 0f, 0f), 10f, 1f, 0.02f), new V3(100f * halfPi - 20f, 0f, 0f)));
+        Check("flick turn (R40): the same on every stone (no mass in it)", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), V3.Zero, 3f, 1f, 0.02f), new V3(9f, 0f, 0f)));
+        Check("flick turn (R40): a slow step holds the rate (20 rad/s at 20 steps a second turns as 12)", NearF(Pd.FlickTorque(new V3(1f, 0f, 0f), V3.Zero, 20f, 1f, 0.05f), new V3(144f, 0f, 0f)));
+        Check("flick turn: a turn that is not a number only damps", NearV(Pd.FlickTorque(new V3(float.NaN, 0f, 0f), new V3(1f, 0f, 0f), 10f, 1f, 0.02f), new V3(-20f, 0f, 0f)));
+        Check("flick turn: a spin that is not a number counts as none", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(0f, float.NaN, 0f), 10f, 1f, 0.02f), new V3(100f, 0f, 0f)));
+        Check("flick turn: a rate not above 0 or not a number turns nothing", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), float.NaN, 1f, 0.02f), V3.Zero)
+            && NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), -8f, 1f, 0.02f), V3.Zero) && NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 0f, 1f, 0.02f), V3.Zero));
+        Check("flick turn: a damping below 0 or not a number does not damp", NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 10f, -1f, 0.02f), new V3(100f, 0f, 0f))
+            && NearV(Pd.FlickTorque(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 10f, float.PositiveInfinity, 0.02f), new V3(100f, 0f, 0f)));
+        Check("flick turn: huge numbers stay finite", FiniteV(Pd.FlickTorque(new V3(3e38f, 3e38f, 3e38f), new V3(-3e38f, -3e38f, -3e38f), 3e38f, 3e38f, 3e38f)));
 
-        // models, stepped as PhysX steps a body (semi-implicit Euler) at the defaults: the pull on every stone settles on a
-        // still target and follows a moving one at the server's 15-50 Hz without running away; the turn settles. The pull is
-        // slow and lightly damped at these gains (a Ball swings with a period of about 2.4 s, a Wall 4 s; a Wall 1 m off is
-        // still about 0.2 m off after 10 s), so the windows are long
+        // models, stepped as PhysX steps a body (semi-implicit Euler) at the defaults (Ruling 40): every flicked stone settles
+        // on a still target and follows a moving one at the server's 15-50 Hz without running away; the turn settles
         bool settles = true, follows = true, turns = true;
         foreach (float hz in new[] { 15f, 30f, 45f, 50f }) {
             foreach (StoneKind k in new[] { Disc, Ball, Pillar, Cube, Wall }) {
-                float end = Flicked(StoneTable.Default(k).Mass, hz, _ => 0.0, -1.0, 40.0, out float worst);
-                settles &= end < 0.01f && worst <= 1f + 1e-4f;
+                Model(FlickRule, StoneTable.Default(k).Mass, hz, _ => 0.0, -1.0, 5.0, out _, out double past, out double end, out _, out _, out _);
+                settles &= end < 0.01 && past <= 0.05;
             }
-            float trail = Flicked(150f, hz, Ramp(2.0, 1.0), 0.0, 40.0, out float sweepWorst);
-            follows &= trail < 0.01f && sweepWorst < 1.2f;   // it trails a 2 m/s sweep by up to about 1 m
-            turns &= Turned(hz, 3.0, 20.0) < 0.01f && Turned(hz, 4.0, 20.0) < 0.01f && Turned(hz, -2.0, 20.0) < 0.01f;
+            Model(FlickRule, 150f, hz, Ramp(2.0, 1.0), 0.0, 5.0, out _, out _, out double trail, out _, out _, out _);
+            double sweepWorst = SweepWorst(FlickRule, 150f, hz, Ramp(2.0, 1.0), 2.0);
+            follows &= trail < 0.01 && sweepWorst < 0.5;   // a 2 m/s sweep: about 0.4 m behind
+            turns &= Turned(hz, 3.0, 5.0) < 0.01f && Turned(hz, 4.0, 5.0) < 0.01f && Turned(hz, -2.0, 5.0) < 0.01f;
         }
-        Check("model: every flicked stone 1 m off a still target settles within 1 cm in 40 s, never further than it started (15-50 Hz)", settles);
-        Check("model: a flicked Ball follows a 2 m sweep of the hands in 1 s, never 1.2 m behind, and settles after it (15-50 Hz)", follows);
-        Check("model: a stone turned 3 rad, 4 rad (the short way) or -2 rad off settles on the wanted turn (15-50 Hz)", turns);
-        // ruling C30: FlickTurnDamp 4 (damping 0.71 with gain 8): a quick 90 degree turn of the hands swings past by a few
-        // degrees and settles within a degree in 3 s; the plan's 1 (damping 0.18) swung past by about 50 degrees
+        Check("model (R40): every flicked stone 1 m off a still target settles within 1 cm in 5 s, never 5 cm past it (15-50 Hz)", settles);
+        Check("model (R40): a flicked Ball follows a 2 m sweep of the hands in 1 s, never 0.5 m behind, and settles after it (15-50 Hz)", follows);
+        Check("model (R40): a stone turned 3 rad, 4 rad (the short way) or -2 rad off settles on the wanted turn in 5 s (15-50 Hz)", turns);
         double quarter = System.Math.PI / 2.0, degree = System.Math.PI / 180.0;
-        bool crisp = true, swung = true;
-        foreach (float hz in new[] { 15f, 30f, 45f, 50f }) {
-            crisp &= Turned(hz, quarter, 3.0, Pd.DefaultFlickTurnDamp, out float past) < 1.0 * degree && past < 10.0 * degree;
-            Turned(hz, quarter, 3.0, 1f, out float oldPast);
-            swung &= oldPast > 40.0 * degree && oldPast < 60.0 * degree;
-        }
-        Check("model (C30): a quick 90 degree turn swings past by under 10 degrees and settles within 1 degree in 3 s (15-50 Hz)", crisp);
-        Check("model (C30): with damp 1 the same turn swung past by 40 to 60 degrees", swung);
-        float pdTrail = 6f * Pd.DefaultPdStepSeconds * 1f;   // a PD alone (no i) trails a 1 m/s target by d x dStep / p
-        float iTrail = Flicked(150f, 45f, t => t, 0.0, 40.0, out _);
-        Check("model: the integral takes up the trail behind a steadily moving hand", iTrail < pdTrail * 0.5f);
+        bool crisp = true;
+        foreach (float hz in new[] { 15f, 30f, 45f, 50f })
+            crisp &= Turned(hz, quarter, 3.0, Pd.DefaultFlickTurnDamping, out float past) < 0.1 * degree && past < 5.0 * degree;
+        Check("model (R40): a quick 90 degree turn swings past by under 5 degrees and settles within 0.1 degree in 3 s (15-50 Hz)", crisp);
 
         // ruling C15: Flick in every state: loose ones (Free, Floating, Held, Flicked) are Flicked; grounded ones refused
         StoneState[] after = { StoneState.Rising, StoneState.Still, StoneState.Sliding, StoneState.Flicked, StoneState.Stomped, StoneState.Flicked, StoneState.Flicked, StoneState.Flicked };
@@ -324,47 +690,35 @@ internal static class StoneTests {
         return new V3(Next(ref seed), Next(ref seed), Next(ref seed));
     }
 
-    // A flicked stone of this mass along x, pulled by Pd.Flick at the defaults (FlickScale, PdStepSeconds; the integral from
-    // zero as a flick begins) toward `target(t)`, held to the default MaxStoneSpeed each step (Pd.CappedPull, ruling C36, as
-    // StoneFlick.DriveFlick does), starting at rest at x0, stepped as PhysX steps a body (semi-implicit Euler: the velocity
-    // first, then the place) every 1/hz s for `seconds`: how far it is from the target at the end, and `worst` its furthest.
-    // NaN when it runs away.
-    static float Flicked(float mass, float hz, System.Func<double, double> target, double x0, double seconds, out float worst) =>
-        Flicked(mass, hz, target, x0, seconds, out worst, out _);
-
-    // As above; `peak` its fastest.
-    static float Flicked(float mass, float hz, System.Func<double, double> target, double x0, double seconds, out float worst, out float peak) {
-        double x = x0, v = 0.0, dt = 1.0 / hz, t = 0.0;
-        V3 integral = V3.Zero;
-        worst = 0f;
-        peak = 0f;
-        for (; t < seconds; t += dt) {
-            var error = new V3((float)(target(t) - x), 0f, 0f);
-            worst = System.Math.Max(worst, System.Math.Abs(error.X));
+    // How far behind its target a stone under `rule` gets at most, over `seconds`, from rest on the target (as Model).
+    static double SweepWorst(System.Func<FollowRule> make, float mass, float hz, System.Func<double, double> target, double seconds) {
+        FollowRule rule = make();
+        double x = target(0.0), v = 0.0, dt = 1.0 / hz, worst = 0.0;
+        for (double t = 0.0; t < seconds - 1e-9; t += dt) {
             var vel = new V3((float)v, 0f, 0f);
-            V3 f = Pd.CappedPull(Pd.Flick(error, ref integral, vel, mass, (float)dt, Pd.DefaultFlickScale, Pd.DefaultPdStepSeconds), vel, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
+            V3 a = rule(new V3((float)(target(t) - x), 0f, 0f), vel, mass, (float)dt);
+            V3 f = Pd.CappedPull(a * mass, vel, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
             v += f.X / mass * dt;
             x += v * dt;
-            peak = System.Math.Max(peak, (float)System.Math.Abs(v));
-            if (double.IsNaN(x) || System.Math.Abs(x) > 1e6) { worst = float.NaN; return float.NaN; }
+            worst = System.Math.Max(worst, System.Math.Abs(target(t + dt) - x));
         }
-        return (float)System.Math.Abs(target(t) - x);
+        return worst;
     }
 
     // A flicked stone's turn about x, `wanted` radians from where it starts at rest, driven each 1/hz s step by
     // Pd.FlickTorque (the defaults: an acceleration, so its inertia does not count) on the short way to it (Pd.TurnVector):
     // how far off the wanted turn it is after `seconds`, in radians (the short way). NaN when it runs away.
-    static float Turned(float hz, double wanted, double seconds) => Turned(hz, wanted, seconds, Pd.DefaultFlickTurnDamp, out _);
+    static float Turned(float hz, double wanted, double seconds) => Turned(hz, wanted, seconds, Pd.DefaultFlickTurnDamping, out _);
 
-    // As above with FlickTurnDamp `damp`; `past` is how far it swung past the wanted turn (wanted within half a turn, so the
-    // short way is its own way), in radians.
-    static float Turned(float hz, double wanted, double seconds, float damp, out float past) {
+    // As above with FlickTurnDamping `damping`; `past` is how far it swung past the wanted turn (wanted within half a turn, so
+    // the short way is its own way), in radians.
+    static float Turned(float hz, double wanted, double seconds, float damping, out float past) {
         double angle = 0.0, spin = 0.0, dt = 1.0 / hz, most = 0.0;
         for (double t = 0.0; t < seconds; t += dt) {
             double off = (wanted - angle) * 0.5;
             V3 turn = Pd.TurnVector((float)System.Math.Sin(off), 0f, 0f, (float)System.Math.Cos(off));
-            V3 torque = Pd.FlickTorque(turn, new V3((float)spin, 0f, 0f), Pd.DefaultFlickTurnGain, damp);
-            spin += torque.X * dt;
+            V3 acc = Pd.FlickTorque(turn, new V3((float)spin, 0f, 0f), Pd.DefaultFlickTurnRate, damping, (float)dt);
+            spin += acc.X * dt;
             angle += spin * dt;
             most = System.Math.Max(most, (angle - wanted) * System.Math.Sign(wanted));
             if (double.IsNaN(angle) || System.Math.Abs(angle) > 1e6) { past = float.NaN; return float.NaN; }
@@ -376,70 +730,106 @@ internal static class StoneTests {
     // Task 13: Hold (spec 2.3, 2.4, 3.2, 3.5; rulings C13, C14, C16)
     static void Holds() {
         // the brief's checks
-        Check("hold gains: 150 kg is (1, 8, 8)", Pd.HoldGains(150f) == (1f, 8f, 8f));
-        Check("hold gains: 350 kg is (1, 11, 13)", Pd.HoldGains(350f) == (1f, 11f, 13f));
-        Check("hold gains: 450 kg is (1, 15, 18)", Pd.HoldGains(450f) == (1f, 15f, 18f));
-        Check("pd hold: no error, no velocity pulls nothing", NearV(Pd.Hold(V3.Zero, V3.Zero, 150f, false, 2500f, 1500f, 0.02f), V3.Zero));
-        Check("pd hold: error (1, 0, 0), still, free -> (2500, 0, 0)", NearV(Pd.Hold(new V3(1f, 0f, 0f), V3.Zero, 150f, false, 2500f, 1500f, 0.02f), new V3(2500f, 0f, 0f)));
-        Check("let go: past 8 m/s, or grounded changed, not at 7.9", StoneRules.HoldLetGo(8.1f, false, 8f) && StoneRules.HoldLetGo(1f, true, 8f) && !StoneRules.HoldLetGo(7.9f, false, 8f));
+        Check("let go (R43): a swing that ended throws an armed stone, not an unarmed one; grounded changed lets go either way", StoneRules.HoldLetGo(true, false, true)
+            && !StoneRules.HoldLetGo(true, false, false) && !StoneRules.HoldLetGo(false, false, true) && StoneRules.HoldLetGo(false, true, false) && StoneRules.HoldLetGo(false, true, true));
         Check("hold again with the hand that holds it lets go", StoneRules.HoldAgain(0, 0) && StoneRules.HoldAgain(1, 1));
 
         // the defaults (the settings')
-        Check("defaults: hold 1 m ahead, x 2500 free, x 1500 grounded, d per 0.02 s", Near(Pd.DefaultHoldDistance, 1f) && Near(Pd.DefaultHoldFreeScale, 2500f)
-            && Near(Pd.DefaultHoldGroundScale, 1500f) && Near(Pd.DefaultPdStepSeconds, 0.02f));
-        Check("defaults (C28): let go past 5 m/s, armed within 0.5 m", Near(Pd.DefaultHoldLetGoSpeed, 5f) && Near(Pd.DefaultHoldArmMetres, 0.5f));
+        Check("defaults (R40, R41): 1 m from the hand plus half the size, follows at 12 rad/s, damping 1", Near(Pd.DefaultHoldDistance, 1f) && Near(Pd.DefaultHoldFollowRate, 12f)
+            && Near(Pd.DefaultHoldDamping, 1f));
+        Check("defaults (C28, R43): thrown past 3.5 m/s of the hand relative to the head, armed within 0.5 m, the swing x 1.5", Near(Pd.DefaultHoldLetGoSpeed, 3.5f)
+            && Near(Pd.DefaultHoldArmMetres, 0.5f) && Near(Pd.DefaultHoldThrowScale, 1.5f));
 
-        // HoldGains at every band edge (spec 2.4: up to 150, 150-300, 300-400, past 400 kg)
-        Check("hold gains: 0 and 100 kg are the lightest band", Pd.HoldGains(0f) == (1f, 8f, 8f) && Pd.HoldGains(100f) == (1f, 8f, 8f) && Pd.HoldGains(-5f) == (1f, 8f, 8f));
-        Check("hold gains: just past 150 to 300 is (1, 9, 9)", Pd.HoldGains(150.01f) == (1f, 9f, 9f) && Pd.HoldGains(300f) == (1f, 9f, 9f));
-        Check("hold gains: just past 300 to 400 is (1, 11, 13)", Pd.HoldGains(300.01f) == (1f, 11f, 13f) && Pd.HoldGains(400f) == (1f, 11f, 13f));
-        Check("hold gains: just past 400 is (1, 15, 18)", Pd.HoldGains(400.01f) == (1f, 15f, 18f) && Pd.HoldGains(1e6f) == (1f, 15f, 18f));
-        Check("hold gains: a mass that is not a number is the heaviest band", Pd.HoldGains(float.NaN) == (1f, 15f, 18f) && Pd.HoldGains(float.PositiveInfinity) == (1f, 15f, 18f));
-        Check("hold gains: the five stones", Pd.HoldGains(StoneTable.Default(Disc).Mass) == (1f, 8f, 8f) && Pd.HoldGains(StoneTable.Default(Ball).Mass) == (1f, 8f, 8f)
-            && Pd.HoldGains(StoneTable.Default(Pillar).Mass) == (1f, 9f, 9f) && Pd.HoldGains(StoneTable.Default(Cube).Mass) == (1f, 9f, 9f) && Pd.HoldGains(StoneTable.Default(Wall).Mass) == (1f, 11f, 13f));
+        // Ruling 41 (the review's I4): the centre HoldDistance + half the stone's size, (width + depth) / 4 (a Ball: its radius)
+        Check("half size (R41, I4): Disc 0.35, Ball 0.30 (its radius), Pillar 0.275, Cube 0.50, Wall 0.725", Near2(Pd.HalfSize(Disc), 0.35f, 1e-4f)
+            && Near2(Pd.HalfSize(Ball), 0.30f, 1e-4f) && Near2(Pd.HalfSize(Pillar), 0.275f, 1e-4f) && Near2(Pd.HalfSize(Cube), 0.50f, 1e-4f)
+            && Near2(Pd.HalfSize(Wall), 0.725f, 1e-4f));
+        Check("hold reach (R41, I4): with 1 m, Pillar 1.275, Cube 1.50, Wall 1.725, Ball 1.30, Disc 1.35", Near2(Pd.HoldReach(Pillar, 1f), 1.275f, 1e-4f)
+            && Near2(Pd.HoldReach(Cube, 1f), 1.50f, 1e-4f) && Near2(Pd.HoldReach(Wall, 1f), 1.725f, 1e-4f) && Near2(Pd.HoldReach(Ball, 1f), 1.30f, 1e-4f)
+            && Near2(Pd.HoldReach(Disc, 1f), 1.35f, 1e-4f));
+        Check("hold reach (R41): HoldDistance 0 (or below, or not a number) is half the size alone", Near(Pd.HoldReach(Wall, 0f), Pd.HalfSize(Wall))
+            && Near(Pd.HoldReach(Wall, -1f), Pd.HalfSize(Wall)) && Near(Pd.HoldReach(Cube, float.NaN), Pd.HalfSize(Cube)) && Near(Pd.HoldReach(Ball, 2.5f), 2.8f));
+        Check("hold reach (R41): a byte that is not a kind has no size", Pd.HalfSize((StoneKind)9) == 0f && Near(Pd.HoldReach((StoneKind)9, 1f), 1f));
+        Check("hold reach (R41): a Wall's target 1.725 m ahead of the hand along the look", NearV(Pd.HoldTarget(new V3(0f, 1.5f, 0f), new V3(0f, 0f, 1f), Pd.HoldReach(Wall, 1f)),
+            new V3(0f, 1.5f, 1.725f)));
 
-        // ruling C13: d x PdStepSeconds x velocity (the error's change per 50 Hz physics step), dxz on x and z, dy on y
-        Check("pd hold: a 150 kg stone at 1 m/s along x is damped by 2500 x 8 x 0.02", NearV(Pd.Hold(V3.Zero, new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), new V3(-400f, 0f, 0f)));
-        Check("pd hold: dy on y, dxz on x and z (450 kg)", NearV(Pd.Hold(V3.Zero, new V3(1f, 2f, -1f), 450f, false, 2500f, 1500f, 0.02f), new V3(-750f, -1800f, 750f)));
-        Check("pd hold: p and d together (350 kg)", NearV(Pd.Hold(new V3(0.5f, -0.2f, 1f), new V3(2f, 0f, 0f), 350f, false, 2500f, 1500f, 0.02f), new V3(150f, -500f, 2500f)));
-        Check("pd hold: PdStepSeconds 1 is the per-second reading", NearV(Pd.Hold(V3.Zero, new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 1f), new V3(-20000f, 0f, 0f)));
-        Check("pd hold: PdStepSeconds 0 does not damp", NearV(Pd.Hold(new V3(1f, 0f, 0f), new V3(5f, 5f, 5f), 150f, false, 2500f, 1500f, 0f), new V3(2500f, 0f, 0f)));
-        Check("pd hold: a ball trailing a 1 m/s hand by 0.16 m is pulled no more", NearV(Pd.Hold(new V3(0.16f, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), V3.Zero));
-        // ruling C14: a grounded hold pulls along x and z only, x HoldGroundScale
-        Check("pd hold: grounded is x 1500 and has no y", NearV(Pd.Hold(new V3(1f, 1f, -2f), V3.Zero, 275f, true, 2500f, 1500f, 0.02f), new V3(1500f, 0f, -3000f)));
-        Check("pd hold: grounded damps x and z only", NearV(Pd.Hold(V3.Zero, new V3(1f, -5f, 1f), 150f, true, 2500f, 1500f, 0.02f), new V3(-240f, 0f, -240f)));
-        Check("pd hold: the scales from the settings", NearV(Pd.Hold(new V3(1f, 1f, 0f), V3.Zero, 150f, false, 1000f, 500f, 0.02f), new V3(1000f, 1000f, 0f))
-            && NearV(Pd.Hold(new V3(1f, 1f, 0f), V3.Zero, 150f, true, 1000f, 500f, 0.02f), new V3(500f, 0f, 0f)));
-        // never a force that is not a number
-        Check("pd hold: an error that is not a number pulls nothing", NearV(Pd.Hold(new V3(float.NaN, 0f, 0f), V3.Zero, 150f, false, 2500f, 1500f, 0.02f), V3.Zero)
-            && NearV(Pd.Hold(new V3(0f, float.PositiveInfinity, 0f), new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), V3.Zero));
-        Check("pd hold: a velocity that is not a number counts as none", NearV(Pd.Hold(new V3(1f, 0f, 0f), new V3(float.NaN, 0f, 0f), 150f, false, 2500f, 1500f, 0.02f), new V3(2500f, 0f, 0f)));
-        Check("pd hold: a mass that is not a number damps as the heaviest", NearV(Pd.Hold(V3.Zero, new V3(1f, 0f, 0f), float.NaN, false, 2500f, 1500f, 0.02f), new V3(-750f, 0f, 0f)));
-        Check("pd hold: a scale not above 0 or not a number pulls nothing", NearV(Pd.Hold(new V3(1f, 1f, 1f), V3.Zero, 150f, false, float.NaN, 1500f, 0.02f), V3.Zero)
-            && NearV(Pd.Hold(new V3(1f, 1f, 1f), V3.Zero, 150f, true, 2500f, -1f, 0.02f), V3.Zero) && NearV(Pd.Hold(new V3(1f, 1f, 1f), V3.Zero, 150f, false, float.PositiveInfinity, 1500f, 0.02f), V3.Zero));
-        Check("pd hold: a step that is not a number does not damp", NearV(Pd.Hold(new V3(1f, 0f, 0f), new V3(1f, 0f, 0f), 150f, false, 2500f, 1500f, float.NaN), new V3(2500f, 0f, 0f)));
-        Check("pd hold: huge numbers stay finite", FiniteV(Pd.Hold(new V3(3e38f, -3e38f, 3e38f), new V3(-3e38f, 3e38f, 0f), 150f, false, 3e38f, 3e38f, 3e38f)));
-        // ruling C13: stable at the server's 15-45 Hz with every stone, and the trail behind a 1 m/s hand settles at 0.16 m
-        Check("pd hold: a ball follows a 1 m/s hand 0.16 m behind (45 Hz)", Near2(Follow(150f, false, 1f / 45f, 1f, 20f), 0.16f, 0.005f));
+        // Ruling 40's models at the server's 15-50 Hz: every stone, free and grounded (x and z only: the same along x),
+        // settles on a still target without passing it, and a Ball trails a steady 1 m/s hand by 2 x damping / rate
         bool stable = true;
         foreach (float hz in new[] { 15f, 30f, 45f, 50f })
             foreach (StoneKind k in new[] { Disc, Ball, Pillar, Cube, Wall })
-                foreach (bool grounded in new[] { false, true })
-                    stable &= Settles(StoneTable.Default(k).Mass, grounded, 1f / hz);
-        Check("pd hold: every stone settles on a still target at 15, 30, 45 and 50 Hz, free and grounded", stable);
-        // ruling C28's model: a Ball (150 kg) held by Pd.Hold at the defaults, stepped at 45 Hz through the arming and let-go
-        // rules: an arm swing throws it, a body turn does not, and a far pick-up is not thrown on its pull-in
-        Check("model (C28): a swing (2.5 m in 0.25 s) throws a Ball", Held(150f, false, 45f, Ramp(2.5, 0.25), 0.0, 3.0, out _, out _, out _));
-        Check("model (C28): a body turn (1.5 m in 0.5 s) does not", !Held(150f, false, 45f, Ramp(1.5, 0.5), 0.0, 3.0, out float turnPeak, out bool turnArmed, out _)
-            && turnArmed && turnPeak < Pd.DefaultHoldLetGoSpeed);
-        Check("model (C28): a far pick-up (at rest 2.7 m off) is not thrown: it arms near the target and settles",
-            !Held(150f, false, 45f, _ => 0.0, -2.7, 10.0, out float pickPeak, out bool pickArmed, out float pickLeft) && pickArmed && pickLeft < 0.01f && pickPeak > Pd.DefaultHoldLetGoSpeed);
-        Check("model (C28): a far pick-up of a Disc (100 kg) is not thrown either", !Held(100f, false, 45f, _ => 0.0, -2.7, 10.0, out _, out _, out _));
-        bool rates = true;
-        foreach (float hz in new[] { 15f, 30f, 50f })
-            rates &= Held(150f, false, hz, Ramp(2.5, 0.25), 0.0, 3.0, out _, out _, out _) && !Held(150f, false, hz, Ramp(1.5, 0.5), 0.0, 3.0, out _, out _, out _)
-                && !Held(150f, false, hz, _ => 0.0, -2.7, 10.0, out _, out _, out _);
-        Check("model (C28): the same three at the server's 15, 30 and 50 Hz", rates);
+                foreach (System.Func<FollowRule> make in new System.Func<FollowRule>[] { HoldRule, GroundRule }) {
+                    Model(make, StoneTable.Default(k).Mass, hz, _ => 0.0, -1.0, 5.0, out _, out double heldPast, out double end, out _, out _, out _);
+                    stable &= end < 0.01 && heldPast <= 0.05;
+                }
+        Check("model (R40): every held stone 1 m off settles within 1 cm in 5 s, never 5 cm past, at 15-50 Hz, free and grounded", stable);
+        Model(HoldRule, 150f, 50f, t => t, 0.0, 6.0, out _, out _, out double ballTrail, out _, out _, out _);
+        Check("model (R40): a held Ball trails a 1 m/s hand by 2 / 12 m (50 Hz)", Near2((float)ballTrail, 2f / 12f, 0.01f));
+        // Ruling 43's models, every stone, free and grounded, at the server's 15-50 Hz (Holder): a turn of the whole body with
+        // the arm out (the hand 0.6 m from the head's axis) at 180 and 270 degrees a second, a turn of the head alone, walking
+        // at 3 m/s and an 8 m/s dash with the hand's copy a step behind the head's never throw; a swing of 1 m in 0.25 s throws,
+        // along the swing at the hand's relative speed x 1.5
+        StoneKind[] five = { Disc, Ball, Pillar, Cube, Wall };
+        float[] rates = { 15f, 20f, 30f, 45f, 50f };
+        bool turns = true, heads = true, walks = true, dashes = true, swings = true, along = true;
+        foreach (float hz in rates)
+            foreach (StoneKind k in five)
+                foreach (bool grounded in new[] { false, true }) {
+                    float mass = StoneTable.Default(k).Mass, reach = Pd.HoldReach(k, Pd.DefaultHoldDistance);
+                    foreach (double deg in new[] { 180.0, 270.0 }) {
+                        turns &= !Holder(mass, grounded, hz, HeadStill, BodyTurnHand(deg), BodyTurnLook(deg), reach, null, 3.0, 0.0, out _, out _, out _, out _, out _);
+                        heads &= !Holder(mass, grounded, hz, HeadStill, HandOut, BodyTurnLook(deg), reach, null, 3.0, 0.0, out _, out _, out _, out _, out _);
+                    }
+                    heads &= !Holder(mass, grounded, hz, HeadStill, HandOut, BodyTurnLook(720.0), reach, null, 3.0, 0.0, out _, out _, out _, out _, out _);
+                    walks &= !Holder(mass, grounded, hz, Walk(3.0), WalkHand(3.0), LookAhead, reach, null, 3.0, 0.0, out _, out _, out _, out _, out _);
+                    dashes &= !Holder(mass, grounded, hz, Walk(8.0), WalkHand(8.0), LookAhead, reach, null, 3.0, 0.02, out _, out _, out _, out _, out _);
+                    bool thrown = Holder(mass, grounded, hz, HeadStill, Swing(1.0), LookAhead, reach, null, 2.0, 0.0, out V3 v, out float handAt, out _, out _, out _);
+                    swings &= thrown && handAt > Pd.DefaultHoldLetGoSpeed;
+                    along &= thrown && Near2(v.Length, 1.5f * handAt, 1e-3f) && v.X > 0f && System.Math.Abs(v.Y) < 1e-3f && System.Math.Abs(v.Z) < 1e-3f;
+                }
+        Check("model (R43): a body turn with the arm out at 180 or 270 degrees a second never throws (every stone, 15-50 Hz, free and grounded)", turns);
+        Check("model (R43): a turn of the head alone (180, 270, 720 degrees a second) never throws, a Wall's 2.23 m included", heads);
+        Check("model (R43): walking at 3 m/s with the hand held never throws", walks);
+        Check("model (R43): an 8 m/s dash from a settled hold never throws, the hand's copy 20 ms behind the head's", dashes);
+        // Ruling 43 (amended): only a sustained swing throws, at its peak, with the swing's highest reading
+        bool lags = true, ratio = true, oneStep = true, latest = true, peakSpeed = true;
+        foreach (float hz in new[] { 50f, 20f }) {
+            foreach (double lag in new[] { 0.05, 0.08 })
+                lags &= !Holder(150f, false, hz, Walk(8.0), WalkHand(8.0), LookAhead, 1.3f, null, 3.0, lag, out _, out _, out _, out _, out _)
+                    && !Holder(400f, true, hz, Walk(8.0), WalkHand(8.0), LookAhead, Pd.HoldReach(Wall, 1f), null, 3.0, lag, out _, out _, out _, out _, out _);
+            bool one = Holder(150f, false, hz, HeadStill, Swing(1.0), LookAhead, 1.3f, null, 2.0, 0.0, out V3 v1, out float h1, out _, out _, out _);
+            bool two = Holder(150f, false, hz, HeadStill, Swing(2.0), LookAhead, 1.3f, null, 2.0, 0.0, out V3 v2, out _, out _, out _, out _);
+            peakSpeed &= one && Near2(v1.Length, 1.5f * 4f, 0.15f * 6f) && Near2(h1, 4f, 0.2f);
+            ratio &= one && two && Near2(v2.Length / v1.Length, 2f, 0.3f);
+            // a hand that passes the threshold for one step only: 0.25 m in one step, back at once
+            float step = 1f / hz;
+            oneStep &= !Holder(150f, false, hz, HeadStill, t => HandOut(t) + new V3(t >= 0.5 && t < 0.5 + step - 1e-6 ? 0.05f : 0f, 0f, 0f), LookAhead, 1.3f, null, 2.0, 0.0,
+                out _, out _, out _, out _, out _);
+            // a hand that stays fast for a second (4 m in 1 s) throws no later than HoldSwingMaxSeconds after it passed it
+            latest &= Holder(150f, false, hz, HeadStill, t => HandOut(t) + new V3((float)Ramp(4.0, 1.0)(t - 0.5), 0f, 0f), LookAhead, 1.3f, null, 3.0, 0.0, out _, out _, out _, out _, out _)
+                && LastSwingLength <= Pd.DefaultHoldSwingMaxSeconds + 1e-6 && LastThrowAt < 0.5 + 0.1 + Pd.DefaultHoldSwingMaxSeconds + step;
+        }
+        Check("model (R43): an 8 m/s dash with the hand's copy 50 or 80 ms behind the head's never throws (a Ball, a held-slide Wall; 50 and 20 Hz)", lags);
+        Check("model (R43): a swing of 1 m in 0.25 s throws at about its peak (4 m/s) x 1.5 (50 and 20 Hz)", peakSpeed);
+        Check("model (R43): a swing twice as fast throws about twice as fast (within 15%)", ratio);
+        Check("model (R43): a hand past the threshold for one step only throws nothing", oneStep);
+        Check("model (R43): a hand fast for a whole second throws no later than HoldSwingMaxSeconds after it passed the threshold", latest);
+        Check("model (R43): a swing of 1 m in 0.25 s (4 m/s relative to the head) throws every stone", swings);
+        Check("model (R43): it is thrown along the swing at the hand's relative speed x 1.5 (HoldThrowScale)", along);
+        // the arming (rulings C27, C28): a far pick-up whose hand swings at once is not thrown on its pull-in; it settles
+        bool picks = true;
+        foreach (float hz in rates)
+            foreach (StoneKind k in five) {
+                float reach = Pd.HoldReach(k, Pd.DefaultHoldDistance);
+                V3 far = Pd.HoldTarget(HandOut(0.0), LookAhead(0.0), reach) + new V3(0f, 0f, 2.7f);
+                picks &= !Holder(StoneTable.Default(k).Mass, false, hz, HeadStill, t => HandOut(t) + new V3((float)Ramp(1.0, 0.25)(t - 0.1), 0f, 0f), LookAhead, reach, far, 5.0, 0.0,
+                    out _, out _, out bool pickArmed, out float pickLeft, out _) && pickArmed && pickLeft < 0.01f;
+            }
+        Check("model (C28, R43): a far pick-up (2.7 m off) swung at once is not thrown before it settles; it arms and settles", picks);
+        // the cap: a swing of 25 m in 0.25 s reads 20 m/s in its first step, x 1.5 is 30: held to MaxStoneSpeed
+        Check("model (R43): a throw is held to MaxStoneSpeed",
+            Holder(150f, false, 50f, HeadStill, Swing(25.0), LookAhead, Pd.HoldReach(Ball, 1f), null, 2.0, 0.0,
+                out V3 capped, out _, out _, out _, out _) && Near2(capped.Length, StoneRules.DefaultMaxStoneSpeed, 1e-3f));
 
         // ruling C34: the target is the hand plus the holder's look (the head's forward) made flat x HoldDistance, never the
         // controller's own forward (its +z is not the fingers on every controller, and the server cannot see [EarthPose])
@@ -481,8 +871,8 @@ internal static class StoneTests {
         Check("capped pull (C36): from the setting", NearF(Pd.CappedPull(new V3(15000f, 0f, 0f), new V3(9f, 0f, 0f), 150f, 0.02f, 10f), new V3(7500f, 0f, 0f)));
         bool capDefault = true;
         foreach (float cap in new[] { 0f, -1f, float.NaN, float.PositiveInfinity })
-            capDefault &= NearF(Pd.CappedPull(new V3(15000f, 0f, 0f), new V3(19f, 0f, 0f), 150f, 0.02f, cap), new V3(7500f, 0f, 0f));
-        Check("capped pull (C36): a cap not above 0 or not a number is the default 20", capDefault);
+            capDefault &= NearF(Pd.CappedPull(new V3(15000f, 0f, 0f), new V3(24f, 0f, 0f), 150f, 0.02f, cap), new V3(7500f, 0f, 0f));
+        Check("capped pull (C36): a cap not above 0 or not a number is the default 25", capDefault);
         V3 big = new V3(1e6f, 0f, 0f);
         Check("capped pull (C36): a mass or step not above 0 or not a number, or a velocity not a number, leaves the force",
             SameV(Pd.CappedPull(big, V3.Zero, 0f, 0.02f, 20f), big) && SameV(Pd.CappedPull(big, V3.Zero, float.NaN, 0.02f, 20f), big)
@@ -496,19 +886,16 @@ internal static class StoneTests {
         // they walk off: the pull grows with the distance, but no step leaves the stone faster than MaxStoneSpeed
         bool heldCapped = true, flickCapped = true;
         foreach (float hz in new[] { 15f, 30f, 45f, 50f }) {
-            Held(150f, false, hz, _ => 0.0, -100.0, 20.0, out float farPeak, out _, out _);
-            heldCapped &= farPeak <= StoneRules.DefaultMaxStoneSpeed + 1e-3f && farPeak > 19f;
-            Flicked(150f, hz, _ => 0.0, -100.0, 20.0, out _, out float flickPeak);
-            flickCapped &= flickPeak <= StoneRules.DefaultMaxStoneSpeed + 1e-3f && flickPeak > 19f;
+            Model(HoldRule, 150f, hz, _ => 0.0, -100.0, 20.0, out _, out _, out _, out _, out _, out double farPeak);
+            heldCapped &= farPeak <= StoneRules.DefaultMaxStoneSpeed + 1e-3f && farPeak > StoneRules.DefaultMaxStoneSpeed - 1f;
+            Model(FlickRule, 150f, hz, _ => 0.0, -100.0, 20.0, out _, out _, out _, out _, out _, out double flickPeak);
+            flickCapped &= flickPeak <= StoneRules.DefaultMaxStoneSpeed + 1e-3f && flickPeak > StoneRules.DefaultMaxStoneSpeed - 1f;
         }
         Check("model (C36): a held Ball pulled from 100 m never passes MaxStoneSpeed (15-50 Hz)", heldCapped);
         Check("model (C36): a flicked Ball pulled from 100 m never passes MaxStoneSpeed (15-50 Hz)", flickCapped);
 
-        // letting go (ruling: past HoldLetGoSpeed, or grounded changed)
-        Check("let go: at 8 m/s it holds on", !StoneRules.HoldLetGo(8f, false, 8f));
-        Check("let go: a speed that is not a number lets go", StoneRules.HoldLetGo(float.NaN, false, 8f));
-        // rulings C27, C28: the speed test counts only once the held stone has been, in one step, both within HoldArmMetres of
-        // its target and at HoldLetGoSpeed or under (a stone caught flying, or pulled in from afar, settles first; a swing
+        // rulings C27, C28, 43: a throw counts only once the held stone has been, in one step, both within HoldArmMetres of
+        // its target and the hand at HoldLetGoSpeed or under (a stone caught flying, or pulled in from afar, settles first; a swing
         // then throws it)
         Check("arm (C28): near and slow arms", StoneRules.HoldArmed(false, 0.4f, 3f, 0.5f, 5f) && StoneRules.HoldArmed(false, 0f, 0f, 0.5f, 5f));
         Check("arm (C28): slow but far does not (a far pick-up)", !StoneRules.HoldArmed(false, 2.7f, 0f, 0.5f, 5f) && !StoneRules.HoldArmed(false, 0.6f, 1f, 0.5f, 5f));
@@ -524,13 +911,68 @@ internal static class StoneTests {
         Check("trail: a grounded hold's is flat", Near(Pd.Trail(new V3(3f, 4f, 0f), true), 3f) && Near(Pd.Trail(new V3(0f, 0.9f, 0f), true), 0f) && Near(Pd.Trail(new V3(0.3f, -2f, 0.4f), true), 0.5f));
         Check("trail: an error that is not a number is infinitely far", float.IsPositiveInfinity(Pd.Trail(new V3(float.NaN, 0f, 0f), false))
             && float.IsPositiveInfinity(Pd.Trail(new V3(0f, 0f, float.PositiveInfinity), true)));
-        // armed or not (HoldLetGo's own checks, with the let-go speed given)
-        Check("let go (C27): unarmed, 12 m/s holds on; armed, 8.1 lets go and 7.9 does not", !StoneRules.HoldLetGo(12f, false, 8f, false)
-            && StoneRules.HoldLetGo(8.1f, false, 8f, true) && !StoneRules.HoldLetGo(7.9f, false, 8f, true));
-        Check("let go (C27): grounded changed lets go unarmed", StoneRules.HoldLetGo(12f, true, 8f, false) && StoneRules.HoldLetGo(1f, true, 8f, false));
-        Check("let go (C27): a speed that is not a number lets go unarmed too", StoneRules.HoldLetGo(float.NaN, false, 8f, false) && StoneRules.HoldLetGo(float.PositiveInfinity, false, 8f, false));
-        Check("let go (C27): the brief's checks are the armed case", StoneRules.HoldLetGo(8.1f, false, 8f, true) && StoneRules.HoldLetGo(1f, true, 8f, true) && !StoneRules.HoldLetGo(7.9f, false, 8f, true));
-        Check("let go: from the settings", StoneRules.HoldLetGo(5.1f, false, 5f) && !StoneRules.HoldLetGo(9f, false, 12f));
+
+        // Ruling 43: the hand's track, its velocity relative to the head over at least 0.1 s
+        var track = new HandTrack();
+        Check("hand track (R43): nothing before a whole window", !track.Velocities(out _, out _) && float.IsNaN(track.RelativeSpeed));
+        for (int i = 0; i <= 10; i++) track.Add(i * 0.02, new V3(0.1f * i, 1f, 0f), new V3(0f, 1.6f, 0.05f * i));   // hand 5 m/s along x, head 2.5 m/s along z
+        Check("hand track (R43): the hand's velocity relative to the head and the head's own", track.Velocities(out V3 tRel, out V3 tHead)
+            && NearF(tRel, new V3(5f, 0f, -2.5f)) && NearF(tHead, new V3(0f, 0f, 2.5f)));
+        var together = new HandTrack();
+        for (int i = 0; i <= 10; i++) together.Add(i * 0.02, new V3(0.16f * i, 1.3f, 0.6f), new V3(0.16f * i, 1.6f, 0f));
+        Check("hand track (R43): hand and head moving together (a dash) is no hand speed", Near2(together.RelativeSpeed, 0f, 1e-4f));
+        var gappy = new HandTrack();
+        bool fedAll = gappy.Add(0.0, V3.Zero, V3.Zero);
+        bool skipped = !gappy.Add(0.02, new V3(float.NaN, 0f, 0f), V3.Zero);
+        fedAll &= gappy.Add(0.04, new V3(0.16f, 0f, 0f), V3.Zero);
+        skipped &= !gappy.Add(0.06, V3.Zero, new V3(0f, float.PositiveInfinity, 0f)) && !gappy.Add(double.NaN, V3.Zero, V3.Zero);
+        fedAll &= gappy.Add(0.08, new V3(0.32f, 0f, 0f), V3.Zero) && gappy.Add(0.1, new V3(0.4f, 0f, 0f), V3.Zero);
+        Check("hand track (R43): a sample that is not a number is skipped, and Add says so", fedAll && skipped && gappy.Velocities(out V3 gRel, out _) && NearF(gRel, new V3(4f, 0f, 0f)));
+        gappy.Add(0.05, V3.Zero, V3.Zero);
+        Check("hand track (R43): a time that goes back starts the track again", !gappy.Velocities(out _, out _));
+        var longTrack = new HandTrack();
+        for (int i = 0; i < 500; i++) longTrack.Add(i * 0.01, new V3(i < 400 ? 0f : 0.03f * (i - 400), 0f, 0f), V3.Zero);
+        Check("hand track (R43): it measures the newest 0.1 s, however long the hold", Near2(longTrack.RelativeSpeed, 3f, 1e-3f));
+
+        // Ruling 43 (amended): the swing gate (let-go 3.5, sustained 0.1 s, at most 0.2 s), fed one reading every 0.02 s
+        var x1 = new V3(1f, 0f, 0f);
+        bool Gate(float[] speeds, out int at, out V3 sw, float sustain = 0.1f) {
+            var gate = new SwingGate();
+            at = -1;
+            sw = V3.Zero;
+            for (int i = 0; i < speeds.Length; i++)
+                if (gate.Step(i * 0.02, speeds[i], x1 * speeds[i], 3.5f, sustain, 0.2f, out sw)) { at = i; return true; }
+            return false;
+        }
+        Check("swing gate (R43): a spike shorter than HoldSwingSeconds throws nothing", !Gate(new[] { 2f, 6f, 7f, 6f, 2f, 2f }, out _, out _));
+        Check("swing gate (R43): a sustained swing throws at the first lower reading, with its highest velocity",
+            Gate(new[] { 2f, 4f, 5f, 6f, 7f, 8f, 9f, 8.5f, 8f }, out int peakAt, out V3 peakSw) && peakAt == 7 && NearF(peakSw, new V3(9f, 0f, 0f)));
+        Check("swing gate (R43): a peak before the swing was sustained throws at the first reading once it is", Gate(new[] { 2f, 9f, 8f, 7f, 6f, 5f, 4.5f, 4f }, out int earlyAt, out V3 earlySw)
+            && earlyAt == 6 && NearF(earlySw, new V3(9f, 0f, 0f)));
+        Check("swing gate (R43): a sustained swing that drops under the let-go speed throws there", Gate(new[] { 4f, 4f, 4f, 4f, 4f, 4f, 1f }, out int dropAt, out _) && dropAt == 6);
+        Check("swing gate (R43): a swing that never stops rising throws HoldSwingMaxSeconds after it passed", Gate(new[] { 2f, 4f, 5f, 6f, 7f, 8f, 9f, 10f, 11f, 12f, 13f, 14f, 15f, 16f }, out int maxAt, out V3 maxSw)
+            && maxAt == 11 && NearF(maxSw, new V3(14f, 0f, 0f)));
+        Check("swing gate (R43): HoldSwingSeconds 0 throws at the first lower reading", Gate(new[] { 2f, 5f, 4f }, out int zeroAt, out _, 0f) && zeroAt == 2);
+        Check("swing gate (R43): a reading that is not a number is not fast, and a time that is not a number clears it", !Gate(new[] { 4f, 4f, float.NaN, 4f, 4f, 4f, 2f }, out _, out _)
+            && !new SwingGate().Step(double.NaN, 9f, x1, 3.5f, 0f, 0f, out _));
+
+        // Ruling 43: the thrown velocity
+        Check("throw (R43): the head's velocity + the swing x the scale", NearF(Pd.ThrowVelocity(V3.Zero, new V3(0f, 0f, 2f), new V3(4f, 0f, 0f), 1.5f, false, 25f), new V3(6f, 0f, 2f)));
+        Check("throw (R43): a stone already faster keeps its own", NearF(Pd.ThrowVelocity(new V3(0f, 0f, 9f), V3.Zero, new V3(4f, 0f, 0f), 1.5f, false, 25f), new V3(0f, 0f, 9f)));
+        Check("throw (R43): a slide-hold takes only the flat part, its own up and down kept", NearF(Pd.ThrowVelocity(new V3(0f, -0.5f, 0f), V3.Zero, new V3(4f, 3f, 0f), 1.5f, true, 25f), new V3(6f, -0.5f, 0f)));
+        Check("throw (R43): HoldThrowScale 0 (or below, or not a number) gives only the head's velocity",
+            NearF(Pd.ThrowVelocity(new V3(1f, 0f, 0f), new V3(0f, 0f, 3f), new V3(4f, 0f, 0f), 0f, false, 25f), new V3(0f, 0f, 3f))
+            && NearF(Pd.ThrowVelocity(new V3(1f, 0f, 0f), V3.Zero, new V3(4f, 0f, 0f), float.NaN, false, 25f), new V3(1f, 0f, 0f))
+            && NearF(Pd.ThrowVelocity(new V3(1f, 0f, 0f), V3.Zero, new V3(4f, 0f, 0f), -2f, false, 25f), new V3(1f, 0f, 0f)));
+        Check("throw (R43): held to MaxStoneSpeed (a cap not above 0 or not a number is the default 25)", Near2(Pd.ThrowVelocity(V3.Zero, V3.Zero, new V3(40f, 0f, 0f), 1.5f, false, 25f).Length, 25f, 1e-3f)
+            && Near2(Pd.ThrowVelocity(V3.Zero, V3.Zero, new V3(40f, 0f, 0f), 1.5f, false, 10f).Length, 10f, 1e-3f)
+            && Near2(Pd.ThrowVelocity(V3.Zero, V3.Zero, new V3(40f, 0f, 0f), 1.5f, false, float.NaN).Length, 25f, 1e-3f)
+            && Near2(Pd.ThrowVelocity(new V3(0f, 30f, 0f), V3.Zero, V3.Zero, 1.5f, false, 25f).Length, 25f, 1e-3f));
+        Check("throw (R43): a head or hand velocity that is not a number throws nothing; a stone's counts as none",
+            NearF(Pd.ThrowVelocity(new V3(1f, 0f, 0f), new V3(float.NaN, 0f, 0f), new V3(4f, 0f, 0f), 1.5f, false, 25f), new V3(1f, 0f, 0f))
+            && NearF(Pd.ThrowVelocity(new V3(1f, 0f, 0f), V3.Zero, new V3(0f, float.PositiveInfinity, 0f), 1.5f, false, 25f), new V3(1f, 0f, 0f))
+            && NearF(Pd.ThrowVelocity(new V3(float.NaN, 0f, 0f), V3.Zero, new V3(4f, 0f, 0f), 1.5f, false, 25f), new V3(6f, 0f, 0f))
+            && FiniteV(Pd.ThrowVelocity(new V3(3e38f, 3e38f, 0f), new V3(3e38f, 0f, 0f), new V3(3e38f, 0f, 3e38f), 3e38f, false, 3e38f)));
         Check("hold again: another hand, or not held, does not let go", !StoneRules.HoldAgain(0, 1) && !StoneRules.HoldAgain(1, 0) && !StoneRules.HoldAgain(-1, 0) && !StoneRules.HoldAgain(-1, 1) && !StoneRules.HoldAgain(-1, -1));
 
         // ruling C14: Hold in every state (CanApply, After)
@@ -544,7 +986,7 @@ internal static class StoneTests {
             V3.Zero, -1.6f, 2.5f, 2.4f, 0.5f) == ModifyRefusal.None);
         Check("hold pushes nothing", StoneRules.Impulse(Modifier.Hold, false) == (0f, 0f, 0f) && StoneRules.Impulse(Modifier.Hold, true) == (0f, 0f, 0f));
         // the Held row: Straight and Explode keep the hold; Kick, Uppercut, Stomp and Parry change its state (they let go)
-        Check("held: straight stays held", StoneRules.After(StoneState.Held, Modifier.Straight) == StoneState.Held);
+        Check("held (I3): straight lets it go and flies it, Free", StoneRules.After(StoneState.Held, Modifier.Straight) == StoneState.Free);
         Check("held: explode stays held", StoneRules.After(StoneState.Held, Modifier.Explode) == StoneState.Held);
         Check("held: kick -> free", StoneRules.After(StoneState.Held, Modifier.Kick) == StoneState.Free);
         Check("held: uppercut -> free", StoneRules.After(StoneState.Held, Modifier.Uppercut) == StoneState.Free);
@@ -568,60 +1010,12 @@ internal static class StoneTests {
 
     static bool Near2(float a, float b, float tol) => System.Math.Abs(a - b) <= tol;
 
-    // A free stone of this mass held by Pd.Hold (defaults) behind a target moving along x at `speed`, stepped as PhysX steps a
-    // body (semi-implicit Euler: the velocity first, then the place) every `dt`: how far it trails after `seconds`. NaN when it
-    // runs away.
-    static float Follow(float mass, bool grounded, float dt, float speed, float seconds) {
-        double x = 0.0, v = 0.0, t = 0.0;
-        for (; t < seconds; t += dt) {
-            double target = speed * t;
-            V3 f = Pd.Hold(new V3((float)(target - x), 0f, 0f), new V3((float)v, 0f, 0f), mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds);
-            v += f.X / mass * dt;
-            x += v * dt;
-            if (double.IsNaN(x) || System.Math.Abs(x) > 1e6) return float.NaN;
-        }
-        return (float)(speed * t - x);
-    }
+    // Hold's rule on a held slide (grounded: x and z only; the models run along x).
+    static FollowRule GroundRule() => (e, v, m, dt) => Pd.Follow(e, v, m, true, Pd.DefaultHoldFollowRate, Pd.DefaultHoldDamping, dt);
 
-    // Ruling C28's model: one held stone along x, stepped as PhysX steps a body (semi-implicit Euler) every 1/hz s with the
-    // default settings, through the arming (Pd.Trail, StoneRules.HoldArmed) and let-go (StoneRules.HoldLetGo) rules and the
-    // pull held to the default MaxStoneSpeed (Pd.CappedPull, ruling C36) in the order StoneHold.DriveHold runs them, starting
-    // at rest at x0 under the target `target(t)`. True when it is let go (thrown); `peak` its fastest, `armed` whether it
-    // armed, `left` how far from the target it is at the end (or the let-go).
-    static bool Held(float mass, bool grounded, float hz, System.Func<double, double> target, double x0, double seconds, out float peak, out bool armed, out float left) {
-        double x = x0, v = 0.0, dt = 1.0 / hz;
-        peak = 0f;
-        armed = false;
-        for (double t = 0.0; t < seconds; t += dt) {
-            var error = new V3((float)(target(t) - x), 0f, 0f);
-            float speed = (float)System.Math.Abs(v);
-            armed = StoneRules.HoldArmed(armed, Pd.Trail(error, grounded), speed, Pd.DefaultHoldArmMetres, Pd.DefaultHoldLetGoSpeed);
-            if (StoneRules.HoldLetGo(speed, false, Pd.DefaultHoldLetGoSpeed, armed)) { left = error.Length; return true; }
-            var vel = new V3((float)v, 0f, 0f);
-            V3 f = Pd.CappedPull(Pd.Hold(error, vel, mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds), vel, mass, (float)dt, StoneRules.DefaultMaxStoneSpeed);
-            v += f.X / mass * dt;
-            x += v * dt;
-            peak = System.Math.Max(peak, (float)System.Math.Abs(v));
-        }
-        left = (float)System.Math.Abs(target(seconds) - x);
-        return false;
-    }
 
     // The target moving `metres` along x at an even speed over `seconds`, then still.
     static System.Func<double, double> Ramp(double metres, double seconds) => t => metres * System.Math.Min(System.Math.Max(t / seconds, 0.0), 1.0);
-
-    // A stone of this mass 1 m off a still target settles within 1 cm of it in 20 s (it neither runs away nor rings forever).
-    static bool Settles(float mass, bool grounded, float dt) {
-        double x = -1.0, v = 0.0, peak = 0.0;
-        for (double t = 0.0; t < 20.0; t += dt) {
-            V3 f = Pd.Hold(new V3((float)(-x), 0f, 0f), new V3((float)v, 0f, 0f), mass, grounded, Pd.DefaultHoldFreeScale, Pd.DefaultHoldGroundScale, Pd.DefaultPdStepSeconds);
-            v += f.X / mass * dt;
-            x += v * dt;
-            if (double.IsNaN(x) || System.Math.Abs(x) > 1e3) return false;
-            peak = System.Math.Max(peak, System.Math.Abs(x));
-        }
-        return System.Math.Abs(x) < 0.01 && peak <= 1.0 + 1e-6;
-    }
 
     // Task 12: Parry, Explode and the double Straight (spec 2.3, 2.4, 2.6, 3.5, 3.7; rulings C8, C11, C12, C26)
     static void ParryAndExplode() {
@@ -817,17 +1211,17 @@ internal static class StoneTests {
             && NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), -5f, 20f), new V3(1f, 2f, 3f)));
         Check("pushed: a mass that is not a number pushes nothing", NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), float.NaN, 20f), new V3(1f, 2f, 3f))
             && NearV(StoneRules.Pushed(new V3(1f, 2f, 3f), new V3(0f, 1500f, 0f), float.PositiveInfinity, 20f), new V3(1f, 2f, 3f)));
-        Check("pushed: a cap that is not above 0 is the default 20", Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, 0f).Length, StoneRules.DefaultMaxStoneSpeed)
-            && Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, -3f).Length, 20f));
-        Check("pushed: a cap that is not a number is the default 20", Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, float.NaN).Length, 20f)
-            && Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, float.PositiveInfinity).Length, 20f));
+        Check("pushed: a cap that is not above 0 is the default 25", Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, 0f).Length, StoneRules.DefaultMaxStoneSpeed)
+            && Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, -3f).Length, 25f));
+        Check("pushed: a cap that is not a number is the default 25", Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, float.NaN).Length, 25f)
+            && Near(StoneRules.Pushed(V3.Zero, new V3(0f, 0f, 5000f), 100f, float.PositiveInfinity).Length, 25f));
         Check("pushed: a velocity that is not a number counts as none", NearV(StoneRules.Pushed(new V3(float.NaN, 0f, 0f), new V3(0f, 1500f, 0f), 150f, 20f), new V3(0f, 10f, 0f))
             && NearV(StoneRules.Pushed(new V3(0f, float.PositiveInfinity, 0f), V3.Zero, 150f, 20f), V3.Zero));
         Check("pushed: an impulse that is not a number pushes nothing", NearV(StoneRules.Pushed(new V3(1f, 0f, 0f), new V3(float.NaN, 1f, 1f), 150f, 20f), new V3(1f, 0f, 0f))
             && NearV(StoneRules.Pushed(new V3(1f, 0f, 0f), new V3(0f, float.NegativeInfinity, 0f), 150f, 20f), new V3(1f, 0f, 0f)));
         V3 huge = StoneRules.Pushed(new V3(3e38f, -3e38f, 3e38f), new V3(3e38f, 3e38f, -3e38f), 1e-38f, 20f);
         Check("pushed: huge numbers stay finite and capped", !float.IsNaN(huge.X) && !float.IsInfinity(huge.Y) && Near(huge.Length, 20f));
-        Check("pushed: default cap 20 m/s", Near(StoneRules.DefaultMaxStoneSpeed, 20f));
+        Check("pushed: default cap 25 m/s (Ruling 42; was 20)", Near(StoneRules.DefaultMaxStoneSpeed, 25f));
 
         // Task 9's CARRY (a): the Ball is loose once it has risen, whatever its launch; the Pillar, Cube and Wall stand still
         Check("risen: the ball is loose", StoneRules.Risen(Ball) == StoneState.Free);
@@ -852,10 +1246,10 @@ internal static class StoneTests {
         var wall = SpawnPlan.For(Wall, new V3(1f, 1.7f, 2f), 30f, 0.2f);
         Check("plan: wall turned to the yaw", wall.yawDeg == 30f);
         Check("plan: wall 1.8 m ahead along yaw 30", Near(wall.end.X, 1f + 0.9f) && Near(wall.end.Z, 2f + 1.8f * (float)System.Math.Cos(System.Math.PI / 6.0))
-            && Near(wall.end.Y, 0.2f + 1f) && Near(wall.start.Y, 0.2f - 1f) && Near(wall.riseSeconds, 0.45f));
+            && Near(wall.end.Y, 0.2f + 1f) && Near(wall.start.Y, 0.2f - 1f) && Near(wall.riseSeconds, 0.32f));
         var cube = SpawnPlan.For(Cube, V3.Zero, 0f, -1.6f);
         Check("plan: cube rises like the pillar", SpawnPlan.Rises(Cube) && SpawnPlan.Rises(Pillar) && SpawnPlan.Rises(Wall)
-            && Near(cube.riseSeconds, 0.35f) && Near(cube.start.Y, -2.1f) && Near(cube.end.Y, -1.1f) && Near(cube.end.Z, 1.5f));
+            && Near(cube.riseSeconds, 0.25f) && Near(cube.start.Y, -2.1f) && Near(cube.end.Y, -1.1f) && Near(cube.end.Z, 1.5f));
 
         // ruling C1: the Disc appears loose in the air, 1.2 m ahead at ground + DiscHeightMetres 0.5, and does not rise
         var disc = SpawnPlan.For(Disc, new V3(2f, 1.7f, 3f), 0f, 0.25f);
@@ -1219,8 +1613,8 @@ internal static class StoneTests {
         var plan = SpawnPlan.For(Pillar, new V3(2f, 1.7f, 3f), 0f, 0.25f);
         Check("plan: pillar 1.3 m ahead along yaw 0", Near(plan.end.X, 2f) && Near(plan.end.Z, 3f + 1.3f) && Near(plan.end.Y, 0.25f + 0.9f));
         Check("plan: rises straight up", Near(plan.start.X, plan.end.X) && Near(plan.start.Z, plan.end.Z) && Near(plan.end.Y - plan.start.Y, 1.8f));
-        Check("plan: pillar rises in 0.35 s, turned to the yaw", Near(plan.riseSeconds, 0.35f) && Near(SpawnPlan.For(Wall, V3.Zero, 30f, 0f).yawDeg, 30f));
-        Check("plan: wall 1.8 m ahead along yaw 180", Near(SpawnPlan.For(Wall, V3.Zero, 180f, 0f).end.Z, -1.8f) && Near(SpawnPlan.For(Wall, V3.Zero, 180f, 0f).riseSeconds, 0.45f));
+        Check("plan: pillar rises in 0.25 s (Ruling 42; was 0.35), turned to the yaw", Near(plan.riseSeconds, 0.25f) && Near(SpawnPlan.For(Wall, V3.Zero, 30f, 0f).yawDeg, 30f));
+        Check("plan: wall 1.8 m ahead along yaw 180", Near(SpawnPlan.For(Wall, V3.Zero, 180f, 0f).end.Z, -1.8f) && Near(SpawnPlan.For(Wall, V3.Zero, 180f, 0f).riseSeconds, 0.32f));
         SpawnPlan.Set(Pillar, 2f, 0.5f);
         Check("plan: from the settings", Near(SpawnPlan.For(Pillar, V3.Zero, 0f, 0f).end.Z, 2f) && Near(SpawnPlan.For(Pillar, V3.Zero, 0f, 0f).riseSeconds, 0.5f));
         SpawnPlan.Set(Pillar, SpawnPlan.DefaultAhead(Pillar), SpawnPlan.DefaultRise(Pillar));

@@ -77,7 +77,7 @@ Places are metres from your eyes for a 1.75 m player, times `[EarthPose] BodySca
 ### Rules
 
 - **Stones** (Disc to Wall) fire only within 1.2 s of a base pose, standing on natural ground. The base pose arms only where no stone pose also matches. An armed stone fires at its deepest point (the hands within half its zone of its centre, or stopped in it), so crossing the edge of one stone's zone on the way to another fires only the other. Firing one disarms.
-- **Modifiers** (Straight to Explode) work on natural ground or in the air, never standing on other ground. They go to the stone in reach most in front: its nearest point within 2.5 m of your eyes, its centre in front of you and at most 2.4 m above your feet.
+- **Modifiers** (Straight to Explode) work on natural ground or in the air, never standing on other ground. They go to the stone in reach most in front: its nearest point within 3 m of your eyes, its centre in front of you and at most 2.4 m above your feet.
 - **Jump and Dash** work only from natural ground, and not while a stone is armed.
 - **Natural ground** is ground the game's spade can dig (the open terrain). Standing on one of your stones does not count.
 - Nothing fires with anything in either hand, during the stun after a knockback, or while downed.
@@ -87,33 +87,33 @@ Places are metres from your eyes for a 1.75 m player, times `[EarthPose] BodySca
 
 | Stone | Power | Mass | Size | Appears |
 |---|---|---|---|---|
-| **Disc** | 0 | 100 kg | 0.70 x 0.14 x 0.70 m | 1.2 m ahead, 0.5 m up, thrown up at 3 m/s, then forward at 14 m/s 0.12 s later |
-| **Ball** | 1 | 150 kg | 0.60 m across | rises 1.2 m ahead in 0.12 s, then thrown up at 5 m/s |
-| **Pillar** | 1 | 275 kg | 0.55 x 1.80 x 0.55 m | rises 1.3 m ahead in 0.35 s |
-| **Cube** | 2 | 300 kg | 1.00 x 1.00 x 1.00 m | rises 1.5 m ahead in 0.35 s |
-| **Wall** | 3 | 400 kg | 2.40 wide x 2.00 high x 0.50 m | rises 1.8 m ahead in 0.45 s |
+| **Disc** | 0 | 100 kg | 0.70 x 0.14 x 0.70 m | 1.2 m ahead, 0.5 m up, thrown up at 3.75 m/s, then forward at 17.5 m/s 0.12 s later |
+| **Ball** | 1 | 150 kg | 0.60 m across | rises 1.2 m ahead in 0.12 s, then thrown up at 6.25 m/s |
+| **Pillar** | 1 | 275 kg | 0.55 x 1.80 x 0.55 m | rises 1.3 m ahead in 0.25 s |
+| **Cube** | 2 | 300 kg | 1.00 x 1.00 x 1.00 m | rises 1.5 m ahead in 0.25 s |
+| **Wall** | 3 | 400 kg | 2.40 wide x 2.00 high x 0.50 m | rises 1.8 m ahead in 0.32 s |
 
-- The spot where it rises must be natural ground too (the server checks it). A stone summoned where another stands throws that one up at 4 m/s.
+- The spot where it rises must be natural ground too (the server checks it). A stone summoned where another stands throws that one up at 5 m/s.
 - 8 stones per player (a ninth breaks your oldest), 64 on the server. A stone breaks after 60 s, below the world, or when its owner leaves. Nothing is ever saved: a server restart leaves none.
 
 ## Modifiers
 
-Pushes are in N s: the speed is the push over the mass (2300 on a 275 kg Pillar is 8.4 m/s). Standing means on the ground, still or sliding. A rising stone takes a modifier once it has risen.
+Pushes are in N s: the speed is the push over the mass (2875 on a 275 kg Pillar is 10.5 m/s). Standing means on the ground, still or sliding. A rising stone takes a modifier once it has risen.
 
 | Modifier | Loose stone | Standing stone |
 |---|---|---|
-| **Straight** | 1800 the way you look | 2300; it slides, slowing 4 m/s every second, and stands again under 0.1 m/s |
-| **Kick** | 1500 up | set loose, then 1500 up |
-| **Stomp** | 1500 down; it moves only up and down until it lands, then stands | nothing |
-| **Uppercut** | 900 forward and 900 up | set loose, 1300 forward and 1300 up, spinning 5 rad/s top forward |
+| **Straight** | 2250 the way you look | 2875; it slides, slowing 4 m/s every second, and stands again under 0.1 m/s |
+| **Kick** | 1875 up | set loose, then 1875 up |
+| **Stomp** | 1875 down; it moves only up and down until it lands, then stands | nothing |
+| **Uppercut** | 1125 forward and 1125 up | set loose, 1625 forward and 1625 up, spinning 5 rad/s top forward |
 | **Parry** | stops dead and floats 3 s, or until something moves it faster than 0.1 m/s | set loose, then floats |
-| **Hold** | follows A, about 1 m ahead of it along where you look; let go (a throw) once faster than 5 m/s, after it has first settled within 0.5 m of its place | slides along the ground after A |
-| **Flick** | hangs 1 m ahead of the point between your hands and turns with them; only Stomp or a break drops it | refused |
+| **Hold** | follows A firmly, about 1 m ahead of it plus half the stone's size, along where you look; thrown by a swing of A (faster than 3.5 m/s relative to your head for at least 0.1 s, after the stone has first settled within 0.5 m of its place), let go at the swing's peak at 1.5 times the hand's fastest, along the swing; a swing back toward you throws nothing; walking, dashing, turning your head or a jump of the hand's copy never throws it | slides along the ground after A; thrown along the ground |
+| **Flick** | hangs 1 m plus half its size ahead of the point between your hands and turns with them; only Stomp or a break drops it | refused |
 | **Explode** | marked | marked |
 
-- No modifier leaves a stone faster than 20 m/s.
+- Every push above is `[EarthModifiers] PushScale` (1.25) times its setting (the settings below are the numbers before it). No modifier leaves a stone faster than 25 m/s.
 - **Straight** pushes you back 2.5 m/s from a stone standing still (or rising), 1.7 m/s from any other, and 0.25 m/s up (half of each in the air). **Two Straights** on one stone within 0.4 s burst it with a blast. Your own Straight's cooldown is 0.5 s, so it takes two players.
-- **Hold** also lets go on Kick, Uppercut, Stomp or Parry, on Hold again with that hand, and when you are downed, die or leave. Each hand holds one stone.
+- **Hold** also lets go (no throw) on Parry, on Hold again with that hand, and when you are downed, die or leave; Straight, Kick, Uppercut and Stomp let it go and then push it as usual. Each hand holds one stone. For 0.5 s after any let-go, a throw included, the stone does not hit you. A throw is judged on the server's copies of your hand and head over the last 0.1 s, and a single jump of the hand's copy (a late packet, a hitch, lost tracking, a snap turn) does not count: a swing of the hand 0.8 to 1 m or more in a quarter second throws on a normal server (at about 6 to 10 m/s, about 0.1 s after the hand was fastest), a short hard flick does not; turning the whole body with the arm out (1.9 m/s at 180 degrees a second, 2.8 at 270) does not.
 - **The blast** (a marked stone breaking, or a double Straight) reaches 3 m, in full within 1.5 m and a quarter at the edge: players are knocked back (with `HurtPlayers`), creatures staggered (no damage), loose objects and stones pushed (1000 N s), standing stones set loose. It never breaks a stone. A marked stone does not blast when the server quits or `earth clear` breaks it.
 
 ## Movement and hits
@@ -151,13 +151,13 @@ Everything is in `UserData\Earthbending.cfg`, written in full at the first start
 | `DiscPower` `BallPower` `PillarPower` `CubePower` `WallPower` | 0, 1, 1, 2, 3 | Power for hits and clashes. |
 | `DiscMass` `BallMass` `PillarMass` `CubeMass` `WallMass` | 100, 150, 275, 300, 400 | kg. |
 | `DiscAheadMetres` `BallAheadMetres` `PillarAheadMetres` `CubeAheadMetres` `WallAheadMetres` | 1.2, 1.2, 1.3, 1.5, 1.8 | How far in front of the head it appears. |
-| `BallRiseSeconds` `PillarRiseSeconds` `CubeRiseSeconds` `WallRiseSeconds` | 0.12, 0.35, 0.35, 0.45 | How long the rise takes (0: up at once). |
+| `BallRiseSeconds` `PillarRiseSeconds` `CubeRiseSeconds` `WallRiseSeconds` | 0.12, 0.25, 0.25, 0.32 | How long the rise takes (0: up at once). |
 | `DiscHeightMetres` | 0.5 | The Disc appears loose this high above the ground. |
-| `DiscLift` | 300 | Its push straight up as it appears, N s. |
-| `DiscPush` | 1400 | Its push the way you look, N s; a modifier or a break first cancels it. |
+| `DiscLift` | 300 | Its push straight up as it appears, N s (x PushScale). |
+| `DiscPush` | 1400 | Its push the way you look, N s (x PushScale); a modifier or a break first cancels it. |
 | `DiscPushDelaySeconds` | 0.12 | From the lift to the push. |
-| `BallLaunchSpeed` | 5 | The Ball is thrown up at this m/s once risen (0: not thrown). |
-| `SummonUnderLift` | 4 | A standing stone where a new one rises is set loose and thrown up at this m/s. |
+| `BallLaunchSpeed` | 5 | The Ball is thrown up at this m/s (x PushScale) once risen (0: not thrown). |
+| `SummonUnderLift` | 4 | A standing stone where a new one rises is set loose and thrown up at this m/s (x PushScale). |
 | `MaxPerPlayer` | 8 | Stones per player; one more breaks their oldest. |
 | `MaxTotal` | 64 | Stones on the server; past it a summon is refused. |
 | `LifeSeconds` | 60 | A stone breaks this long after it was summoned. |
@@ -168,32 +168,36 @@ Everything is in `UserData\Earthbending.cfg`, written in full at the first start
 
 | Key | Default | What |
 |---|---|---|
-| `Reach` | 2.5 | A modifier reaches a stone whose nearest point is this close to the head, m. |
+| `Reach` | 3 | A modifier reaches a stone whose nearest point is this close to the head, m (3 keeps a held Wall in reach). |
 | `MaxHeight` | 2.4 | ... and whose centre is at most this high above the feet, m. |
 | `RangeSlackMetres` | 0.5 | Extra reach on the server, for lag. |
-| `StraightGrounded` | 2300 | Straight on a standing stone, N s; it slides. |
-| `StraightFree` | 1800 | Straight on a loose stone, N s. |
+| `StraightGrounded` | 2300 | Straight on a standing stone, N s (x PushScale); it slides. |
+| `StraightFree` | 1800 | Straight on a loose stone, N s (x PushScale). |
 | `SlideDeceleration` | 4 | A sliding stone slows this many m/s every second (0: only what it hits stops it). |
 | `DoubleStraightSeconds` | 0.4 | Two Straights on one stone within this, by anyone, burst it. |
-| `KickUp` | 1500 | N s up. |
-| `StompDown` | 1500 | N s down, on a loose stone. |
-| `UppercutFree` | 900 | N s forward and as much up, on a loose stone. |
-| `UppercutGrounded` | 1300 | The same on a standing stone, set loose first. |
-| `UppercutSpin` | 5 | Its spin on a standing stone, rad/s. |
-| `MaxStoneSpeed` | 20 | No modifier or blast leaves a stone faster, m/s. |
+| `KickUp` | 1500 | N s up (x PushScale). |
+| `StompDown` | 1500 | N s down, on a loose stone (x PushScale). |
+| `UppercutFree` | 900 | N s forward and as much up, on a loose stone (x PushScale). |
+| `UppercutGrounded` | 1300 | The same on a standing stone, set loose first (x PushScale). |
+| `UppercutSpin` | 5 | Its spin on a standing stone, rad/s (not scaled). |
+| `MaxStoneSpeed` | 25 | No modifier or blast leaves a stone faster, m/s. |
+| `PushScale` | 1.25 | Every push a modifier gives a stone (Straight, Kick, Stomp, Uppercut), the Disc's two pushes, the Ball's launch and `SummonUnderLift` are this many times their numbers. Not a blast, a player's knockback or pushback, Hold or Flick. |
 | `ParrySeconds` | 3 | A parried stone floats this long ... |
 | `ParryBreakSpeed` | 0.1 | ... or until moved faster than this, m/s. |
 | `ExplodeRadius` | 3 | The blast's reach, m. |
 | `ExplodeForce` | 1000 | Its push on stones and loose objects, N s, times their share. |
-| `HoldDistance` | 1 | A held stone keeps about this far ahead of your top hand, along where you look (a flicked one, of the point between the hands), m. |
-| `HoldFreeScale` | 2500 | How hard Hold pulls a loose stone, N per metre off. |
-| `HoldGroundScale` | 1500 | The same for a standing stone, which slides after the hand. |
-| `HoldLetGoSpeed` | 5 | A held stone is let go (thrown) once faster than this, m/s ... |
-| `HoldArmMetres` | 0.5 | ... but only after it has once been this close to its place, m. |
-| `PdStepSeconds` | 0.02 | How Hold and Flick read their damping (per physics step of this length). |
-| `FlickScale` | 1000 | How hard Flick pulls, N per metre off. |
-| `FlickTurnGain` | 8 | How hard Flick turns the stone to match the hands. |
-| `FlickTurnDamp` | 4 | How much the stone's own spin slows that turn. |
+| `HoldDistance` | 1 | A held stone keeps about this far ahead of your top hand, along where you look (a flicked one, of the point between the hands), plus half its size, m: its centre is this plus a quarter of its width and depth (a Ball: its radius): a Disc 1.35, a Ball 1.30, a Pillar 1.275, a Cube 1.50, a Wall 1.725. |
+| `HoldFollowRate` | 12 | How quickly a held stone follows its place, rad/s, times its weight factor (Disc 1.05, Ball 1, Pillar 0.875, Cube 0.85, Wall 0.75). A Ball 2 m off is within 10 cm in about 0.4 s, a Wall 0.55 s; a Ball trails a hand moving 1 m/s by 0.17 m, a Wall 0.22. |
+| `HoldDamping` | 1 | 1 closes on its place as fast as it can without passing it; less swings past, more creeps in. |
+| `HoldLetGoSpeed` | 3.5 | A held stone is thrown by a swing of the hand faster than this relative to your head, m/s ... (walking, a dash, a knock-back or a head turn never throw) |
+| `HoldArmMetres` | 0.5 | ... but only after the stone has once been this close to its place while the hand was that slow, m. |
+| `HoldThrowScale` | 1.5 | A thrown stone flies at your head's velocity plus the swing's fastest times this, when faster than it already moves (never past `MaxStoneSpeed`; a slide-hold only along the ground). 0: it keeps its own speed. |
+| `HoldSwingSeconds` | 0.1 | The hand must stay that fast this long before a swing throws. A single jump of the hand's copy never throws (the hand reading leaves out a lone jump). A swing of about 0.8 m or more in a quarter second throws; a short hard flick (0.6 m in 0.15 s) only sometimes; on a server as slow as 15 steps a second a 1 m swing about 7 times in 10. |
+| `HoldSwingMaxSeconds` | 0.2 | A swing throws at its peak, or this long after it began, whichever is first. |
+| `FlickFollowRate` | 10 | How quickly a flicked stone follows its place, rad/s, times the same weight factor. A Ball 2 m off is within 10 cm in about 0.5 s, a Wall 0.65 s. |
+| `FlickDamping` | 1 | As `HoldDamping`, for Flick. |
+| `FlickTurnRate` | 10 | How quickly Flick turns the stone to match the hands, rad/s: a quarter turn within 5 degrees in about half a second. |
+| `FlickTurnDamping` | 1 | 1 turns as fast as it can without swinging past; less swings past and wobbles. |
 
 ### [EarthDamage] (server)
 
