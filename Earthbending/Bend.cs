@@ -68,6 +68,9 @@ namespace Earthbending {
         /// <summary>Another number each time the machine was built again (poses.txt or a timing changed).</summary>
         internal static int PosesVersion { get; private set; }
 
+        /// <summary>The machine's numbers as it runs now (the trace's values line).</summary>
+        internal static PoseValues Values => built;
+
         /// <summary>A move's pose as the machine runs it (poses.txt's over the built-in one). False for a move with no pose.</summary>
         internal static bool Pose(Move move, out PoseSpec spec) {
             foreach (PoseSpec s in running)
@@ -84,9 +87,9 @@ namespace Earthbending {
             rearm = pose.CreateEntry("RearmSeconds", d.RearmSeconds, description: "Per game. A pose fires again only after the hands have left it for this long. 0 or more.");
             structureWindow = pose.CreateEntry("StructureWindowSeconds", d.StructureWindowSeconds, description: "Per game. A structure pose fires only when the base pose was held within this many seconds before it. 0 or more.");
             moveCooldown = pose.CreateEntry("MoveCooldownSeconds", d.MoveCooldownSeconds, description: "Per game. After a Jump (or a Dash) fires, the same move waits this long before it can fire again. 0 or more.");
-            structureDeep = pose.CreateEntry("StructureDeepScore", d.StructureDeepScore, description: "Per game. A structure (Disc, Ball, Pillar, Cube, Wall) is not fired as the hands enter it but at its deepest point, so the edge of one crossed on the way to another fires nothing: of the structures the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.5: half way in), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). 0 or more; 1 or more fires on entry.");
+            structureDeep = pose.CreateEntry("StructureDeepScore", d.StructureDeepScore, description: "Per game. A structure (Disc, Ball, Pillar, Cube, Wall) is not fired as the hands enter it but at its deepest point, so the edge of one crossed on the way to another fires nothing: of the structures the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.5: half way in), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). The base pose arms the structures the same way: only deep (this score) or with the hands at rest in it, so brushing its edge arms nothing. 0 or more; 1 or more fires on entry.");
             moveDeep = pose.CreateEntry("MoveDeepScore", d.MoveDeepScore, description: "Per game. A modifier (Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode) or a movement (Jump, Dash) is not fired as the hands enter it but once they are deep in it, so the edge of one crossed on the way to another fires nothing: of the moves the hands are in, the best one fires once its score is at most this (0 is the pose's exact place, 1 the edge of its zone; 0.6 by default), or once the hands stop in it (StructureStillMetres, StructureStillSeconds). 0 or more; 1 or more fires on entry.");
-            structureStillMetres = pose.CreateEntry("StructureStillMetres", d.StructureStillMetres, description: "Per game. Every move, not only the structures (the name is older): a move struck loosely (never as deep as MoveDeepScore, or StructureDeepScore for a structure) fires once both hands have stayed within this many metres of where they were for StructureStillSeconds, and it has got no deeper meanwhile. Hands moving slower than this over that time count as stopped (0.01 m in 0.06 s: about 0.17 m/s). 0 or more.");
+            structureStillMetres = pose.CreateEntry("StructureStillMetres", d.StructureStillMetres, description: "Per game. Every move, not only the structures (the name is older): a move struck loosely (never as deep as MoveDeepScore, or StructureDeepScore for a structure) fires once both hands have stayed within this many metres of where they were for StructureStillSeconds, and it has got no deeper meanwhile. Hands moving slower than this over that time count as stopped (0.01 m in 0.06 s: about 0.17 m/s), but the move's score must also stop getting better: hands drifting toward its centre by a few cm a second, or a wrist or head turning about 10 degrees a second, keep it waiting until they stop. 0 or more.");
             structureStillSeconds = pose.CreateEntry("StructureStillSeconds", d.StructureStillSeconds, description: "Per game. Every move, not only the structures (the name is older). See StructureStillMetres: how long the hands must be still in a move struck loosely before it fires. 0 or more.");
             groundGrace = pose.CreateEntry("GroundGraceSeconds", DefaultGroundGraceSeconds, description: "Per game. A pose counts you as standing for this long after the game last had you on the ground, on the ground you stood on then (the game's on-the-ground flag flickers while walking, and a pose judged in a flicker would be used up). 0 to 0.5 (more is used as 0.5: a longer grace would let a Jump fire well after leaving the ground).");
             jumpSpeedEntry = Cfg.Category("EarthMovement").CreateEntry("JumpSpeed", DefaultJumpSpeed, description: "Per game. The Jump pose pushes you up at this many m/s (6: about 2.2 m high). 0 or more.");
@@ -142,7 +145,9 @@ namespace Earthbending {
             machine = new PoseMachine(poses, wanted);
             running = poses;
             PosesVersion++;
+            bool changed = !SameTimings(wanted, built);
             built = wanted;
+            if (changed) PoseTraceFile.ValuesChanged(built);
             posesLines = lines;
             idle = true;   // the next frame with a player starts from a fresh machine, gates included
             emptyGate.Reset();
@@ -213,8 +218,8 @@ namespace Earthbending {
                 bool standing = grace.Step(now, grounded, natural, out bool onNatural);
                 bool stunned = Moves.Stunned || pc.IsDowned || !pc.IsAlive;
                 Move move = m.Step(now, right, left, canBend, standing, onNatural, stunned, out bool rightIsA);
-                if (PoseTraceFile.On) Trace(m, now, in right, in left, canBend, standing, onNatural, stunned, yawDeg, move, rightIsA);
                 if (move != Move.None) Fire(pc, move, rightIsA, m.LastScore, head, yawDeg, in right, in left);
+                if (PoseTraceFile.On) Trace(m, now, in right, in left, canBend, standing, onNatural, stunned, yawDeg, move, rightIsA);
             }
             catch (Exception e) {
                 if (failed) return;
@@ -236,7 +241,7 @@ namespace Earthbending {
         /// fired. Allocates: only while the owner traces on purpose.</summary>
         static void Trace(PoseMachine m, double now, in HandSample right, in HandSample left, bool empty, bool grounded, bool natural, bool stunned, float yawDeg, Move move, bool rightIsA) {
             PoseTraceFile.Frame(new TraceFrame { T = now, Practice = PracticeGuide.Current, Empty = empty, Grounded = grounded, Natural = natural, Stunned = stunned,
-                Armed = m.Armed(now), Yaw = yawDeg, Right = right, Left = left });
+                Armed = m.Armed(now), Yaw = yawDeg, Right = right, Left = left }, move != Move.None);
             if (move != Move.None) PoseTraceFile.Fired(new TraceFire { T = now, Move = move, Score = m.LastScore, RightIsA = rightIsA });
         }
 
