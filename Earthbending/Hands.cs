@@ -19,7 +19,8 @@ namespace Earthbending {
     // hands buzz twice and the log says "[Earth] Capture: snapshot N". Both hands still more than CaptureRestBelowMetres
     // (0.7 m) under the head is a rest (arms at the sides): no row, no buzz, one log line, and it arms the next snapshot. The
     // owner strikes the 16 poses of spec 3.3 in its order with A on the right hand, resting between them;
-    // Earthbending/tools/fit_poses.py turns the file into poses.txt and the four axis settings.
+    // Earthbending/tools/fit_poses.py turns the file into poses.txt and the four axis settings. CaptureGuide.cs shows the
+    // owner the next pose to strike (Capturing, CaptureTaken).
     internal static class Hands {
         // the double buzz of a snapshot: feedback of a one-off tool, so not settings
         const float BuzzStrength = 0.6f, BuzzSeconds = 0.06f, BuzzGapSeconds = 0.15f;
@@ -141,6 +142,10 @@ namespace Earthbending {
         /// <summary>The pose recorder is on ([EarthPose] Capture): Bend fires no move then, so striking a pose for the capture
         /// never throws the player or raises a stone.</summary>
         internal static bool Capturing => on;
+
+        /// <summary>The snapshots this capture has taken: the next pose is number this plus one in the order (PoseGuide.Next;
+        /// CaptureGuide.cs shows it). 0 again at every switch on.</summary>
+        internal static int CaptureTaken => taken;
 
         static void Apply() {
             bodyScale = Cfg.Positive(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);

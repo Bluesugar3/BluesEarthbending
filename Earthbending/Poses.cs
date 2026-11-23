@@ -11,6 +11,8 @@ using System.Globalization;
 // settings), EmptyGate (the two-frame empty test), GroundGrace (ruling 16), PoseLibrary.Merge (poses.txt over the defaults)
 // and PushRule (a push's velocity, ruling 14). The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot
 // is taken) and PoseCapture (what its CSV row holds); Hands.cs runs them, Earthbending/tools/fit_poses.py reads the file.
+// The capture guide's words and rules (Task 3b) as well: PoseGuide (each pose's hand lines, the next pose for a count, the
+// card's text, the easing) and BodyFrame.ToWorld (the body frame run backwards); CaptureGuide.cs draws them.
 namespace Earthbending {
     /// <summary>What a pose does. <see cref="Base"/> is never fired: it arms the structures. The order is the spec 3.3 table's.</summary>
     internal enum Move : byte { None, Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash }
@@ -64,6 +66,17 @@ namespace Earthbending {
 
         /// <summary>Turned by -yaw about +Y (c, s the yaw's cosine and sine): what was ahead of the head is +Z.</summary>
         static V3 Unturn(V3 v, float c, float s) => new V3(v.X * c - v.Z * s, v.Y, v.X * s + v.Z * c);
+
+        /// <summary><see cref="ToBody"/> run backwards at body scale 1: where a place of the body frame is in the world, for
+        /// a head at <paramref name="head"/> turned <paramref name="yawDeg"/> (the capture guide's markers, Task 3b).</summary>
+        public static V3 ToWorld(V3 head, float yawDeg, V3 bodyPos) => head + DirToWorld(yawDeg, bodyPos);
+
+        /// <summary>A direction of the body frame in the world: turned by +yaw about +Y, its length kept.</summary>
+        public static V3 DirToWorld(float yawDeg, V3 bodyDir) {
+            double r = yawDeg * Math.PI / 180.0;
+            float c = (float)Math.Cos(r), s = (float)Math.Sin(r);
+            return new V3(bodyDir.X * c + bodyDir.Z * s, bodyDir.Y, -bodyDir.X * s + bodyDir.Z * c);
+        }
     }
 
     internal static class PoseMatch {
@@ -520,6 +533,118 @@ namespace Earthbending {
                 foreach (char axis in "XYZ") foreach (char k in "XYZ") c.Add(hand + axis + "axis" + k);
             }
             return string.Join(",", c);
+        }
+    }
+
+    /// <summary>The capture guide's words and rules (Task 3b; CaptureGuide.cs draws them): what each hand does in each of
+    /// the sixteen poses, in the order the recorder counts its snapshots (the <see cref="Move"/> enum's, the spec 3.3
+    /// table's), the next pose for a count of snapshots, the card's text, and how far one frame eases toward a new place.</summary>
+    internal static class PoseGuide {
+        public const int Count = 16;
+        public const string Hint = "Hold still until both hands buzz twice. Rest your arms at your sides between poses.";
+        public const string AllDone = "All 16 done. Tell Claude.";
+        /// <summary>The markers' colours as the card names them: the defaults of [EarthLooks] GuideRightColour and GuideLeftColour.</summary>
+        public const string Legend = "orange = right, blue = left";
+
+        struct Entry {
+            public Move Move;
+            public string Right, Left;
+        }
+
+        static Entry E(Move m, string right, string left) => new Entry { Move = m, Right = right, Left = left };
+
+        // the owner's words (the task's table); the right hand is the pose's A hand
+        static readonly Entry[] Table = {
+            E(Move.Base,     "palm up, fingers forward, just above the waist", "the same, shoulder width apart"),
+            E(Move.Disc,     "arm fully out in front, fingers forward, palm facing left", "across your right forearm, palm toward you, fingers pointing right"),
+            E(Move.Ball,     "near your body, just under the shoulder, palm facing left, fingers forward", "arm fully out, just under the shoulder, palm facing right, fingers forward"),
+            E(Move.Pillar,   "low, where Base was, palm facing left, fingers forward", "at face height, palm facing right, fingers up"),
+            E(Move.Cube,     "at face height, fingers up, palm facing left", "at face height, fingers up, palm facing right"),
+            E(Move.Wall,     "palm up, lifted just above your eyes", "the same"),
+            E(Move.Straight, "in front of your right shoulder, palm facing left, fingers up", "arm fully out in front, palm down, fingers forward"),
+            E(Move.Kick,     "in front of your right shoulder, palm facing left, fingers up", "at your belly button, palm toward you, fingers down"),
+            E(Move.Stomp,    "in front at waist height, fingers forward and down, palm down", "the same"),
+            E(Move.Uppercut, "in front of your right shoulder, fingers up, tilted a little forward", "half out in front of your face, palm toward your face, fingers up"),
+            E(Move.Parry,    "arm out at shoulder height, palm forward, fingers up", "the same"),
+            E(Move.Hold,     "arm out at shoulder height near the middle, palm forward, fingers up", "just under your right hand, palm up, fingers forward"),
+            E(Move.Flick,    "arm out at shoulder height, palm facing right, fingers forward", "a few fists under your right hand, palm facing right, fingers forward"),
+            E(Move.Explode,  "at your belly, palm toward you, fingers pointing left, knuckles touching the left", "at your belly, palm toward you, fingers pointing right"),
+            E(Move.Jump,     "at your hip, palm up, fingers forward", "above your shoulder, palm facing right, fingers up"),
+            E(Move.Dash,     "at your hip, palm up, fingers forward", "arm out in front, palm facing right, fingers forward"),
+        };
+
+        static readonly Move[] Order = Array.ConvertAll(Table, e => e.Move);
+
+        /// <summary>The sixteen poses in the order they are struck.</summary>
+        public static IReadOnlyList<Move> Moves => Order;
+
+        /// <summary>What the right hand does in the pose; empty for a move that is no pose.</summary>
+        public static string Right(Move m) => Find(m, out Entry e) ? e.Right : "";
+
+        /// <summary>What the left hand does in the pose; empty for a move that is no pose.</summary>
+        public static string Left(Move m) => Find(m, out Entry e) ? e.Left : "";
+
+        static bool Find(Move m, out Entry entry) {
+            foreach (Entry e in Table)
+                if (e.Move == m) { entry = e; return true; }
+            entry = default;
+            return false;
+        }
+
+        /// <summary>Every pose has its snapshot (extra snapshots are still done).</summary>
+        public static bool Done(int taken) => taken >= Count;
+
+        /// <summary>The pose to strike after <paramref name="taken"/> snapshots; <see cref="Move.None"/> once done.</summary>
+        public static Move Next(int taken) => Done(taken) ? Move.None : Table[taken < 0 ? 0 : taken].Move;
+
+        /// <summary><c>Pose N of 16: Name</c> for the next pose; empty once done.</summary>
+        public static string Title(int taken) {
+            Move m = Next(taken);
+            return m == Move.None ? "" : "Pose " + ((int)m).ToString(CultureInfo.InvariantCulture) + " of " + Count.ToString(CultureInfo.InvariantCulture) + ": " + m;
+        }
+
+        /// <summary>The card's whole text, one line break between its lines and none longer than <paramref name="wrap"/>
+        /// letters: the title, the right hand's line, the left hand's, the hint and, with <paramref name="markers"/>, the
+        /// colours; once done only <see cref="AllDone"/>. With markers each hand's lines are in its marker's colour
+        /// (<paramref name="rightHex"/>, <paramref name="leftHex"/>: #RRGGBB; every line carries its own rich-text tag).</summary>
+        public static string Card(int taken, string rightHex, string leftHex, bool markers, int wrap) {
+            Move m = Next(taken);
+            if (m == Move.None) return AllDone;
+            var lines = new List<string> { Title(taken), "" };
+            Add(lines, "RIGHT: " + Right(m), markers ? rightHex : "", wrap);
+            Add(lines, "LEFT: " + Left(m), markers ? leftHex : "", wrap);
+            lines.Add("");
+            Add(lines, Hint, "", wrap);
+            if (markers) Add(lines, Legend, "", wrap);
+            return string.Join("\n", lines);
+        }
+
+        static void Add(List<string> lines, string text, string hex, int wrap) {
+            foreach (string l in Wrap(text, wrap)) lines.Add(string.IsNullOrEmpty(hex) ? l : "<color=" + hex + ">" + l + "</color>");
+        }
+
+        /// <summary>The text broken at spaces into lines of at most <paramref name="width"/> letters; a word longer than that
+        /// stays whole on its own line. A width under 1 breaks nothing; an empty text has no line.</summary>
+        public static List<string> Wrap(string text, int width) {
+            var lines = new List<string>();
+            string line = "";
+            foreach (string word in (text ?? "").Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)) {
+                if (line.Length == 0) line = word;
+                else if (width < 1 || line.Length + 1 + word.Length <= width) line += " " + word;
+                else { lines.Add(line); line = word; }
+            }
+            if (line.Length > 0) lines.Add(line);
+            return lines;
+        }
+
+        /// <summary>How much of the way to its new place something goes in one frame of <paramref name="dt"/> seconds, eased
+        /// with the time constant <paramref name="seconds"/> ([EarthLooks] GuideFollowSeconds): 1 - e^(-dt / seconds), the
+        /// same after a second however many frames it was. 0 to 1; a follow time that is not above 0, or a number that is
+        /// not one, goes all the way.</summary>
+        public static float Ease(float dt, float seconds) {
+            if (float.IsNaN(dt) || !(seconds > 0f) || float.IsInfinity(seconds)) return 1f;
+            if (dt <= 0f) return 0f;
+            return 1f - (float)Math.Exp(-dt / seconds);
         }
     }
 

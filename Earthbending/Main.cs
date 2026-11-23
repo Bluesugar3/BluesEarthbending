@@ -33,12 +33,13 @@ namespace Earthbending {
     //                 and the pose recorder's rules (CaptureGate, PoseCapture)
     //   Hands.cs      games: the local player's head and hands (Hands.Raw, Hands.Read), empty hands, the ground under the
     //                 feet, the [EarthPose] axis settings and BodyScale, the pose recorder
+    //   CaptureGuide.cs  games: the pose recorder's guide, a floating card naming the next pose and two hand markers
     //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump, a structure's Summon claim,
     //                 a modifier's target and Modify claim), Bender.CanBend, poses.txt
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings (run it with python -I)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
-        public const string Version = "0.4.0";
+        public const string Version = "0.4.1";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
@@ -57,6 +58,7 @@ namespace Earthbending {
             if (!IsServer) {
                 Moves.Init();
                 Hands.Init();     // [EarthPose]: the axis settings, BodyScale and the pose recorder
+                CaptureGuide.Init(); // [EarthLooks] Guide*: the card and hand markers shown while the recorder is on
                 Bend.Init();      // [EarthPose] timings, JumpSpeed, the haptic tick, poses.txt: the pose machine
                 StoneLook.Init(); // [EarthLooks] the rise and break looks, and the server's Applied events
             }
@@ -83,6 +85,10 @@ namespace Earthbending {
                     catch (Exception e) { MelonLogger.Warning($"[Earth] Ground: could not read the ground under the feet: {e.Message}"); }
                 }
             }
+        }
+
+        public override void OnLateUpdate() {
+            if (!IsServer) CaptureGuide.Tick();   // after the game moved the head and hands; one bool test while [EarthPose] Capture is off
         }
 
         public override void OnApplicationQuit() {

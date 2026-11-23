@@ -112,6 +112,7 @@ internal static class PoseTests {
         V3Checks();
         CaptureChecks();
         GameSideChecks();
+        GuideChecks();
 
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
@@ -252,6 +253,71 @@ internal static class PoseTests {
         Check("parse: a repeated pose keeps the first and names the repeat", twice.Length == 1 && twice[0].A.PosTol == 0.18f && twiceErrors.Count == 1 && twiceErrors[0].Contains("line 2"));
         Check("parse: names in any case, numbers with a dot", PoseLibrary.Parse(new[] { "wALL | 0.2 0.1 0.3  0 1 0  0 0 1 | -0.2 0.1 0.3  0 1 0  0 0 1 | 0.18 40 45" }, out _).Length == 1);
     }
+
+    // the capture guide (Task 3b): the hand lines in the recorder's order, the next pose for a count, the card's text, the
+    // body frame run backwards, and the easing
+    static void GuideChecks() {
+        PoseSpec[] defaults = PoseLibrary.Defaults;
+        Check("guide: sixteen entries", PoseGuide.Count == 16 && PoseGuide.Moves.Count == 16);
+        Check("guide: the recorder's order (the Move enum's, as Hands.cs names snapshot n)", Enumerable.Range(0, 16).All(i => PoseGuide.Moves[i] == (Move)(i + 1)));
+        Check("guide: the default poses' order exactly", PoseGuide.Moves.SequenceEqual(defaults.Select(s => s.Move)));
+        Check("guide: every name a Move, every hand line there", PoseGuide.Moves.All(m => m != Move.None && Enum.IsDefined(typeof(Move), m)
+            && PoseGuide.Right(m).Length > 0 && PoseGuide.Left(m).Length > 0));
+        Check("guide: no line for a move that is no pose", PoseGuide.Right(Move.None) == "" && PoseGuide.Left((Move)99) == "");
+        Check("guide: Base's lines", PoseGuide.Right(Move.Base) == "palm up, fingers forward, just above the waist" && PoseGuide.Left(Move.Base) == "the same, shoulder width apart");
+        Check("guide: Disc's lines", PoseGuide.Right(Move.Disc) == "arm fully out in front, fingers forward, palm facing left" && PoseGuide.Left(Move.Disc) == "across your right forearm, palm toward you, fingers pointing right");
+        Check("guide: Uppercut's lines", PoseGuide.Right(Move.Uppercut) == "in front of your right shoulder, fingers up, tilted a little forward" && PoseGuide.Left(Move.Uppercut) == "half out in front of your face, palm toward your face, fingers up");
+        Check("guide: Explode's lines", PoseGuide.Right(Move.Explode) == "at your belly, palm toward you, fingers pointing left, knuckles touching the left" && PoseGuide.Left(Move.Explode) == "at your belly, palm toward you, fingers pointing right");
+        Check("guide: Dash's lines", PoseGuide.Right(Move.Dash) == "at your hip, palm up, fingers forward" && PoseGuide.Left(Move.Dash) == "arm out in front, palm facing right, fingers forward");
+
+        // the next pose for a count of snapshots
+        Check("guide: done from 16 on", !PoseGuide.Done(0) && !PoseGuide.Done(15) && PoseGuide.Done(16) && PoseGuide.Done(40));
+        Check("guide: the next pose", PoseGuide.Next(0) == Move.Base && PoseGuide.Next(1) == Move.Disc && PoseGuide.Next(15) == Move.Dash && PoseGuide.Next(16) == Move.None && PoseGuide.Next(-3) == Move.Base);
+        Check("guide: the title", PoseGuide.Title(0) == "Pose 1 of 16: Base" && PoseGuide.Title(6) == "Pose 7 of 16: Straight" && PoseGuide.Title(15) == "Pose 16 of 16: Dash");
+
+        // the card
+        string card = PoseGuide.Card(1, "#FF8A1E", "#3FA9FF", true, 46);
+        string[] lines = card.Split('\n');
+        string flat = string.Join(" ", lines.Select(Untagged));
+        Check("guide: the card's first line is the title", lines[0] == "Pose 2 of 16: Disc");
+        Check("guide: the card says what each hand does, the hint and the colours", flat.Contains("RIGHT: arm fully out in front, fingers forward, palm facing left")
+            && flat.Contains("LEFT: across your right forearm, palm toward you, fingers pointing right")
+            && flat.Contains("Hold still until both hands buzz twice. Rest your arms at your sides between poses.") && flat.Contains("orange = right, blue = left"));
+        Check("guide: each hand's lines are in its marker's colour, tag by tag on every line", lines.Where(l => Untagged(l).StartsWith("RIGHT:")).All(l => l.StartsWith("<color=#FF8A1E>") && l.EndsWith("</color>"))
+            && lines.Count(l => l.StartsWith("<color=#FF8A1E>") && l.EndsWith("</color>")) >= 2 && lines.Count(l => l.StartsWith("<color=#3FA9FF>") && l.EndsWith("</color>")) >= 2
+            && lines.All(l => l.Contains("<color=") == l.EndsWith("</color>")));
+        Check("guide: no card line longer than the wrap", Enumerable.Range(0, 16).All(n => PoseGuide.Card(n, "#FF8A1E", "#3FA9FF", true, 46).Split('\n').All(l => Untagged(l).Length <= 46)));
+        Check("guide: without markers the card names no colours and tags nothing", !PoseGuide.Card(1, "#FF8A1E", "#3FA9FF", false, 46).Contains("orange") && !PoseGuide.Card(1, "#FF8A1E", "#3FA9FF", false, 46).Contains("<color"));
+        Check("guide: after the sixteenth, only the last words", PoseGuide.Card(16, "#FF8A1E", "#3FA9FF", true, 46) == "All 16 done. Tell Claude." && PoseGuide.Card(23, "", "", false, 46) == "All 16 done. Tell Claude.");
+        List<string> wrapped = PoseGuide.Wrap("one two three four five six seven", 9);
+        Check("guide: wrap breaks at spaces and loses nothing", wrapped.SequenceEqual(new[] { "one two", "three", "four five", "six seven" }));
+        Check("guide: wrap keeps a word longer than the width whole, and a width under 1 wraps nothing", PoseGuide.Wrap("a extraordinarily b", 5).SequenceEqual(new[] { "a", "extraordinarily", "b" })
+            && PoseGuide.Wrap("a b c", 0).SequenceEqual(new[] { "a b c" }) && PoseGuide.Wrap("", 10).Count == 0);
+
+        // the body frame run backwards (the markers' places in the world), at body scale 1
+        V3 head = new V3(3f, 1.7f, -2f);
+        Check("to world: yaw 0 is the body frame moved to the head", NearV(BodyFrame.ToWorld(head, 0f, new V3(0.2f, -0.4f, 0.35f)), new V3(3.2f, 1.3f, -1.65f)));
+        Check("to world: yaw 90, ahead is +X and right is -Z", NearV(BodyFrame.ToWorld(V3.Zero, 90f, new V3(0f, 0f, 1f)), new V3(1f, 0f, 0f)) && NearV(BodyFrame.DirToWorld(90f, new V3(1f, 0f, 0f)), new V3(0f, 0f, -1f)));
+        bool round = true;
+        foreach (float yaw in new[] { 0f, 37f, 90f, -137f, 180f, 271.5f })
+            foreach (PoseSpec s in defaults)
+                foreach (HandSpec h in new[] { s.A, s.B }) {
+                    HandSample back = BodyFrame.ToBody(head, yaw, BodyFrame.ToWorld(head, yaw, h.Pos), BodyFrame.DirToWorld(yaw, h.Palm), BodyFrame.DirToWorld(yaw, h.Fingers), 1f);
+                    round &= NearV(back.Pos, h.Pos) && NearV(back.Palm, h.Palm.Normalized) && NearV(back.Fingers, h.Fingers.Normalized);
+                }
+        Check("to world: ToBody reads every default hand back where it was put, at any yaw", round);
+        Check("to world: a direction keeps its length", Near(BodyFrame.DirToWorld(63f, new V3(0.3f, -0.2f, 0.9f)).Length, new V3(0.3f, -0.2f, 0.9f).Length));
+
+        // the easing (GuideFollowSeconds): how much of the way to the new place one frame goes
+        Check("ease: one time constant is 1 - 1/e of the way", Near(PoseGuide.Ease(0.3f, 0.3f), 1f - (float)Math.Exp(-1.0)));
+        Check("ease: no time is no move, no follow time is all the way", PoseGuide.Ease(0f, 0.3f) == 0f && PoseGuide.Ease(0.011f, 0f) == 1f && PoseGuide.Ease(0.011f, -1f) == 1f);
+        Check("ease: never NaN, never outside 0..1", PoseGuide.Ease(float.NaN, 0.3f) == 1f && PoseGuide.Ease(0.011f, float.NaN) == 1f && PoseGuide.Ease(-0.5f, 0.3f) == 0f && PoseGuide.Ease(100f, 0.3f) <= 1f);
+        float gone = 0f;
+        for (int i = 0; i < 90; i++) gone += (1f - gone) * PoseGuide.Ease((float)Dt, 0.3f);
+        Check("ease: frame by frame is the same as in one go", Math.Abs(gone - PoseGuide.Ease(1f, 0.3f)) < 1e-3f);
+    }
+
+    static string Untagged(string line) => System.Text.RegularExpressions.Regex.Replace(line, "</?color[^>]*>", "");
 
     // the game's side of the machine (Task 5): the axis settings, the two-frame empty test, the ground grace, poses.txt over
     // the defaults, and a push's velocity
