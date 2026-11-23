@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console runner for the Unity-free rules. Run with: dotnet run -c Release (from this folder) -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Earthbending\Stones.cs" />
+    <Compile Include="..\Earthbending\StoneBox.cs" />
+  </ItemGroup>
+</Project>
