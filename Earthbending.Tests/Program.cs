@@ -13,7 +13,10 @@ internal static class Program {
     internal static bool Near(float a, float b) => Math.Abs(a - b) < 1e-4f;
 
     static int Main(string[] args) {
-        if (args.Length >= 1 && args[0] == "--overlaps") return PoseTests.PrintOverlaps();   // the default poses that one pair of hands can strike together
+        string? file = args.Length >= 2 ? args[1] : null;
+        if (args.Length >= 1 && args[0] == "--overlaps") return PoseTests.PrintOverlaps(file);          // the poses (default, or a poses.txt) that one pair of hands can strike together
+        if (args.Length >= 1 && args[0] == "--check-poses") return PoseTests.CheckPoses(file);          // a poses.txt as PoseLibrary.Parse reads it: POSES OK (16)
+        if (args.Length >= 1 && args[0] == "--capture-sample") return PoseTests.WriteCaptureSample(file); // a made-up capture CSV through PoseCapture, for fit_poses.py
         StoneTests.Run();
         PoseTests.Run();
 

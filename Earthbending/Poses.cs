@@ -7,7 +7,8 @@ using System.Globalization;
 // two hands (PoseSpec: A is the right hand as written, the mirror image counts with A on the left); PoseMatch judges one pose;
 // PoseLibrary holds the sixteen poses and reads and writes poses.txt; PoseMachine turns every frame's matches into moves (the
 // hold, the entry, the rearm, the cooldowns, the base pose arming a structure, the ground rules and the priority). Bend.cs
-// feeds it the hands every frame.
+// feeds it the hands every frame. The pose recorder's rules (Task 3) are here too: CaptureGate (when a snapshot is taken) and
+// PoseCapture (what its CSV row holds); Hands.cs runs them, Earthbending/tools/fit_poses.py reads the file.
 namespace Earthbending {
     /// <summary>What a pose does. <see cref="Base"/> is never fired: it arms the structures. The order is the spec 3.3 table's.</summary>
     internal enum Move : byte { None, Base, Disc, Ball, Pillar, Cube, Wall, Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode, Jump, Dash }
@@ -386,6 +387,102 @@ namespace Earthbending {
         void Reset() {
             for (int i = 0; i < states.Length; i++) states[i] = new State { LeftAt = double.NegativeInfinity };
             baseAt = double.NegativeInfinity;
+        }
+    }
+
+    /// <summary>The pose recorder's rule (Task 3, <c>[EarthPose] Capture</c>): a snapshot is due once both hands have stayed
+    /// within <c>stillMetres</c> of where they were for <c>stillSeconds</c>, and only after either hand has moved
+    /// <c>moveMetres</c> from where it was at the last snapshot. Before the first snapshot that is where it was first seen, so
+    /// hands resting when the capture starts are not taken for a pose. The places are the controllers' (any one frame: the
+    /// recorder gives their world places).</summary>
+    internal sealed class CaptureGate {
+        const double Eps = 1e-6;   // seconds: a frame that lands on the hold time counts as reaching it
+
+        readonly float still, move;
+        readonly double seconds;
+        bool started, anchored, armed;
+        V3 lastR, lastL, anchorR, anchorL;
+        double sinceR, sinceL;
+
+        public CaptureGate(float stillMetres, float stillSeconds, float moveMetres) {
+            still = stillMetres;
+            seconds = stillSeconds;
+            move = moveMetres;
+        }
+
+        /// <summary>One frame. True when a snapshot is due now; the hands' places are then the last snapshot's. A place that
+        /// is not a number (a hand lost) takes none and starts the stillness over; a move already made still counts.</summary>
+        public bool Step(double now, V3 right, V3 left) {
+            if (!Finite(right) || !Finite(left) || double.IsNaN(now) || double.IsInfinity(now)) {
+                anchored = false;
+                return false;
+            }
+            if (!started) {
+                started = true;
+                lastR = right;
+                lastL = left;
+            }
+            if (!anchored || (right - anchorR).Length > still) { anchorR = right; sinceR = now; }
+            if (!anchored || (left - anchorL).Length > still) { anchorL = left; sinceL = now; }
+            anchored = true;
+            if (!armed && ((right - lastR).Length >= move || (left - lastL).Length >= move)) armed = true;
+            if (!armed || now - sinceR < seconds - Eps || now - sinceL < seconds - Eps) return false;
+            armed = false;
+            lastR = right;
+            lastL = left;
+            return true;
+        }
+
+        /// <summary>Starts over: the next place seen is where the hands first were.</summary>
+        public void Reset() {
+            started = false;
+            anchored = false;
+            armed = false;
+        }
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+    }
+
+    /// <summary>One hand of a capture snapshot in the body frame: its place, and its controller's local X, Y and Z axes.</summary>
+    internal struct CaptureHand {
+        public V3 Pos, X, Y, Z;
+    }
+
+    /// <summary>The pose recorder's file (Task 3): <c>UserData\Earthbending\pose-capture-&lt;yyyyMMdd-HHmmss&gt;.csv</c>, the
+    /// <see cref="Header"/> line, then one <see cref="Row"/> per snapshot. Earthbending/tools/fit_poses.py reads it by column
+    /// name: n, t (seconds since the capture started), the head in the world and its yaw, then for the right hand and then the
+    /// left its place in the body frame and its controller's local X, Y and Z axes in the body frame.</summary>
+    internal static class PoseCapture {
+        public static readonly string Header = Columns();
+
+        /// <summary>A hand as the capture records it: the controller's world place and its local axes (transform.right, up and
+        /// forward) through <see cref="BodyFrame.ToBody"/> at body scale 1, the axes as directions.</summary>
+        public static CaptureHand Hand(V3 head, float yawDeg, V3 pos, V3 right, V3 up, V3 forward) {
+            HandSample xy = BodyFrame.ToBody(head, yawDeg, pos, right, up, 1f);
+            HandSample z = BodyFrame.ToBody(head, yawDeg, pos, forward, forward, 1f);
+            return new CaptureHand { Pos = xy.Pos, X = xy.Palm, Y = xy.Fingers, Z = z.Palm };
+        }
+
+        /// <summary>One snapshot's line, numbers in the invariant culture.</summary>
+        public static string Row(int n, double t, V3 head, float yawDeg, in CaptureHand right, in CaptureHand left) {
+            var cells = new List<string>(30) {
+                n.ToString(CultureInfo.InvariantCulture), t.ToString("0.###", CultureInfo.InvariantCulture),
+                N(head.X), N(head.Y), N(head.Z), yawDeg.ToString("0.##", CultureInfo.InvariantCulture),
+            };
+            foreach (CaptureHand h in new[] { right, left })
+                foreach (V3 v in new[] { h.Pos, h.X, h.Y, h.Z }) { cells.Add(N(v.X)); cells.Add(N(v.Y)); cells.Add(N(v.Z)); }
+            return string.Join(",", cells);
+        }
+
+        static string N(float f) => f.ToString("0.#####", CultureInfo.InvariantCulture);
+
+        static string Columns() {
+            var c = new List<string> { "n", "t", "headX", "headY", "headZ", "yaw" };
+            foreach (string hand in new[] { "right", "left" }) {
+                foreach (char k in "XYZ") c.Add(hand + k);
+                foreach (char axis in "XYZ") foreach (char k in "XYZ") c.Add(hand + axis + "axis" + k);
+            }
+            return string.Join(",", c);
         }
     }
 }

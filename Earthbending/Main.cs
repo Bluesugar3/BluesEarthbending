@@ -18,6 +18,9 @@ namespace Earthbending {
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone)
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
     //   Moves.cs      games: pushing the local player, and the hitstun after a knockback
+    //   Poses.cs      Unity-free: the pose engine (spec 3.3), and the pose recorder's rules (CaptureGate, PoseCapture)
+    //   Hands.cs      games: the local player's head and hands (Hands.Raw), the [EarthPose] axis settings, the pose recorder
+    //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings (run it with python -I)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
         public const string Version = "0.1.1";
@@ -32,7 +35,10 @@ namespace Earthbending {
             Logs.Init();
             Prefabs.Init(this);   // [EarthStones], and SyncLib's RegisterPrefabs (it may only be subscribed here)
             Net.Init();           // message 19; its handlers are Harmony postfixes, which MelonLoader applies
-            if (!IsServer) Moves.Init();
+            if (!IsServer) {
+                Moves.Init();
+                Hands.Init();     // [EarthPose]: the axis settings and the pose recorder
+            }
             if (IsServer) Commands.Register();
             LoggerInstance.Msg($"[Earth] Blue's Earthbending v{Version} started ({(IsServer ? "server" : "client")})");
         }
@@ -40,6 +46,7 @@ namespace Earthbending {
         public override void OnUpdate() {
             Cfg.Poll();
             if (IsServer) return;   // the headless server: nothing below draws or reads the local player
+            Hands.Tick();           // the pose recorder; one bool test while [EarthPose] Capture is off
             if (Logs.Debug && Time.unscaledTime >= nextGroundLine) {
                 nextGroundLine = Time.unscaledTime + 2f;
                 PlayerController pc = PlayerController.Current;

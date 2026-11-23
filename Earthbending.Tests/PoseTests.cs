@@ -110,6 +110,7 @@ internal static class PoseTests {
 
     internal static void Run() {
         V3Checks();
+        CaptureChecks();
 
         // the table (spec 3.3): sixteen poses in its order, each matching its own exact hands both ways round
         PoseSpec[] defaults = PoseLibrary.Defaults;
@@ -264,13 +265,90 @@ internal static class PoseTests {
             && NearV(a * 2f, new V3(2f, 4f, 6f)) && NearV(2f * a, new V3(2f, 4f, 6f)) && Near(V3.Dot(a, b), 12f) && Near(new V3(3f, 4f, 0f).Length, 5f));
     }
 
-    // ----- not a test: `dotnet run --project Earthbending.Tests -c Release -- --overlaps` -----
+    // the pose recorder (Task 3): when a snapshot is taken, and what its row holds
+    static void CaptureChecks() {
+        // steps a gate at 90 Hz: each hand at a place given by the time; returns the times snapshots were taken
+        static List<double> Snaps(CaptureGate g, double seconds, Func<double, V3> right, Func<double, V3> left, double from = 0.0) {
+            var at = new List<double>();
+            int frames = (int)Math.Round(seconds / Dt);
+            for (int i = 0; i <= frames; i++) {
+                double t = from + i * Dt;
+                if (g.Step(t, right(t), left(t))) at.Add(t);
+            }
+            return at;
+        }
+        static CaptureGate G() => new CaptureGate(0.01f, 0.6f, 0.2f);
+        V3 r0 = new V3(1.25f, 0.8f, -3.05f), l0 = new V3(0.75f, 0.8f, -3.05f), r1 = r0 + new V3(0f, 0.45f, 0.3f);
+        Func<double, V3> restR = _ => r0, restL = _ => l0;
+        Func<double, V3> raiseR = t => t < 0.3 ? r0 + (r1 - r0) * (float)(t / 0.3) : r1;   // the right hand raised 0.54 m in 0.3 s, then still
 
-    /// <summary>Prints every pair of default poses that one pair of hands can strike together (each hand inside both poses'
+        Check("capture: hands still from the start take no snapshot (they must move into a pose first)", Snaps(G(), 3.0, restR, restL).Count == 0);
+        List<double> one = Snaps(G(), 3.0, raiseR, restL);
+        Check("capture: a hand moved into a pose and held still: one snapshot 0.6 s after it stopped", one.Count == 1 && one[0] >= 0.9 - 1e-6 && one[0] < 0.9 + 2 * Dt);
+        CaptureGate g = G();
+        Snaps(g, 3.0, raiseR, restL);
+        Check("capture: still after the snapshot, no second one", Snaps(g, 5.0, _ => r1, restL, 3.0 + Dt).Count == 0);
+        Check("capture: moved 0.25 m away (for 0.5 s, too short to count) and back, a second one", Snaps(g, 3.0, t => t < 8.5 ? r1 + new V3(0f, -0.25f, 0f) : r1, restL, 8.0 + Dt).Count == 1);
+        Check("capture: either hand: the left alone moved", Snaps(G(), 3.0, restR, t => t < 0.3 ? l0 + new V3(0f, (float)t, 0f) : l0 + new V3(0f, 0.3f, 0f)).Count == 1);
+        Check("capture: a move of 0.15 m is not a new pose", Snaps(G(), 3.0, t => t < 0.3 ? r0 + new V3(0f, 0.5f * (float)t, 0f) : r0 + new V3(0f, 0.15f, 0f), restL).Count == 0);
+        Check("capture: a hand creeping 2 cm/s is never still", Snaps(G(), 4.0, t => t < 0.3 ? r0 + (r1 - r0) * (float)(t / 0.3) : r1 + new V3(0.02f * (float)(t - 0.3), 0f, 0f), restL).Count == 0);
+        var rng = new Random(7);
+        Func<double, V3> shaky = t => (t < 0.3 ? r0 + (r1 - r0) * (float)(t / 0.3) : r1) + new V3((float)(rng.NextDouble() - 0.5) * 0.004f, (float)(rng.NextDouble() - 0.5) * 0.004f, (float)(rng.NextDouble() - 0.5) * 0.004f);
+        Check("capture: tremor of 2 mm each way is still", Snaps(G(), 3.0, shaky, restL).Count == 1);
+        Check("capture: the other hand moving holds it off", Snaps(G(), 3.0, raiseR, t => l0 + new V3(0f, 0f, 0.1f * (float)Math.Sin(t * 6.0))).Count == 0);
+        CaptureGate lost = G();
+        var lostAt = Snaps(lost, 0.6, raiseR, restL);
+        bool nanSnap = lost.Step(0.6 + Dt, new V3(float.NaN, 0f, 0f), l0);
+        List<double> after = Snaps(lost, 2.0, raiseR, restL, 0.6 + 2 * Dt);
+        Check("capture: a lost hand (NaN) takes no snapshot and restarts the stillness, not the arming", lostAt.Count == 0 && !nanSnap && after.Count == 1 && after[0] >= 1.2 + 2 * Dt - 1e-6);
+        CaptureGate reset = G();
+        Snaps(reset, 0.6, raiseR, restL);
+        reset.Reset();
+        Check("capture: Reset forgets the move: the hands must move again", Snaps(reset, 3.0, _ => r1, restL, 0.6 + Dt).Count == 0);
+
+        // a hand's record: the controller's place and axes through the body frame. Facing +X (yaw 90), a controller turned
+        // the same way as the head, 0.5 m ahead and 0.3 m down, is the body frame's own axes
+        V3 head = new V3(1f, 2f, 3f);
+        CaptureHand h = PoseCapture.Hand(head, 90f, head + new V3(0.5f, -0.3f, 0f), new V3(0f, 0f, -1f), new V3(0f, 1f, 0f), new V3(1f, 0f, 0f));
+        Check("capture hand: place and axes in the body frame", NearV(h.Pos, new V3(0f, -0.3f, 0.5f)) && NearV(h.X, new V3(1f, 0f, 0f)) && NearV(h.Y, new V3(0f, 1f, 0f)) && NearV(h.Z, new V3(0f, 0f, 1f)));
+        CaptureHand tilted = PoseCapture.Hand(V3.Zero, 0f, new V3(0.2f, -0.5f, 0.3f), new V3(2f, 0f, 0f), new V3(0f, 0f, -3f), new V3(0f, 0.5f, 0f));
+        Check("capture hand: axes made length 1, the place not scaled", NearV(tilted.Pos, new V3(0.2f, -0.5f, 0.3f)) && NearV(tilted.X, new V3(1f, 0f, 0f)) && NearV(tilted.Y, new V3(0f, 0f, -1f)) && NearV(tilted.Z, new V3(0f, 1f, 0f)));
+
+        string[] columns = PoseCapture.Header.Split(',');
+        Check("capture header: n, t, the head, yaw, then 12 per hand", columns.Length == 30
+            && string.Join(",", columns.Take(9)) == "n,t,headX,headY,headZ,yaw,rightX,rightY,rightZ"
+            && string.Join(",", columns.Skip(9).Take(9)) == "rightXaxisX,rightXaxisY,rightXaxisZ,rightYaxisX,rightYaxisY,rightYaxisZ,rightZaxisX,rightZaxisY,rightZaxisZ"
+            && string.Join(",", columns.Skip(18)) == "leftX,leftY,leftZ,leftXaxisX,leftXaxisY,leftXaxisZ,leftYaxisX,leftYaxisY,leftYaxisZ,leftZaxisX,leftZaxisY,leftZaxisZ");
+        var ra = new CaptureHand { Pos = new V3(0.25f, -0.5f, 0.125f), X = new V3(1f, 0f, 0f), Y = new V3(0f, 0.6f, 0.8f), Z = new V3(0f, -0.8f, 0.6f) };
+        var la = new CaptureHand { Pos = new V3(-0.25f, -0.5f, 0.375f), X = new V3(0f, 0f, 1f), Y = new V3(0f, 1f, 0f), Z = new V3(-1f, 0f, 0f) };
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        string row;
+        try {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");   // a decimal comma would split numbers
+            row = PoseCapture.Row(3, 12.3456, new V3(-835.5f, 214.25f, 386.75f), -66.5f, ra, la);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
+        string[] cells = row.Split(',');
+        Check("capture row: 30 numbers in the invariant culture, each in its column", cells.Length == 30 && cells[0] == "3" && cells[1] == "12.346" && cells[2] == "-835.5" && cells[5] == "-66.5"
+            && cells[6] == "0.25" && cells[8] == "0.125" && cells[13] == "0.6" && cells[14] == "0.8" && cells[16] == "-0.8" && cells[18] == "-0.25" && cells[20] == "0.375"
+            && cells[23] == "1" && cells[26] == "0" && cells[27] == "-1" && cells[29] == "0");
+    }
+
+    // ----- not a test: `dotnet run --project Earthbending.Tests -c Release -- --overlaps [poses.txt]` -----
+
+    /// <summary>Prints every pair of poses that one pair of hands can strike together (each hand inside both poses'
     /// tolerances, as written or mirrored), with a witness pair of hands checked through <see cref="PoseMatch.Match"/>, and
-    /// every pose whose own exact hands another pose also matches. Run it again on the owner's captured poses.</summary>
-    internal static int PrintOverlaps() {
+    /// every pose whose own exact hands another pose also matches. The default poses, or those of a poses.txt (the owner's
+    /// capture: run it on fit_poses.py's file).</summary>
+    internal static int PrintOverlaps(string? path) {
         PoseSpec[] specs = PoseLibrary.Defaults;
+        if (path != null) {
+            if (!ReadPoses(path, out specs, out List<string> problems)) {
+                foreach (string p in problems) Console.WriteLine("ERROR " + p);
+                return 1;
+            }
+            Console.WriteLine($"{specs.Length} poses from {path}");
+        }
         var orients = Orientations(2000, 36);
         int regions = 0, exact = 0;
         for (int i = 0; i < specs.Length; i++)
@@ -293,6 +371,61 @@ internal static class PoseTests {
                 }
             }
         Console.WriteLine($"{regions} overlapping pair(s), {exact} exact hit(s) among {specs.Length} poses");
+        return 0;
+    }
+
+    // ----- not a test: `-- --check-poses <poses.txt>`, the check that fit_poses.py writes what PoseLibrary.Parse reads -----
+
+    /// <summary>Reads a poses.txt with <see cref="PoseLibrary.Parse"/>: <c>POSES OK (16)</c> and 0 when it holds the sixteen
+    /// poses and no line was skipped, else each problem and 1.</summary>
+    internal static int CheckPoses(string? path) {
+        if (path == null) { Console.WriteLine("usage: --check-poses <poses.txt>"); return 2; }
+        if (ReadPoses(path, out PoseSpec[] poses, out List<string> problems)) {
+            Console.WriteLine($"POSES OK ({poses.Length})");
+            return 0;
+        }
+        foreach (string p in problems) Console.WriteLine("ERROR " + p);
+        Console.WriteLine($"POSES FAILED ({problems.Count} problem(s), {poses.Length} pose(s) read from {path})");
+        return 1;
+    }
+
+    /// <summary>A poses.txt through <see cref="PoseLibrary.Parse"/>; true when no line was skipped and all sixteen poses are there.</summary>
+    static bool ReadPoses(string path, out PoseSpec[] poses, out List<string> problems) {
+        string[] lines;
+        try { lines = System.IO.File.ReadAllLines(path); }
+        catch (Exception e) {
+            poses = new PoseSpec[0];
+            problems = new List<string> { $"cannot read {path}: {e.Message}" };
+            return false;
+        }
+        poses = PoseLibrary.Parse(lines, out problems);
+        PoseSpec[] read = poses;
+        var missing = Enumerable.Range((int)Move.Base, 16).Select(i => (Move)i).Where(m => !read.Any(p => p.Move == m)).ToList();
+        if (missing.Count > 0) problems.Add("no line for " + string.Join(", ", missing));
+        return problems.Count == 0;
+    }
+
+    // ----- not a test: `-- --capture-sample <file.csv>`, a capture as the recorder writes it, for fit_poses.py -----
+
+    /// <summary>Writes a made-up capture of the sixteen default poses through <see cref="PoseCapture"/>, as Hands.cs's recorder
+    /// writes one: A on the right hand, each controller's palm on its local -Y and its fingers on +Z, struck facing yaw 30 at
+    /// a head far from the origin (so the body frame is not the world's). fit_poses.py on it must find -y / +z and the poses.</summary>
+    internal static int WriteCaptureSample(string? path) {
+        if (path == null) { Console.WriteLine("usage: --capture-sample <file.csv>"); return 2; }
+        V3 head = new V3(-835.6f, 216.0f, 386.9f);
+        const float yaw = 30f;
+        CaptureHand Record(in HandSpec h) {
+            V3 n = h.Palm.Normalized, f = (h.Fingers - n * V3.Dot(h.Fingers, n)).Normalized;
+            V3 y = -n, z = f, x = Cross(y, z);   // a turn: right = up x forward
+            return PoseCapture.Hand(head, yaw, head + RotY(h.Pos, yaw), RotY(x, yaw), RotY(y, yaw), RotY(z, yaw));
+        }
+        var lines = new List<string> { PoseCapture.Header };
+        PoseSpec[] defaults = PoseLibrary.Defaults;
+        for (int i = 0; i < defaults.Length; i++)
+            lines.Add(PoseCapture.Row(i + 1, 3.0 * (i + 1), head, yaw, Record(defaults[i].A), Record(defaults[i].B)));
+        try { System.IO.File.WriteAllLines(path, lines); }
+        catch (Exception e) { Console.WriteLine($"cannot write {path}: {e.Message}"); return 1; }
+        Console.WriteLine($"wrote {defaults.Length} snapshots to {path}");
         return 0;
     }
 
