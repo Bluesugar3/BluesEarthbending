@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using ATT.Saving;
-using Alta.Chunks;
 using Alta.Networking;
 using MelonLoader;
 using SyncLib.Items;
@@ -71,6 +69,9 @@ namespace Earthbending {
         // ---------------------------------------------------------------- templates and registration
 
         static void OnRegisterPrefabs() {
+            // every registration is one server's: a game that joins a second server never keeps the first one's prefabs (or
+            // their hashes), so on a server without this mod Of stays null and nothing is claimed
+            Array.Clear(registered, 0, registered.Length);
             if (mod == null) return;
             BuildTemplates();
             int done = 0;
@@ -122,34 +123,6 @@ namespace Earthbending {
                 BoxCollider box = t.GetComponent<BoxCollider>();
                 if (box != null) box.size = new Vector3(s.Size.X, s.Size.Y, s.Size.Z);
             }
-        }
-    }
-
-    // Server: spawning a stone. A stub for the console's `earth spawn` until Task 6 moves it to Server.cs with the registry.
-    internal static class Server {
-        /// <summary>Spawns a stone at <paramref name="pos"/> (its centre), never saved (SaveMode.Ignore before it is chunked).
-        /// Calls <paramref name="done"/> with the new entity and returns it; null (and a warning) when it cannot.</summary>
-        internal static NetworkEntity? Spawn(StoneKind kind, Vector3 pos, Quaternion rot, Player? owner, Action<NetworkEntity>? done) {
-            if (!Main.IsServer) { MelonLogger.Warning($"[Earth] Spawn: refused, {kind} asked for on a game (only the server spawns stones)"); return null; }
-            NetworkPrefab? prefab = Prefabs.Of(kind);
-            if (prefab == null) { MelonLogger.Warning($"[Earth] Spawn: refused, no registered prefab for {kind}"); return null; }
-            LocationChunk chunk = LocationChunkHelper.GetBestContaining(pos);
-            if (chunk == null) { MelonLogger.Warning($"[Earth] Spawn: refused, no chunk holds {pos} for the {kind}"); return null; }
-            bool ignored = false;
-            NetworkEntity e = SpawnHelper.Spawn(prefab, SpawnData.Default, chunk, pos, rot, x => {
-                // never in the world save; the copy's own NetworkPrefab, not NetworkEntity.Prefab (see Prefabs.KindOf)
-                NetworkPrefab? np = x != null ? x.GetComponent<NetworkPrefab>() : null;
-                if (np != null) { np.SaveMode = SaveMode.Ignore; ignored = true; }
-            });
-            if (e == null) { MelonLogger.Warning($"[Earth] Spawn: the game did not spawn the {kind} at {pos}"); return null; }
-            if (!ignored) {
-                MelonLogger.Warning($"[Earth] Spawn: the {kind} #{e.Identifier} has no NetworkPrefab to mark unsaved; destroyed");
-                e.SceneDestroy();
-                return null;
-            }
-            if (Logs.Debug) MelonLogger.Msg($"[Earth] Spawn: {kind} #{e.Identifier} at {pos} for {(owner?.UserInfo != null ? owner.UserInfo.Username : "nobody")}");
-            done?.Invoke(e);
-            return e;
         }
     }
 }

@@ -10,7 +10,8 @@ namespace Earthbending {
     // player's hands in the body frame (Hands.Read), whether they may bend (Bender.CanBend, through the two-frame EmptyGate),
     // the ground (Hands.GroundState, through the GroundGrace of [EarthPose] GroundGraceSeconds: ruling 16) and the hitstun,
     // and steps the PoseMachine. A fired move gives one haptic tick on both hands ([EarthLooks] PoseHaptic, PoseHapticSeconds),
-    // does what it does (Jump: Moves.Push straight up at [EarthMovement] JumpSpeed, and Moves.Dust at the feet), logs one Debug
+    // does what it does (Jump: Moves.Push straight up at [EarthMovement] JumpSpeed, and Moves.Dust at the feet; an armed
+    // structure: a Summon claim to the server, Net.SendSummon, only when the server runs this mod), logs one Debug
     // line, then raises Fired. Nothing fires while the pose recorder runs ([EarthPose] Capture), while downed or dead (as in
     // hitstun: a pose held through it does not fire after it), or with no local player (the machine then starts over).
     //
@@ -155,7 +156,7 @@ namespace Earthbending {
                 }
                 PoseMachine m = machine;
                 PlayerController pc = PlayerController.Current;
-                if (pc == null || Hands.Capturing || !Hands.Read(out HandSample right, out HandSample left, out _, out _)) {
+                if (pc == null || Hands.Capturing || !Hands.Read(out HandSample right, out HandSample left, out Vector3 head, out float yawDeg)) {
                     StartOver();
                     return;
                 }
@@ -166,7 +167,7 @@ namespace Earthbending {
                 bool standing = grace.Step(now, grounded, natural, out bool onNatural);
                 bool stunned = Moves.Stunned || pc.IsDowned || !pc.IsAlive;
                 Move move = m.Step(now, right, left, canBend, standing, onNatural, stunned, out bool rightIsA);
-                if (move != Move.None) Fire(pc, move, rightIsA, m.LastScore);
+                if (move != Move.None) Fire(pc, move, rightIsA, m.LastScore, head, yawDeg);
             }
             catch (Exception e) {
                 if (failed) return;
@@ -184,14 +185,15 @@ namespace Earthbending {
             grace.Reset();
         }
 
-        static void Fire(PlayerController pc, Move move, bool rightIsA, float score) {
+        static void Fire(PlayerController pc, Move move, bool rightIsA, float score, Vector3 head, float yawDeg) {
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: {move} fired (A on the {(rightIsA ? "right" : "left")} hand, score {score:0.00})");
             try { Buzz(pc); }
             catch (Exception e) {
                 if (!buzzFailed) { buzzFailed = true; MelonLogger.Warning($"[Earth] Bend: the haptic tick failed (said once): {e.Message}"); }
             }
             try {
-                if (move == Move.Jump && Moves.Push(new Vector3(0f, jumpSpeed, 0f))) Moves.Dust(pc.RealFeetPosition);
+                if (move == Move.Jump) { if (Moves.Push(new Vector3(0f, jumpSpeed, 0f))) Moves.Dust(pc.RealFeetPosition); }
+                else if (PoseMachine.IsStructure(move)) Summon(move, head, yawDeg);
             }
             catch (Exception e) {
                 MelonLogger.Warning($"[Earth] Bend: {move} failed: {e.Message}");
@@ -202,6 +204,19 @@ namespace Earthbending {
                 try { ((Action<Move, bool>)d)(move, rightIsA); }
                 catch (Exception e) { MelonLogger.Warning($"[Earth] Bend: a Fired handler ({d.Method.DeclaringType?.Name}.{d.Method.Name}) failed: {e}"); }
             }
+        }
+
+        /// <summary>An armed structure fired: asks the server for that stone (spec 3.2) with this frame's head and yaw. Only when
+        /// the server runs this mod (ruling 12: SyncLib gave our prefabs its hashes); otherwise nothing is sent, one Debug line.
+        /// The server checks the claim and raises the stone (Server.cs); a refusal is said only in the server's log.</summary>
+        static void Summon(Move move, Vector3 head, float yawDeg) {
+            if (!SummonCheck.KindOf(move, out StoneKind kind)) return;
+            if (Prefabs.Of(kind) == null) {
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: {move} not sent: this server does not run Blue's Earthbending (no stone prefabs)");
+                return;
+            }
+            bool sent = Net.SendSummon(new SummonClaim(kind, new V3(head.x, head.y, head.z), yawDeg));
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Bend: Summon {kind} {(sent ? "sent" : "NOT sent (no connection to the server)")} (head {head}, yaw {yawDeg:0.#})");
         }
 
         /// <summary>One tick on both hands. TriggerHaptic's second argument is the buzz's length in seconds (PlayerInput.Haptic

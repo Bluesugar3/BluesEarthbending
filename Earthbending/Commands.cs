@@ -51,10 +51,12 @@ namespace Earthbending {
                     return $"No ground within {GroundBelowMetres:0} m under the spot {AheadMetres} m in front of {name}: nothing spawned";
                 bool natural = Ground.IsNatural(hit.collider);
                 Vector3 at = hit.point + Vector3.up * (StoneTable.Of(stone).Size.Y * 0.5f + Lift);
-                NetworkEntity? e = Server.Spawn(stone, at, Quaternion.LookRotation(forward, Vector3.up), p, null);
-                if (e == null) return $"The {stone} could not be spawned (see the log)";
-                MelonLogger.Msg($"[Earth] Console: spawned {stone} #{e.Identifier} in front of {name} at {at} (ground {hit.collider.name}, layer {hit.collider.gameObject.layer}, natural {(natural ? "yes" : "no")})");
-                return $"Spawned {stone} #{e.Identifier} in front of {name} at {at}";
+                // free (it settles on the ground under physics), owned by that player: it breaks as a summoned one does
+                // (LifeSeconds, out of the world, the player leaving), counts toward their caps, but skips them
+                StoneBody? b = Server.Spawn(stone, at, Quaternion.LookRotation(forward, Vector3.up), p, StoneState.Free, at, 0f);
+                if (b == null) return $"The {stone} could not be spawned (see the log)";
+                MelonLogger.Msg($"[Earth] Console: spawned {stone} #{b.Id} in front of {name} at {at} (ground {hit.collider.name}, layer {hit.collider.gameObject.layer}, natural {(natural ? "yes" : "no")})");
+                return $"Spawned {stone} #{b.Id} in front of {name} at {at}";
             }
             catch (Exception e) { return Failed(e); }
         }
@@ -99,7 +101,9 @@ namespace Earthbending {
                 foreach (StoneView v in Object.FindObjectsOfType<StoneView>()) {
                     NetworkEntity e = v.GetComponent<NetworkEntity>();
                     if (e == null || e.IsBeingDestroyed) continue;
-                    e.SceneDestroy();
+                    StoneBody b = v.GetComponent<StoneBody>();
+                    if (b != null) b.Break("cleared from the console");   // the games play its break
+                    else e.SceneDestroy();
                     n++;
                 }
                 MelonLogger.Msg($"[Earth] Console: cleared {n} stone(s)");

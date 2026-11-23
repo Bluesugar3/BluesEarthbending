@@ -10,15 +10,78 @@ namespace Earthbending {
     // The Ball and the Disc wear the network prefab "Stone Boulder 01"'s boulder mesh, fitted to their collider (the Disc
     // squashed flat); the Pillar, Cube and Wall a chamfered block (StoneBox) of their collider's size in that boulder's
     // material, mapped onto the part of the texture the boulder uses. Task 10 picks the real looks and makes them settings.
+    //
+    // The rise and the break (Task 6, [EarthLooks], per game): a stone that appears (StoneView.Start) plays RiseEffect and
+    // RiseSound at its top, which a summoned stone has at ground level as it appears (SpawnPlan: it starts lowered by its own
+    // height), so the dirt sprays where it comes out (a game that joins later sees the spray at an old stone's top: accepted);
+    // the server's Applied(Broke) plays BreakEffect and BreakSound where the stone broke. Each is the game's own pooled effect
+    // or sound set, by name (several names split by ; are tried in order, the first loaded one is used). One that is not
+    // loaded is one warning and nothing is played; it is looked for again every 10 s without a warning.
     internal static class StoneLook {
         const string BoulderPrefab = "Stone Boulder 01";
         const float BlockBevel = 0.05f;
+        const string DefaultRiseEffect = "Digging Dirt Spray Effect;Digging Dirt Smoke Puff Effect", DefaultRiseSound = "Digging DirtFall Sound Set";
+        const string DefaultBreakEffect = "Destroyed Rock", DefaultBreakSound = "Rock Destroyed Sounds;Boulder Breaking Sounds";
 
-        static bool searched, warnedModel;
+        static bool searched, warnedModel, riseFailed, breakFailed;
         static Mesh? boulderMesh;
         static Material[] boulderMaterials = new Material[0];
         static UvRect boulderUv = new UvRect(0f, 0f, 1f, 1f);
         static readonly Dictionary<Vector3, Mesh> blocks = new Dictionary<Vector3, Mesh>();
+
+        static MelonPreferences_Entry<string>? riseEffectEntry, riseSoundEntry, breakEffectEntry, breakSoundEntry;
+        static readonly LookAsset<PooledObjectDefinition> riseEffect = new LookAsset<PooledObjectDefinition>("RiseEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> breakEffect = new LookAsset<PooledObjectDefinition>("BreakEffect", "effect", EffectNamed);
+        static readonly LookAsset<SoundEffectSet> riseSound = new LookAsset<SoundEffectSet>("RiseSound", "sound set", SoundNamed);
+        static readonly LookAsset<SoundEffectSet> breakSound = new LookAsset<SoundEffectSet>("BreakSound", "sound set", SoundNamed);
+
+        // a pooled effect is named as its definition or as its prefab; a sound set as itself
+        static bool EffectNamed(PooledObjectDefinition d, string n) => d.name == n || (d.Prefab != null && d.Prefab.name == n);
+        static bool SoundNamed(SoundEffectSet s, string n) => s.name == n;
+
+        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise and break settings, and the server's Applied
+        /// events.</summary>
+        internal static void Init() {
+            MelonPreferences_Category looks = Cfg.Category("EarthLooks");
+            riseEffectEntry = looks.CreateEntry("RiseEffect", DefaultRiseEffect, description: "Per game. The game's pooled effect played where a stone comes out of the ground (its name; several names split by ; are tried in order, the first loaded one is used; empty: none).");
+            riseSoundEntry = looks.CreateEntry("RiseSound", DefaultRiseSound, description: "Per game. The game's sound set played where a stone comes out of the ground (names as RiseEffect).");
+            breakEffectEntry = looks.CreateEntry("BreakEffect", DefaultBreakEffect, description: "Per game. The game's pooled effect played where a stone breaks (names as RiseEffect).");
+            breakSoundEntry = looks.CreateEntry("BreakSound", DefaultBreakSound, description: "Per game. The game's sound set played where a stone breaks (names as RiseEffect).");
+            // a Net whose static initialiser failed (Main says so) throws on every touch: no break looks, the rest still starts
+            try { Net.AppliedReceived += OnApplied; }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break looks (message 19 is not set up: {e.GetType().Name})"); }
+        }
+
+        /// <summary>Games: a stone appeared; the dirt and the sound at its top.</summary>
+        internal static void Rise(GameObject root, StoneKind kind) {
+            try {
+                Transform t = root.transform;
+                Vector3 top = t.position + t.up * (ColliderSize(root, kind).y * 0.5f);
+                Play(riseEffect, riseEffectEntry, riseSound, riseSoundEntry, top);
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: {root.name} ({kind}) appeared; its rise plays at {top}");
+            }
+            catch (Exception e) {
+                if (!riseFailed) { riseFailed = true; MelonLogger.Warning($"[Earth] Looks: the rise look failed (said once): {e}"); }
+            }
+        }
+
+        static void OnApplied(uint entity, byte evt, Vector3 at) {
+            if (Main.IsServer || evt != Wire.Broke) return;
+            try {
+                Play(breakEffect, breakEffectEntry, breakSound, breakSoundEntry, at);
+                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} broke; its break plays at {at}");
+            }
+            catch (Exception e) {
+                if (!breakFailed) { breakFailed = true; MelonLogger.Warning($"[Earth] Looks: the break look failed (said once): {e}"); }
+            }
+        }
+
+        static void Play(LookAsset<PooledObjectDefinition> effect, MelonPreferences_Entry<string>? effectNames, LookAsset<SoundEffectSet> sound, MelonPreferences_Entry<string>? soundNames, Vector3 at) {
+            PooledObjectDefinition? fx = effect.Get(effectNames?.Value);
+            if (fx != null) fx.Get(at);   // no turn: the game plays its own dig effect at a place only (DiggingImpactorSettings.DigEffect)
+            SoundEffectSet? s = sound.Get(soundNames?.Value);
+            if (s != null) s.PlayAtPosition(at);
+        }
 
         internal static void Dress(GameObject root, StoneKind kind) {
             Transform model = root.transform.Find("Model");
@@ -144,6 +207,56 @@ namespace Earthbending {
             catch (Exception e) {
                 if (!warned) { warned = true; MelonLogger.Warning($"[Earth] Looks: could not dress {name}: {e}"); }
             }
+            StoneLook.Rise(gameObject, Kind);   // never throws
+        }
+    }
+
+    /// <summary>Games: one of the game's assets ([EarthLooks]) found by name among everything loaded: the names split by ;
+    /// are tried in order and the first one loaded is kept (until the setting changes, or it is unloaded). None loaded: one
+    /// warning per setting value, nothing played, and it is looked for again every 10 s (each search walks every loaded
+    /// asset of the type).</summary>
+    internal sealed class LookAsset<T> where T : UnityEngine.Object {
+        const float RetrySeconds = 10f;
+
+        readonly string key, what;
+        readonly Func<T, string, bool> named;
+        string names = "";
+        T? found;
+        float retryAt;
+        bool warned;
+
+        /// <summary><paramref name="key"/> is the [EarthLooks] entry (for the warning), <paramref name="what"/> the kind of
+        /// asset, <paramref name="named"/> whether an asset has a name.</summary>
+        internal LookAsset(string key, string what, Func<T, string, bool> named) { this.key = key; this.what = what; this.named = named; }
+
+        /// <summary>The asset <paramref name="wanted"/> names (the setting's value now), or null.</summary>
+        internal T? Get(string? wanted) {
+            string w = (wanted ?? "").Trim();
+            if (w != names) {
+                names = w;
+                found = null;
+                retryAt = 0f;
+                warned = false;
+            }
+            if (found != null) return found;   // Unity's null: one unloaded since is looked for again
+            if (names.Length == 0 || Time.unscaledTime < retryAt) return null;
+            retryAt = Time.unscaledTime + RetrySeconds;
+            T[] all = Resources.FindObjectsOfTypeAll<T>();
+            foreach (string raw in names.Split(';')) {
+                string n = raw.Trim();
+                if (n.Length == 0) continue;
+                foreach (T a in all)
+                    if (a != null && named(a, n)) {
+                        found = a;
+                        if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: [EarthLooks] {key} plays the {what} '{n}'");
+                        return a;
+                    }
+            }
+            if (!warned) {
+                warned = true;
+                MelonLogger.Warning($"[Earth] Looks: no loaded {what} named '{names}' ([EarthLooks] {key}): nothing is played; looked for again every {RetrySeconds:0} s");
+            }
+            return null;
         }
     }
 }

@@ -11,22 +11,26 @@ namespace Earthbending {
     // the dedicated server and by every game.
     //   Main.cs       start-up, the per-frame routing (server work before the headless return)
     //   Cfg.cs        the settings file UserData\Earthbending.cfg and its 2-second reload; [EarthLog] Debug (Logs)
-    //   Stones.cs     Unity-free: StoneKind, V3, StoneTable (spec 3.4); Modifier, Wire, the two claims (spec 3.8)
+    //   Stones.cs     Unity-free: StoneKind, V3, StoneTable (spec 3.4); Modifier, Wire, the two claims (spec 3.8); the
+    //                 summoning rules (StoneState, Ledger, SummonCheck, SpawnPlan, StoneLife, Caps, StoneKinds)
     //   StoneBox.cs   Unity-free: the chamfered stone block (a copy of the archery mod's Lectern.cs types)
     //   Ground.cs     the natural-ground test under a point
-    //   Prefabs.cs    the five stones as code-built SyncLib network prefabs, [EarthStones]; Server.Spawn (until Server.cs)
-    //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone)
+    //   Prefabs.cs    the five stones as code-built SyncLib network prefabs, [EarthStones] power and mass
+    //   Server.cs     the server: Summon claims checked, stones spawned, the registry and every stone's life, the quit
+    //   StoneBody.cs  the server's side of one stone: kind, owner, state, the rise, Break
+    //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone), the rise and break looks
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
     //   Moves.cs      games: pushing the local player, the hitstun after a knockback, the movement moves' dust
     //   Poses.cs      Unity-free: the pose engine (spec 3.3), the rules of feeding it (axes, empty hands, ground grace, push),
     //                 and the pose recorder's rules (CaptureGate, PoseCapture)
     //   Hands.cs      games: the local player's head and hands (Hands.Raw, Hands.Read), empty hands, the ground under the
     //                 feet, the [EarthPose] axis settings and BodyScale, the pose recorder
-    //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump), Bender.CanBend, poses.txt
+    //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump, a structure's Summon claim),
+    //                 Bender.CanBend, poses.txt
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings (run it with python -I)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
-        public const string Version = "0.1.2";
+        public const string Version = "0.2.0";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
@@ -45,14 +49,21 @@ namespace Earthbending {
                 Moves.Init();
                 Hands.Init();     // [EarthPose]: the axis settings, BodyScale and the pose recorder
                 Bend.Init();      // [EarthPose] timings, JumpSpeed, the haptic tick, poses.txt: the pose machine
+                StoneLook.Init(); // [EarthLooks] the rise and break looks, and the server's Applied events
             }
-            if (IsServer) Commands.Register();
+            if (IsServer) {
+                Server.Init();    // [EarthStones] summons, caps and life; Summon claims; the quit
+                Commands.Register();
+            }
             LoggerInstance.Msg($"[Earth] Blue's Earthbending v{Version} started ({(IsServer ? "server" : "client")})");
         }
 
         public override void OnUpdate() {
             Cfg.Poll();
-            if (IsServer) return;   // the headless server: nothing below draws or reads the local player
+            if (IsServer) {
+                Server.Tick();      // every stone that lived its time, fell out of the world or lost its owner breaks
+                return;             // the headless server: nothing below draws or reads the local player
+            }
             Hands.Tick();           // the pose recorder; one bool test while [EarthPose] Capture is off
             Bend.Tick();            // the pose machine (nothing fires while the recorder is on)
             if (Logs.Debug && Time.unscaledTime >= nextGroundLine) {
@@ -63,6 +74,10 @@ namespace Earthbending {
                     catch (Exception e) { MelonLogger.Warning($"[Earth] Ground: could not read the ground under the feet: {e.Message}"); }
                 }
             }
+        }
+
+        public override void OnApplicationQuit() {
+            if (IsServer) Server.Shutdown();   // also on MelonLoader's definite quit (Server.Init), which closing the window raises alone
         }
     }
 }
