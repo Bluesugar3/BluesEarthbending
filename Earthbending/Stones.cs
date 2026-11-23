@@ -538,22 +538,25 @@ namespace Earthbending {
 
         // ---------------------------------------------------------------- Task 13: Hold
 
-        /// <summary>Spec 2.4: a held stone is let go (it keeps its velocity: that is the throw) once it moves faster than
-        /// <paramref name="letGoSpeed"/> m/s ([EarthModifiers] HoldLetGoSpeed; at it, it holds on), or when it changed between
-        /// grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground, a Held one became
-        /// grounded). Rulings C27, C28: the speed test counts only when <paramref name="armed"/> (<see cref="HoldArmed"/>: the
-        /// stone has settled near its target since the hold began), so a stone caught flying, or pulled in from afar, is not
-        /// thrown by its own rush to the hand, and a swing then throws it; grounded changed lets go armed or not. A speed that
-        /// is not a finite number lets go, armed or not.</summary>
-        public static bool HoldLetGo(float speed, bool groundedChanged, float letGoSpeed, bool armed = true) =>
-            groundedChanged || float.IsNaN(speed) || float.IsInfinity(speed) || (armed && !(speed <= letGoSpeed));
+        /// <summary>Spec 2.4, Ruling 43: a held stone is let go once the holding hand's speed <paramref name="handSpeed"/> is
+        /// above <paramref name="letGoSpeed"/> m/s ([EarthModifiers] HoldLetGoSpeed; at it, it holds on), measured RELATIVE TO
+        /// THE HOLDER'S HEAD (<see cref="HandTrack"/>: walking, a dash or a knock-back move both together and
+        /// never throw; a head turn moves the target, not the hand), which is the throw (<see cref="Pd.ThrowVelocity"/>), or
+        /// when it changed between grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground,
+        /// a Held one became grounded). Rulings C27, C28: the speed test counts only when <paramref name="armed"/>
+        /// (<see cref="HoldArmed"/>: the stone has settled near its target since the hold began), so a stone caught flying, or
+        /// pulled in from afar, settles first; grounded changed lets go armed or not. A hand speed that is not a number (no
+        /// track yet) never throws.</summary>
+        public static bool HoldLetGo(float handSpeed, bool groundedChanged, float letGoSpeed, bool armed = true) =>
+            groundedChanged || (armed && handSpeed > letGoSpeed && !float.IsInfinity(handSpeed));
 
-        /// <summary>Ruling C28 (refines C27): whether a hold's speed test counts from this step: it already did
-        /// (<paramref name="wasArmed"/>; false when the hold begins), or in this one step the stone is both within
+        /// <summary>Ruling C28 (refines C27), Ruling 43: whether a hold's throw counts from this step: it already did
+        /// (<paramref name="wasArmed"/>; false when the hold begins), or in this one step the stone is within
         /// <paramref name="armMetres"/> ([EarthModifiers] HoldArmMetres) of its target (<paramref name="trail"/>, Pd.Trail)
-        /// and at <paramref name="letGoSpeed"/> m/s or slower. A distance or speed that is not a number does not arm it.</summary>
-        public static bool HoldArmed(bool wasArmed, float trail, float speed, float armMetres, float letGoSpeed) =>
-            wasArmed || (trail <= armMetres && speed <= letGoSpeed);
+        /// while the hand, relative to the head (<paramref name="handSpeed"/>), is at <paramref name="letGoSpeed"/> m/s or
+        /// slower. A distance or speed that is not a number does not arm it.</summary>
+        public static bool HoldArmed(bool wasArmed, float trail, float handSpeed, float armMetres, float letGoSpeed) =>
+            wasArmed || (trail <= armMetres && handSpeed <= letGoSpeed);
 
         /// <summary>A Hold by a hand on the stone that hand already holds lets it go. <paramref name="heldBy"/> is the hand
         /// (0 right, 1 left) that holds the stone for the SAME player, -1 when that player does not hold it (not held, or held
@@ -612,12 +615,37 @@ namespace Earthbending {
         /// the firm follow's model swing: <see cref="DefaultHoldLetGoSpeed"/>).</summary>
         public const float DefaultHoldDistance = 1f, DefaultHoldArmMetres = 0.5f;
 
-        /// <summary>Task 17c: [EarthModifiers] HoldLetGoSpeed's default, in m/s. With the firm follow a held stone moves about as
-        /// fast as its target: the model swing (the hand 2.5 m in 0.25 s, 10 m/s) takes a Ball to about 8 m/s and a Wall to about
-        /// 7; walking (the target at up to 3 m/s) takes no stone past 3. 5 sits between them with room on both sides. A head turn
-        /// swings the target round the hand at Pd.HoldReach: a held Wall (2.23 m) is thrown by a turn from about 140 degrees a
-        /// second, a Ball (1.30 m) from about 255; no let-go speed tells a Wall's swing from a 180 degree a second turn.</summary>
-        public const float DefaultHoldLetGoSpeed = 5f;
+        /// <summary>Ruling 43: [EarthModifiers] HoldLetGoSpeed's default, in m/s of the hand RELATIVE TO THE HEAD
+        /// (<see cref="HandTrack"/>). A turn of the whole body with the arm out (the hand 0.6 m from the head's axis) moves the
+        /// hand 1.88 m/s relative to the head at 180 degrees a second and 2.83 at 270; a swing of 1.0 m in 0.25 s is 4.0. 3.5
+        /// sits between them. Walking, a dash and a knock-back move hand and head together (0); a head turn moves the target,
+        /// not the hand. (Task 17c judged the stone's own speed, 5 m/s, and a 140 degree a second head turn threw a held Wall:
+        /// the target is along the look.)</summary>
+        public const float DefaultHoldLetGoSpeed = 3.5f;
+
+        /// <summary>Ruling 43: [EarthModifiers] HoldThrowScale's default: a thrown stone takes the head's velocity plus the
+        /// hand's velocity relative to the head times this (<see cref="ThrowVelocity"/>).</summary>
+        public const float DefaultHoldThrowScale = 1.5f;
+
+        /// <summary>Ruling 43: the velocity a held stone is thrown with: <paramref name="headVelocity"/> +
+        /// <paramref name="handRelative"/> (the hand's velocity relative to the head) x <paramref name="scale"/>
+        /// ([EarthModifiers] HoldThrowScale; below 0 or not a number is 0), when that is faster than the stone's own
+        /// <paramref name="stoneVelocity"/>; otherwise its own. A stone held along the ground (<paramref name="grounded"/>, the
+        /// slide-hold) takes only the flat part of the throw and keeps its own up and down. Then held to
+        /// <paramref name="cap"/> m/s (MaxStoneSpeed, as StoneRules.Pushed: a cap not above 0 or not a number is the default).
+        /// A head or hand velocity that is not a number throws nothing (the stone keeps its own); a stone velocity that is not a
+        /// number counts as none.</summary>
+        public static V3 ThrowVelocity(V3 stoneVelocity, V3 headVelocity, V3 handRelative, float scale, bool grounded, float cap) {
+            if (!Finite(stoneVelocity)) stoneVelocity = V3.Zero;
+            V3 kept = stoneVelocity;
+            if (Finite(headVelocity) && Finite(handRelative)) {
+                float s = scale >= 0f && !float.IsInfinity(scale) ? scale : 0f;
+                V3 swing = headVelocity + handRelative * s;
+                if (grounded) swing = new V3(swing.X, stoneVelocity.Y, swing.Z);
+                if (Finite(swing) && swing.Length > stoneVelocity.Length) kept = swing;
+            }
+            return StoneRules.Pushed(kept, V3.Zero, 1f, cap);
+        }
 
         /// <summary>Ruling 40: [EarthModifiers] HoldFollowRate (rad/s), HoldDamping, FlickFollowRate (rad/s), FlickDamping,
         /// FlickTurnRate (rad/s) and FlickTurnDamping defaults. A damping of 1 is critical: the stone closes on its target as
@@ -796,6 +824,61 @@ namespace Earthbending {
         }
 
         static float InRange(double v) => v > float.MaxValue ? float.MaxValue : v < -float.MaxValue ? -float.MaxValue : (float)v;
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+    }
+
+    /// <summary>Ruling 43: the holding hand's and the head's recent places (the server's copies), one sample a physics step,
+    /// and from them the hand's velocity RELATIVE TO THE HEAD and the head's own: each the change in place from the newest
+    /// sample at least <see cref="Window"/> seconds old to the newest one, over that time (the once-a-second Hold line's way
+    /// of measuring the hand, over about 0.1 s). Unity-free: StoneHold.cs feeds it. A sample that is not a number is
+    /// skipped; a time that goes back starts the track again. Nothing is allocated after it is made.</summary>
+    internal sealed class HandTrack {
+        /// <summary>The time the velocities are measured over, at least, in seconds.</summary>
+        public const double Window = 0.1;
+        const int Size = 64;   // 0.1 s at up to 640 steps a second
+
+        readonly double[] at = new double[Size];
+        readonly V3[] hand = new V3[Size], head = new V3[Size];
+        int count, newest = -1;
+
+        /// <summary>One step's sample: the time (s), the hand's place and the head's place.</summary>
+        public void Add(double time, V3 handAt, V3 headAt) {
+            if (double.IsNaN(time) || double.IsInfinity(time) || !Finite(handAt) || !Finite(headAt)) return;
+            if (count > 0 && time < at[newest]) Clear();
+            newest = (newest + 1) % Size;
+            at[newest] = time;
+            hand[newest] = handAt;
+            head[newest] = headAt;
+            if (count < Size) count++;
+        }
+
+        /// <summary>Forgets every sample.</summary>
+        public void Clear() {
+            count = 0;
+            newest = -1;
+        }
+
+        /// <summary>The hand's velocity relative to the head and the head's velocity (m/s), over the newest stretch of at least
+        /// <see cref="Window"/> seconds the track holds; false (both zero) until it holds one.</summary>
+        public bool Velocities(out V3 handRelative, out V3 headVelocity) {
+            handRelative = V3.Zero;
+            headVelocity = V3.Zero;
+            if (count < 2) return false;
+            for (int k = 1; k < count; k++) {
+                int i = ((newest - k) % Size + Size) % Size;
+                double span = at[newest] - at[i];
+                if (span < Window - 1e-9) continue;
+                float inv = (float)(1.0 / span);
+                headVelocity = (head[newest] - head[i]) * inv;
+                handRelative = ((hand[newest] - head[newest]) - (hand[i] - head[i])) * inv;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>The hand's speed relative to the head (m/s); not a number until the track holds a whole window.</summary>
+        public float RelativeSpeed => Velocities(out V3 rel, out _) ? rel.Length : float.NaN;
 
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }
