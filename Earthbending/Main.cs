@@ -24,9 +24,12 @@ namespace Earthbending {
     //   Server.cs     the server: Summon and Modify claims checked, stones spawned, the registry and every stone's life,
     //                 the quit; [EarthModifiers] the modifiers' numbers
     //   StoneBody.cs  the server's side of one stone: kind, owner, state, the rise, the modifiers (Straight, Kick, Stomp,
-    //                 Uppercut), the slide, a stomped stone's landing, Break
+    //                 Uppercut, Parry, Explode's mark), the slide, a stomped stone's landing, Break
+    //   StoneHold.cs  the server: Hold (the stone follows the holder's hand, a swing throws it)
+    //   StoneFlick.cs the server: Flick (the stone hangs between the hands and turns with them)
+    //   StoneFreeze.cs the server: the hitstop of two stones that clash
     //   Hits.cs       the server: a moving stone hits creatures (its collisions) and players (their capsules), knocks
-    //                 players back, stuns creatures, and two stones clash; [EarthDamage]
+    //                 players back, stuns creatures, two stones clash, and Explode's blast; [EarthDamage]
     //   StoneLook.cs  games: the stones' mesh and material (StoneView on every stone, StoneView.Live), the rise, break and
     //                 stomp looks
     //   Net.cs        message 19 both ways (spec 3.8): claims to the server, knockback and Applied events to games
@@ -46,7 +49,7 @@ namespace Earthbending {
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings as directions (run it with python -I)
     //   Commands.cs   the server's `earth` console module
     public class Main : MelonMod {
-        public const string Version = "0.4.3";
+        public const string Version = "1.0.0";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
