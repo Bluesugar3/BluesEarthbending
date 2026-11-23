@@ -16,6 +16,8 @@ namespace Earthbending {
     //   game -> server: Summon (SummonClaim), Modify (ModifyClaim)
     //   server -> one game: Knockback (velocity, hitstun seconds)
     //   server -> every game whose player's head is within 80 m: Applied (entity Identifier, event byte, position)
+    //   server -> every game: Fight (a player's account, their fight health; 255 = none), Ring (has one, centre, the two radii,
+    //     drawn): fight health (docs/superpowers/specs/2026-11-23-earthbending-fight-health-design.md section 3.8)
     // Each kind's fields are ONE method (Fields / Knockback / Applied) that both writes and reads, because the game's Stream
     // does either through the same calls: the layout cannot drift between the two sides. The size check of a received message
     // comes from that same method, counted once with the game's StreamCounter.
@@ -42,6 +44,8 @@ namespace Earthbending {
         static readonly int ModifyBits = Count(s => { var c = default(ModifyClaim); Fields(s, ref c); });
         static readonly int KnockbackBits = Count(s => { Vector3 v = default; float t = 0f; Knockback(s, ref v, ref t); });
         static readonly int AppliedBits = Count(s => { uint e = 0; byte b = 0; Vector3 at = default; Applied(s, ref e, ref b, ref at); });
+        static readonly int FightBits = Count(s => { int a = 0; byte p = 0; Fight(s, ref a, ref p); });
+        static readonly int RingBits = Count(s => { bool h = false, d = false; Vector3 c = default; float r = 0f, ar = 0f; Ring(s, ref h, ref c, ref r, ref ar, ref d); });
 
         static Connection? server;                                       // game: the connection to the server
         static readonly HashSet<Connection> warned = new HashSet<Connection>();
@@ -54,13 +58,18 @@ namespace Earthbending {
         /// <summary>Game: the server knocks the local player back (velocity in m/s, hitstun in seconds).</summary>
         internal static event Action<Vector3, float>? KnockbackReceived;
         /// <summary>Game: something happened to a stone (entity Identifier, event byte: a Modifier, or Broke 20, Hitstop 21,
-        /// Exploded 22; where).</summary>
+        /// Exploded 22, KnockedOut 23 (entity 0, at the knocked-out player's head); where).</summary>
         internal static event Action<uint, byte, Vector3>? AppliedReceived;
+        /// <summary>Game: a player's fight health (their account identifier, UserInfo.Identifier; their points, -1 = none).</summary>
+        internal static event Action<int, int>? FightReceived;
+        /// <summary>Game: the ring (has a ring, its centre with y = the floor, ring radius, arena radius, draw it). With no ring
+        /// the other arguments are zero.</summary>
+        internal static event Action<bool, Vector3, float, float, bool>? RingReceived;
 
         /// <summary>From Main.OnInitializeMelon. The handlers themselves come from the Harmony postfixes below (MelonLoader
         /// applies them); this logs the layout once.</summary>
         internal static void Init() {
-            MelonLogger.Msg($"[Earth] Net: message {(int)Message}, wire {Wire.Version} (bits after the header: Summon {SummonBits}, Modify {ModifyBits}, Knockback {KnockbackBits}, Applied {AppliedBits})");
+            MelonLogger.Msg($"[Earth] Net: message {(int)Message}, wire {Wire.Version} (bits after the header: Summon {SummonBits}, Modify {ModifyBits}, Knockback {KnockbackBits}, Applied {AppliedBits}, Fight {FightBits}, Ring {RingBits})");
         }
 
         // ---------------------------------------------------------------- the layout (one method per kind, both ways)
@@ -106,6 +115,21 @@ namespace Earthbending {
             s.SerializeUnsignedInt(ref entity);
             s.SerializeByte(ref evt);
             s.SerializeVector3(ref at);
+        }
+
+        // Fight: the player's account (UserInfo.Identifier, 32 bits), points (byte: 0 to 250, Wire.NoPoints = none)
+        static void Fight(Stream s, ref int account, ref byte points) {
+            s.SerializePlayerIdentifier(ref account);
+            s.SerializeByte(ref points);
+        }
+
+        // Ring: has a ring (bool), centre (3 floats, y = the floor), ring radius (float), arena radius (float), drawn (bool)
+        static void Ring(Stream s, ref bool has, ref Vector3 centre, ref float radius, ref float arena, ref bool drawn) {
+            s.SerializeBool(ref has);
+            s.SerializeVector3(ref centre);
+            s.SerializeFloat(ref radius);
+            s.SerializeFloat(ref arena);
+            s.SerializeBool(ref drawn);
         }
 
         static void Vec(Stream s, ref V3 v) {
@@ -171,6 +195,41 @@ namespace Earthbending {
             return n;
         }
 
+        /// <summary>Server: tells every game a player's fight health (<paramref name="points"/> below 0: none; held to 250).
+        /// Returns how many games it went to.</summary>
+        internal static int SendFight(int account, int points) {
+            if (!Main.IsServer) { MelonLogger.Warning("[Earth] Net: a Fight can only be sent by the server"); return 0; }
+            byte b = points < 0 ? Wire.NoPoints : (byte)Math.Min(points, 250);
+            int n = ToEveryGame((cc, s) => { Write(s, Wire.Kind.Fight); Fight(s, ref account, ref b); });
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Fight {account} {(b == Wire.NoPoints ? "none" : b.ToString())} to {n} game(s)");
+            return n;
+        }
+
+        /// <summary>Server: tells every game the ring (<paramref name="has"/> false, or a ring that is not valid: none, its
+        /// numbers sent as zero). Returns how many games it went to.</summary>
+        internal static int SendRing(bool has, in FightRing ring) {
+            if (!Main.IsServer) { MelonLogger.Warning("[Earth] Net: a Ring can only be sent by the server"); return 0; }
+            has = has && ring.Valid;
+            Vector3 centre = has ? new Vector3(ring.Centre.X, ring.Centre.Y, ring.Centre.Z) : Vector3.zero;
+            float radius = has ? ring.Radius : 0f, arena = has ? ring.ArenaRadius : 0f;
+            bool drawn = has && ring.Drawn;
+            int n = ToEveryGame((cc, s) => { Write(s, Wire.Kind.Ring); Ring(s, ref has, ref centre, ref radius, ref arena, ref drawn); });
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Ring {(has ? $"at {centre}, {radius:0.##} m, arena {arena:0.##} m{(drawn ? ", drawn" : "")}" : "none")} to {n} game(s)");
+            return n;
+        }
+
+        // Every player's game with a live connection.
+        static int ToEveryGame(SerializeConnectionMethod body) {
+            int n = 0;
+            foreach (IPlayer ip in Player.AllPlayers) {
+                if (!(ip is Player p) || p == null) continue;
+                Connection c = p.ConnectionToRemotePlayer;
+                if (c == null || c.IsDisposed) continue;
+                if (c.Send(null, Message, body)) n++;
+            }
+            return n;
+        }
+
         static Connection? ToServer(string what) {
             if (Main.IsServer) { MelonLogger.Warning($"[Earth] Net: {what} can only be sent by a game"); return null; }
             Connection? c = server;
@@ -178,6 +237,10 @@ namespace Earthbending {
             if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: {what} not sent: not connected to a server");
             return null;
         }
+
+        /// <summary>Game: whether this game listens to a server now (it joined one and that connection is not closed). What
+        /// the server said of a fight is forgotten when it is not (FightLook.cs).</summary>
+        internal static bool Connected => server != null && !server.IsDisposed;
 
         // ---------------------------------------------------------------- receiving
 
@@ -255,6 +318,29 @@ namespace Earthbending {
                         Raise(AppliedReceived, entity, evt, at);
                         return;
                     }
+                    case Wire.Kind.Fight when !onServer: {
+                        if (!Enough(connection, "Fight", left, FightBits)) return;
+                        int account = 0;
+                        byte points = 0;
+                        Fight(s, ref account, ref points);
+                        int pts = points == Wire.NoPoints ? -1 : Math.Min((int)points, 250);
+                        if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Fight {account} {(pts < 0 ? "none" : pts.ToString())}");
+                        Raise(FightReceived, account, pts);
+                        return;
+                    }
+                    case Wire.Kind.Ring when !onServer: {
+                        if (!Enough(connection, "Ring", left, RingBits)) return;
+                        bool has = false, drawn = false;
+                        Vector3 centre = default;
+                        float radius = 0f, arena = 0f;
+                        Ring(s, ref has, ref centre, ref radius, ref arena, ref drawn);
+                        // a ring that is not one (a number that is not finite, a radius of 0) is no ring
+                        if (has && !new FightRing(new V3(centre.x, centre.y, centre.z), radius, arena, drawn).Valid) has = false;
+                        if (!has) { centre = Vector3.zero; radius = 0f; arena = 0f; drawn = false; }
+                        if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Ring {(has ? $"at {centre}, {radius:0.##} m, arena {arena:0.##} m{(drawn ? ", drawn" : "")}" : "none")}");
+                        Raise(RingReceived, has, centre, radius, arena, drawn);
+                        return;
+                    }
                     default:
                         Drop(connection, $"kind {kind}, which the {(onServer ? "server" : "game")} does not take");
                         return;
@@ -299,6 +385,14 @@ namespace Earthbending {
             foreach (Delegate d in ev.GetInvocationList()) {
                 try { ((Action<A, B>)d)(a, b); }
                 catch (Exception e) { Failed(d, e); }
+            }
+        }
+
+        static void Raise<A, B, C, D, E>(Action<A, B, C, D, E>? ev, A a, B b, C c, D d, E e) {
+            if (ev == null) return;
+            foreach (Delegate x in ev.GetInvocationList()) {
+                try { ((Action<A, B, C, D, E>)x)(a, b, c, d, e); }
+                catch (Exception ex) { Failed(x, ex); }
             }
         }
 

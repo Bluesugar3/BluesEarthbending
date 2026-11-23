@@ -283,6 +283,7 @@ namespace Earthbending {
             PlayerController pc = p.PlayerController;
             Transform? headT = pc != null ? pc.Head : null;
             if (p.UserInfo == null || headT == null) { Refused(p, c, SummonRefusal.NoPlayer, null, ""); return; }
+            if (FightServer.OutOnRing(p)) { if (Logs.Debug) MelonLogger.Msg($"[Earth] Summon: refused {c.Kind} for {NameOf(p)}: KnockedOut (out of the fight and still on the ring)"); return; }
             ulong account = AccountOf(p);
             V3 serverHead = V(headT.position);
 
@@ -382,6 +383,7 @@ namespace Earthbending {
             PlayerController pc = p.PlayerController;
             Transform? headT = pc != null ? pc.Head : null;
             if (p.UserInfo == null || headT == null) { RefusedModify(p, c, ModifyRefusal.OutOfReach, null, null, 0f); return; }
+            if (FightServer.OutOnRing(p)) { if (Logs.Debug) MelonLogger.Msg($"[Earth] Modify: refused {c.Mod} on #{c.Target} for {NameOf(p)}: KnockedOut (out of the fight and still on the ring)"); return; }
             ulong account = AccountOf(p);
             V3 serverHead = V(headT.position);
             float feetY = pc!.RealFeetPosition.y;

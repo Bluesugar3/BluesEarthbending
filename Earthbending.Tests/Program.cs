@@ -23,6 +23,7 @@ internal static class Program {
         StoneTests.Run();
         PoseTests.Run();
         MotionTests.Run();
+        FightTests.Run();
 
         Console.WriteLine(failed == 0 ? $"ALL PASS ({total})" : $"FAILED {failed} of {total}");
         return failed;

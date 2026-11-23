@@ -120,9 +120,22 @@ Pushes are in N s: the speed is the push over the mass (2875 on a 275 kg Pillar 
 
 - **Jump:** 6 m/s up (about 2.2 m). **Dash:** 8 m/s the way you look, with 0.5 m/s up. Both on your own game, with a dust puff.
 - **Power** = the stone's own, +1 still or sliding on the ground (not rising or stomped), +1 moving faster than 3 m/s.
-- **Hits:** a stone moving at 2 m/s or more itself hits creatures, and players it is closing on: 8 damage and 0.5 cripple per point of power, then it breaks. 8 and 0.5 are untuned guesses. A rising stone never hits. Your own stones can hit you, but not one you hold or flick.
+- **Hits:** a stone moving at 2 m/s or more itself hits creatures, and players it is closing on, then it breaks. A creature takes 8 damage and 0.5 cripple per point of power (untuned guesses). A player off every ring takes power / 20 of their maximum health as it is now (RUMBLE's 20 health: a sliding Wall, power 5, takes a quarter) and 0.5 cripple per power; on a ring, fight health instead (below). A rising stone never hits. Your own stones can hit you, but not one you hold or flick.
 - **Knockback:** a struck player is pushed 4 m/s along the stone's way (level, or 45° up) and cannot bend for power x 0.7 / 3 s (never after a Disc).
 - **Clashes:** more power breaks less; equal, both break. Both first freeze and shake for 0.06 + 0.02 x (both powers) s, then the winner carries on at its old speed.
+
+## Fight health
+
+A duel with stakes and no death. On a ring:
+
+- Stepping onto the ring gives you **20 points** of fight health. A stone that hits you takes its power off them (Disc 0, Ball 1, Pillar 1, Cube 2, Wall 3, +1 still or sliding on the ground, +1 moving fast: a sliding Wall is 5) and never touches your real health. The knockback and the stun are as anywhere. Nothing gives points back while you stay on the ring.
+- **The hit that takes you to 0 flings you out**: along the stone's way, 45 degrees up, fast enough to land 3 m past the ring's edge (8 to 16 m/s), with 1.5 s of no bending, and a shockwave and a boom at you on every game. The fling starts from rest (whatever you were doing), and it never really hurts you: not even the fall when you land. If you still come down on the ring you cannot bend there; after 5 s on it you are back in with 20 points.
+- **A fight ends when anyone leaves the ring** (flung, fallen, pushed or walked off, after 0.3 s off it): everyone still on it goes back to 20. Whoever left has none until they step back on, which gives them 20 again. Leaving the server, dying or being downed counts as leaving.
+- **Watchers are safe:** stones ignore anyone in the arena round the ring (the rim, the pit), and anyone on the ring with no points (the one just flung, still over it): no damage, no knockback, the stone does not break on them. Blasts leave them alone too.
+- **Off every ring** a stone takes power / 20 of your real health, and can really kill.
+- **What you see:** each fighter's points as a row of small stones over their head, one per point, in groups of five, turned toward you. From far off the row grows, so it still reads from the rim, and is then two lines of ten; every second fighter's row hangs higher, so two rows never run together. At most 40 stones are drawn for a fighter. Your own: the same count in rows of five on your forearm (the left, or `FightBandHand`), on the side facing your eyes; it hides while it is closer than 0.2 m to your eyes, and `FightBand = false` removes it alone. A lost point's stone is gone; a refill brings them all back. A test ring is drawn on the ground as a dotted circle; the arena's own ring is not.
+
+A **ring** is a centre on the floor, the ring's radius (the fighting floor: up to 1 m under it and 8 m over it, so a Jump is still on the ring) and the arena's radius round it (6 m under the floor to 25 m over). There is at most one. It comes from the arena mod (`Arena.SetRing`), else the console (`earth ring`), else `[EarthFight] Ring`. A ring set, moved or removed ends every fight at once.
 
 ## Install
 
@@ -204,7 +217,8 @@ Everything is in `UserData\Earthbending.cfg`, written in full at the first start
 | Key | Default | What |
 |---|---|---|
 | `HurtPlayers` | true | Stones and blasts hit players. Off: players are ignored (no damage, no knockback, no break). |
-| `DamagePerPower` | 8 | Damage per point of power (Blunt). |
+| `DamagePerPower` | 8 | Damage per point of power to a creature (Blunt). |
+| `PlayerHealthPoints` | 20 | Off every ring, a stone takes power / this of a player's maximum health. 0: never. |
 | `CripplePerPower` | 0.5 | Cripple per point of power. |
 | `MinHitSpeed` | 2 | A stone hits only while moving this fast itself, and two stones clash only meeting this fast, m/s. |
 | `MovingSpeed` | 3 | Faster than this, +1 power, m/s. |
@@ -213,6 +227,21 @@ Everything is in `UserData\Earthbending.cfg`, written in full at the first start
 | `HitCooldownSeconds` | 0.5 | One stone hits one target at most once this often. |
 | `HitstopSeconds` | 0.06 | Two clashing stones freeze this long ... |
 | `HitstopPerPower` | 0.02 | ... plus this for each point of their power together. |
+
+### [EarthFight] (server)
+
+| Key | Default | What |
+|---|---|---|
+| `Enabled` | true | Fight health on a ring. Off: no ring; every hit takes real health (`PlayerHealthPoints`). |
+| `Points` | 20 | Fight health on stepping onto the ring, 1 to 250. A change ends every fight. |
+| `Ring` | (empty) | A test ring: `x, y, z, ring radius, arena radius` (y the floor), e.g. `-697, 128.2, 87, 10, 16`. Drawn on the games. |
+| `FlingClearMetres` | 3 | The finishing hit lands its player this far past the ring's edge ... |
+| `FlingMinSpeed` | 8 | ... flung at least this fast, m/s ... |
+| `FlingMaxSpeed` | 16 | ... and at most this fast, m/s. |
+| `FlingHitstunSeconds` | 1.5 | No bending this long after the finishing hit. |
+| `OutSeconds` | 5 | A knocked-out player still on the ring cannot bend; after this long there they are back in with full points. |
+
+At the game's gravity (-8) a 16 m/s fling clears a ring up to 14.5 m in radius from its far side; the server warns (start-up, `earth ring`) about a wider one.
 
 ### [EarthPose] (each game)
 
@@ -276,6 +305,18 @@ Effects and sounds are the game's own, by name; several names split by `;` are t
 | `GuideRightColour`, `GuideLeftColour` | `#FF8A1E`, `#3FA9FF` | The right (orange) and left (blue) markers. |
 | `GuideBackColour` | `#000000B0` | The plate behind the card's text (empty: none). |
 | `GuideFollowSeconds` | 0.3 | How slowly the card follows your head. |
+| `FightStones` | true | Fight health as small stones (off: none; a drawn ring and the knock-out's blast stay). |
+| `FightPipSize` | 0.035 | One stone of a row over a head, m. |
+| `FightPipGap`, `FightGroupGap` | 0.012, 0.03 | The space between two stones, and the extra space between two groups of five, m. |
+| `FightRowHeight` | 0.35 | A row floats this far over its fighter's head, m. Every second fighter's (by account) hangs a row's lines higher. |
+| `FightRowFarMetres`, `FightRowFarScale` | 6, 2.5 | Further away than the first, a row grows with the distance, at most the second times its size (0 or 1: never). Grown past 1.5 times it is two lines of ten. |
+| `FightBand` | true | Your own stones on your forearm (off: none there; the rows over other heads stay). |
+| `FightBandHand` | `left` | The forearm that carries them: `left` or `right`. |
+| `FightBandPipSize` | 0.018 | One stone on your own forearm, m. |
+| `FightBandRadius` | 0.055 | Your own stones sit this far from the forearm's middle line, m. |
+| `FightBandUp` | 0.12 | ... starting this far from the hand toward the elbow, m (0.04 m above the wrist). |
+| `FightBandHideMetres` | 0.2 | They hide while nearer your eyes than this, and are back a quarter further out (0: never). |
+| `FightRingWidth`, `FightRingColour` | 0.04, `#EDE6D2C0` | A drawn test ring's dashes. |
 
 ### [EarthLog] (each machine)
 
@@ -292,7 +333,12 @@ earth spawn <disc|ball|pillar|cube|wall> <player>   a loose stone on the ground,
 earth push <player> <up m/s>                        throws that player straight up (no stun)
 earth list                                          every stone, its number and place
 earth clear                                         breaks every stone (a marked one does not blast)
+earth ring <player> [radius]                        a test ring round where that player stands (10 m; the arena 6 m wider), drawn; the floor is their feet, so on a slope anyone over 1 m under it is in the arena, not on the ring
+earth ring off                                      removes the console's test ring
+earth ring                                          where the ring is, and who fights on it with how many points
 ```
+
+The console's ring is never saved, and the arena mod's ring wins over it.
 
 ## For modders
 
@@ -305,10 +351,13 @@ The mod's only network message. The first byte is the kind, the second the wire 
 | 1 Summon | a game | the server | stone (byte: 0 Disc, 1 Ball, 2 Pillar, 3 Cube, 4 Wall), head position (3 floats), yaw in degrees (float) |
 | 2 Modify | a game | the server | modifier (byte: 0 Straight, 1 Kick, 2 Stomp, 3 Uppercut, 4 Parry, 5 Hold, 6 Flick, 7 Explode), holding hand (byte: 0 right, 1 left; the pose's A), target entity `Identifier` (uint), head position (3 floats), yaw (float) |
 | 10 Knockback | the server | one game | velocity (3 floats), stun seconds (float) |
-| 11 Applied | the server | every game whose player's head is within 80 m | entity `Identifier` (uint), event (byte: a modifier as above, or 20 Broke, 21 Hitstop, 22 Exploded), position (3 floats) |
+| 11 Applied | the server | every game whose player's head is within 80 m | entity `Identifier` (uint), event (byte: a modifier as above, or 20 Broke, 21 Hitstop, 22 Exploded, 23 KnockedOut: entity 0, at the player's head), position (3 floats) |
+| 12 Fight | the server | every game | the player's account (`UserInfo.Identifier`, 32 bits), fight health (byte: 0 to 250, 255 none). Sent when it changes, and every 5 s for every fighter |
+| 13 Ring | the server | every game | has a ring (bool), centre (3 floats, y the floor), ring radius (float), arena radius (float), drawn (bool). Sent when it changes, and every 5 s |
 
 - The game judges the pose and sends a claim, only when the server runs the mod. The server never judges poses; it checks the claim. A Summon: the stone on, its cooldown, the claimed head within `HeadSlackMetres` of the server's copy, natural ground at the spot. A Modify: its cooldown, a stone that still exists, in reach of the server's copy of the head and feet (plus `RangeSlackMetres`), allowed in the stone's state. Bytes out of range and numbers that are not finite are refused.
-- Applied events sent today: 2 Stomp (a stomped stone landed), 7 Explode (a stone was marked), 20, 21 and 22.
+- Applied events sent today: 2 Stomp (a stomped stone landed), 7 Explode (a stone was marked), 20, 21, 22 and 23.
+- The ring: `Earthbending.Arena.SetRing(Vector3 centre, float ringRadius, float arenaRadius)` and `Arena.ClearRing()`, on the dedicated server (ignored on a game). Not saved: set it after every server start.
 - Hooks: the server listens from a postfix on `ServerHandler.ConnectionCreated`, a game from one on `JoinServerPipeline.ConnectionApprovedByServer`. Message numbers already taken by mods: 18 SyncLib, 19 this mod, 27 Blue's Archery Overhaul, 32 TavernLib, 137 ArmorRestored.
 - SyncLib prefab ids: `EarthDisc`, `EarthBall`, `EarthPillar`, `EarthCube`, `EarthWall`, under the mod's name and author. Never rename any of them after a server has used them.
 

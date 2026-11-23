@@ -8,5 +8,6 @@
     <Compile Include="..\Earthbending\StoneBox.cs" />
     <Compile Include="..\Earthbending\Poses.cs" />
     <Compile Include="..\Earthbending\Motion.cs" />
+    <Compile Include="..\Earthbending\Fight.cs" />
   </ItemGroup>
 </Project>
