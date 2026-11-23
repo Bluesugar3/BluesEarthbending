@@ -102,7 +102,7 @@ namespace Earthbending {
                     NetworkEntity e = v.GetComponent<NetworkEntity>();
                     if (e == null || e.IsBeingDestroyed) continue;
                     StoneBody b = v.GetComponent<StoneBody>();
-                    if (b != null) b.Break("cleared from the console");   // the games play its break
+                    if (b != null) b.Break("cleared from the console", explode: false);   // the games play its break; a marked one does not blast (ruling C12)
                     else e.SceneDestroy();
                     n++;
                 }

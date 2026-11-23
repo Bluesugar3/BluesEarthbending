@@ -8,8 +8,9 @@ using UnityEngine;
 namespace Earthbending {
     // Games only: pushing the local player (Jump, Dash, Straight's pushback, and the server's knockback through message 19), the
     // hitstun that follows a knockback (spec 3.1 "Push the local player", 3.6, 3.7) and the movement moves' dust (Dust).
-    // [EarthMovement] PushEndSpeed, PushMaxSeconds, MaxPushSpeed and Straight's PushbackGrounded, PushbackFree and PushbackLift
-    // (Pushback), [EarthLooks] DustEffect, per game. "Grounded" is the game's own flag, LocomotionController.IsGrounded (Grounded).
+    // [EarthMovement] PushEndSpeed, PushMaxSeconds, MaxPushSpeed, Straight's PushbackGrounded, PushbackFree and PushbackLift
+    // (Pushback) and Dash's DashSpeed and DashLift (Dash, Task 15), [EarthLooks] DustEffect, per game. "Grounded" is the game's
+    // own flag, LocomotionController.IsGrounded (Grounded).
     //
     // Public, with ZeroBelow: the game's own SmoothLocomotion.ApplyGravityAndMovement calls ZeroBelow once transpiled, and a
     // call into a type the game's assembly may not see could fail in the JIT, which would stop every player's walking.
@@ -41,14 +42,17 @@ namespace Earthbending {
         const float MaxRiseSeconds = 3f;
         const float DefaultPushEndSpeed = 0.3f, DefaultPushMaxSeconds = 1.5f, DefaultMaxPushSpeed = 20f;
         const float DefaultPushbackGrounded = 2.5f, DefaultPushbackFree = 1.7f, DefaultPushbackLift = 0.25f;
+        const float DefaultDashSpeed = MoveRules.DefaultDashSpeed, DefaultDashLift = MoveRules.DefaultDashLift;
         const string DefaultDustEffect = "GroundPuffSmall";
         /// <summary>A dust effect that is not loaded is looked for again after this long (each search walks every loaded asset).</summary>
         const float DustRetrySeconds = 10f;
 
         static MelonPreferences_Entry<float>? pushEndSpeed, pushMaxSeconds, maxPushSpeed, pushbackGroundedEntry, pushbackFreeEntry, pushbackLiftEntry;
+        static MelonPreferences_Entry<float>? dashSpeedEntry, dashLiftEntry;
         static MelonPreferences_Entry<string>? dustEffect;
         static float endSpeed = DefaultPushEndSpeed, maxSeconds = DefaultPushMaxSeconds, maxSpeed = DefaultMaxPushSpeed;
         static float pushbackGrounded = DefaultPushbackGrounded, pushbackFree = DefaultPushbackFree, pushbackLift = DefaultPushbackLift;
+        static float dashSpeed = DefaultDashSpeed, dashLift = DefaultDashLift;
 
         static PooledObjectDefinition? dust;   // the effect found for dustFor
         static string dustFor = "";
@@ -72,6 +76,8 @@ namespace Earthbending {
             pushbackGroundedEntry = cat.CreateEntry("PushbackGrounded", DefaultPushbackGrounded, description: "Per game. A Straight at a stone anchored to the ground (standing still, or rising) pushes you back this many m/s, away from where you look (half in the air). 0 or more.");
             pushbackFreeEntry = cat.CreateEntry("PushbackFree", DefaultPushbackFree, description: "Per game. A Straight at a stone that is not anchored (loose, or already sliding) pushes you back this many m/s (half in the air). 0 or more.");
             pushbackLiftEntry = cat.CreateEntry("PushbackLift", DefaultPushbackLift, description: "Per game. A Straight's pushback also lifts you this many m/s (half in the air); above 0.1 keeps the game from stopping the push on the ground. 0 or more.");
+            dashSpeedEntry = cat.CreateEntry("DashSpeed", DefaultDashSpeed, description: "Per game. The Dash pose shoots you this many m/s forward, the way you look (flat), with a dust puff at your feet; the game's own friction slows it. Only from the ground. 0 or more.");
+            dashLiftEntry = cat.CreateEntry("DashLift", DefaultDashLift, description: "Per game. A Dash also lifts you this many m/s; a little lift keeps the game from stopping the dash on the ground. 0 or more.");
             dustEffect = Cfg.Category("EarthLooks").CreateEntry("DustEffect", DefaultDustEffect, description: "Per game. The game's pooled effect played at the feet by a jump or a dash (its name; several names split by ; are tried in order, the first loaded one is used; empty: no dust).");
             Apply();
             Cfg.Changed += Apply;
@@ -87,6 +93,8 @@ namespace Earthbending {
             pushbackGrounded = Cfg.NotNegative(pushbackGroundedEntry, "EarthMovement", "PushbackGrounded", DefaultPushbackGrounded);
             pushbackFree = Cfg.NotNegative(pushbackFreeEntry, "EarthMovement", "PushbackFree", DefaultPushbackFree);
             pushbackLift = Cfg.NotNegative(pushbackLiftEntry, "EarthMovement", "PushbackLift", DefaultPushbackLift);
+            dashSpeed = Cfg.NotNegative(dashSpeedEntry, "EarthMovement", "DashSpeed", DefaultDashSpeed);
+            dashLift = Cfg.NotNegative(dashLiftEntry, "EarthMovement", "DashLift", DefaultDashLift);
             dustRetryAt = 0f;   // a changed name, or the same name saved again, is looked for at the next dust
         }
 
@@ -161,6 +169,17 @@ namespace Earthbending {
             bool airborne = !Grounded(PlayerController.Current);
             V3 v = MoveRules.Pushback(yawDeg, targetGrounded, airborne, pushbackGrounded, pushbackFree, pushbackLift);
             return Push(new Vector3(v.X, v.Y, v.Z));
+        }
+
+        /// <summary>Task 15 (spec 2.5, 3.6; ruling C20): Dash's push on the local player, along <paramref name="yawDeg"/> at
+        /// [EarthMovement] DashSpeed m/s and DashLift up (MoveRules.Dash), added as every push (<see cref="Push"/>: held to
+        /// MaxPushSpeed, slid along the ground until it slows). The pose machine fires it only from natural ground. One Debug
+        /// line. False when no push was given (see <see cref="Push"/>).</summary>
+        internal static bool Dash(float yawDeg) {
+            V3 v = MoveRules.Dash(yawDeg, dashSpeed, dashLift);
+            bool pushed = Push(new Vector3(v.X, v.Y, v.Z));
+            if (Logs.Debug) MelonLogger.Msg($"[Earth] Moves: Dash along yaw {yawDeg:0.#}: {v} m/s ([EarthMovement] DashSpeed {dashSpeed:0.##}, DashLift {dashLift:0.##}){(pushed ? "" : ", no push given")}");
+            return pushed;
         }
 
         /// <summary>[EarthLooks] DustEffect, the game's pooled effect, at <paramref name="at"/> (a jump's or a dash's feet).

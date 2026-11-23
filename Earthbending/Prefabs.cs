@@ -32,7 +32,7 @@ namespace Earthbending {
             for (int i = 0; i < StoneTable.Count; i++) {
                 var k = (StoneKind)i;
                 StoneStats d = StoneTable.Default(k);
-                power[i] = cat.CreateEntry(k + "Power", d.Power, description: $"Server. The {k}'s power for hits and clashes (spec 3.4; grounded and moving add to it).");
+                power[i] = cat.CreateEntry(k + "Power", d.Power, description: $"Server. The {k}'s power for hits and clashes (spec 3.4; still or sliding on the ground, and moving, each add 1).");
                 mass[i] = cat.CreateEntry(k + "Mass", d.Mass, description: $"Server. The {k}'s mass in kg.");
             }
             Apply();

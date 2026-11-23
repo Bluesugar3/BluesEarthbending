@@ -9,7 +9,17 @@ using System.Globalization;
 // cooldowns (Ledger), its check of a Summon claim (SummonCheck), where a stone rises (SpawnPlan), when it breaks (StoneLife),
 // how many may stand (Caps) and which kinds are on (StoneKinds); Server.cs and StoneBody.cs run them. Task 8: a stone's power,
 // clashes, damage, knockback and hitstun (StoneRules), the players' capsule against a stone (Contact) and who was hit by what
-// (HitLedger); Hits.cs runs them.
+// (HitLedger); Hits.cs runs them. Task 9: the Disc's and the Ball's launch (SpawnPlan.Launch) and what a stone standing where
+// another is summoned does (StoneRules.SummonUnder). Task 11: Kick, Stomp and Uppercut (StoneRules.After, CanApply, Impulse,
+// Push, Landed), every modifier's capped push (StoneRules.Pushed) and the state a stone is in once risen (StoneRules.Risen).
+// Task 12: Parry and Explode in After and CanApply, when a parried stone falls again (StoneRules.ParryEnds), how much of an
+// explosion reaches what (ExplodeShare), the way it knocks a player (BlastDir) and the double Straight (DoubleStraight);
+// StoneBody.cs and Hits.Explode run them. Task 13: Hold in After and CanApply, when a held stone is let go (StoneRules.HoldLetGo,
+// HoldAgain) and the hold's pull (Pd: the gains by weight, the PD force, the target ahead of the hand); StoneHold.cs runs them.
+// Task 14: Flick in After and CanApply, and the flick's pull and turn (Pd: FlickGains, the PID force, the target between the
+// hands, the turn from the hands, the turn still to go and its torque); StoneFlick.cs runs them. Task 15: how long two
+// clashing stones freeze (StoneRules.HitstopSeconds), that a frozen one is broken by no contact (StoneRules.Breakable), and
+// Dash's push (MoveRules.Dash); StoneFreeze.cs, Hits.cs and Moves.cs run them.
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
@@ -125,7 +135,8 @@ namespace Earthbending {
 
     // ==================================================================== Task 6: summoning
 
-    /// <summary>What a stone is doing (spec 2.3). Rising, Still, Sliding and Stomped are grounded (+1 power, spec 3.4).</summary>
+    /// <summary>What a stone is doing (spec 2.3). Rising, Still, Sliding and Stomped are grounded; Still and Sliding add 1 to
+    /// its power (spec 3.4, ruling C35).</summary>
     internal enum StoneState : byte { Rising, Still, Sliding, Free, Stomped, Floating, Held, Flicked }
 
     internal static class StoneRules {
@@ -136,20 +147,90 @@ namespace Earthbending {
         /// Still is anchored); every other state is moved by physics.</summary>
         public static bool Kinematic(StoneState s) => s == StoneState.Rising || s == StoneState.Still;
 
+        /// <summary>Ruling C4: what a stone standing where another is summoned does. Still, Sliding and Stomped are lifted off:
+        /// Free, thrown up at <see cref="SpawnPlan.SummonUnderLift"/> m/s (a velocity change; 0 sets it loose without a throw).
+        /// Every other state stays, lift 0: a loose stone is pushed aside by physics, and a Rising one is half in the ground.</summary>
+        public static (StoneState state, float lift) SummonUnder(StoneState s) =>
+            s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped ? (StoneState.Free, SpawnPlan.SummonUnderLift) : (s, 0f);
+
         // ---------------------------------------------------------------- Task 7: the modifiers' states
 
-        /// <summary>The state a modifier leaves a stone in. Straight (spec 2.3, 3.5): an anchored stone (Still, or Rising once it
-        /// has risen: StoneBody holds the push until then) slides;
-        /// every other state stays (Free flies, Sliding slides on, Flicked stays in the hands). A modifier this build does not
-        /// apply leaves the state as it is.</summary>
+        /// <summary>The state a modifier leaves a stone in (spec 2.3, 3.5). A Rising stone counts as the Still one it becomes:
+        /// StoneBody holds every modifier taken while it rises until the rise ends (ruling C6), then applies it as if it had
+        /// just arrived (a Ball, loose once up, is Free by then). Straight: a Still stone slides; every other state stays (Free
+        /// flies, Sliding slides on, Stomped falls on, Floating floats on with the push, whose speed then ends the float, Held
+        /// stays held, Flicked stays in the hands). Kick and Uppercut: a grounded stone (Still, Sliding, Stomped), a Floating
+        /// and a Held one are set loose, Free; Free stays Free; a Flicked one is pushed and stays in the hands. Stomp: a Free,
+        /// Floating, Held or Flicked stone is Stomped (a flicked one drops: spec 2.4, "dropped only by Stomp or breaking"); a
+        /// grounded one stays as it is. Parry (Task 12): Free, Still, Sliding, Stomped, Floating (its time starts over) and
+        /// Held float, Floating; Flicked stays (refused: <see cref="CanApply"/>). Hold (Task 13, ruling C14): a grounded Still
+        /// or Sliding stone slides, held (Sliding); a Free, Floating or Held one is Held; Stomped and Flicked stay (Hold is
+        /// refused there). A held stone whose state a modifier changes is let go (StoneHold.cs): Straight and Explode keep it
+        /// held. Flick (Task 14, ruling C15): a loose stone (Free, Floating, Held, Flicked) is Flicked (a hold or a float
+        /// ends; a flicked one goes to the newest flicker); a grounded one (Rising, Still, Sliding, Stomped) stays (refused).
+        /// Explode only marks the stone (StoneBody.Exploding): every state stays; so does it for a modifier this build does
+        /// not apply.</summary>
         public static StoneState After(StoneState s, Modifier m) {
-            if (m == Modifier.Straight) return s == StoneState.Rising || s == StoneState.Still ? StoneState.Sliding : s;
-            return s;
+            if (m == Modifier.Hold) return HoldOn(s == StoneState.Rising ? StoneState.Still : s);
+            if (m == Modifier.Flick) return CanFlick(s) ? StoneState.Flicked : s;
+            if (m > Modifier.Parry) return s;
+            if (s == StoneState.Rising) s = StoneState.Still;
+            bool loose = s == StoneState.Free || s == StoneState.Floating || s == StoneState.Held;
+            bool anchored = s == StoneState.Still || s == StoneState.Sliding || s == StoneState.Stomped;
+            switch (m) {
+                case Modifier.Straight:
+                    return s == StoneState.Still ? StoneState.Sliding : s;
+                case Modifier.Kick:
+                case Modifier.Uppercut:
+                    return anchored || loose ? StoneState.Free : s;   // Flicked: pushed, it stays in the hands
+                case Modifier.Stomp:
+                    return loose || s == StoneState.Flicked ? StoneState.Stomped : s;
+                default:   // Parry
+                    return anchored || loose ? StoneState.Floating : s;
+            }
         }
 
-        /// <summary>Whether a modifier may be applied to a stone in this state. This build applies Straight only, to a stone in
-        /// any state; every other modifier is refused (later tasks add theirs).</summary>
-        public static bool CanApply(StoneState s, Modifier m) => m == Modifier.Straight;
+        // ruling C14: Still and Sliding slide held; the loose states (Free, Floating, Held) are Held; Stomped and Flicked stay
+        static StoneState HoldOn(StoneState s) {
+            switch (s) {
+                case StoneState.Still:
+                case StoneState.Sliding:
+                    return StoneState.Sliding;
+                case StoneState.Free:
+                case StoneState.Floating:
+                case StoneState.Held:
+                    return StoneState.Held;
+                default:   // Stomped, Flicked: refused (CanApply)
+                    return s;
+            }
+        }
+
+        /// <summary>Whether a modifier may be applied to a stone in this state. Straight, Kick, Stomp, Uppercut and Explode
+        /// apply in any state; Parry in any but Flicked (ruling C15: a flicked stone is dropped only by Stomp or a break);
+        /// Hold (Task 13, ruling C14) in every state but Stomped (it lands first) and Flicked; Flick (Task 14, ruling C15, spec
+        /// 3.5: "grounded cannot be flicked") only on a stone that is not grounded: Free, Floating, Held, Flicked. A Rising
+        /// stone takes a modifier once it has risen (ruling C6). A byte that is not a modifier never applies.</summary>
+        public static bool CanApply(StoneState s, Modifier m) {
+            switch (m) {
+                case Modifier.Straight:
+                case Modifier.Kick:
+                case Modifier.Stomp:
+                case Modifier.Uppercut:
+                case Modifier.Explode:
+                    return true;
+                case Modifier.Parry:
+                    return s != StoneState.Flicked;
+                case Modifier.Hold:
+                    return s != StoneState.Stomped && s != StoneState.Flicked;
+                case Modifier.Flick:
+                    return CanFlick(s);
+                default:
+                    return false;
+            }
+        }
+
+        // ruling C15: only a stone that is not grounded is flicked (Free, Floating, Held, Flicked)
+        static bool CanFlick(StoneState s) => !IsGrounded(s);
 
         /// <summary>Spec 2.3: a sliding stone is anchored again (Still) once its flat speed is under this while it touches
         /// ground, in m/s.</summary>
@@ -199,12 +280,14 @@ namespace Earthbending {
         static readonly float Tan22 = (float)Math.Tan(22.5 * Math.PI / 180.0);   // half way between flat and 45 degrees up
         static readonly float Diagonal = (float)Math.Sqrt(0.5);
 
-        /// <summary>Spec 3.4: a stone's power for hits and clashes, its kind's (StoneTable, from the settings) + 1 when grounded
-        /// (<see cref="IsGrounded"/>) + 1 when moving faster than <paramref name="movingSpeed"/> m/s (a speed that is not a
-        /// number is not moving). 0 for a byte that is not a kind (grounded and moving still add).</summary>
+        /// <summary>Spec 3.4: a stone's power for hits and clashes, its kind's (StoneTable, from the settings) + 1 when grounded,
+        /// which for power is Still or Sliding only (ruling C35: "+ 1 if grounded (still or sliding)"; a Rising or Stomped
+        /// stone, grounded for <see cref="IsGrounded"/>, adds nothing here) + 1 when moving faster than
+        /// <paramref name="movingSpeed"/> m/s (a speed that is not a number is not moving). 0 for a byte that is not a kind
+        /// (still or sliding and moving still add).</summary>
         public static int Power(StoneKind k, StoneState s, float speed, float movingSpeed) {
             int p = StoneTable.Of(k).Power;
-            if (IsGrounded(s)) p++;
+            if (s == StoneState.Still || s == StoneState.Sliding) p++;
             if (speed > movingSpeed) p++;
             return p;
         }
@@ -283,6 +366,404 @@ namespace Earthbending {
         static float Flat(V3 v) => (float)Math.Sqrt(v.X * v.X + v.Z * v.Z);
 
         static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
+
+        // ---------------------------------------------------------------- Task 11: Kick, Stomp, Uppercut, and every push
+
+        public const float DefaultKickUp = 1500f, DefaultStompDown = 1500f, DefaultUppercutFree = 900f, DefaultUppercutGrounded = 1300f, DefaultUppercutSpin = 5f;
+        /// <summary>Ruling C10: <c>[EarthModifiers] MaxStoneSpeed</c>'s default, and the cap <see cref="Pushed"/> holds to when
+        /// it is given one that is not above 0 or not a number, in m/s.</summary>
+        public const float DefaultMaxStoneSpeed = 20f;
+
+        /// <summary>[EarthModifiers] KickUp: Kick's push straight up, in N s.</summary>
+        public static float KickUp { get; private set; } = DefaultKickUp;
+        /// <summary>[EarthModifiers] StompDown: Stomp's push straight down on a loose stone, in N s.</summary>
+        public static float StompDown { get; private set; } = DefaultStompDown;
+        /// <summary>[EarthModifiers] UppercutFree: Uppercut's push on a loose stone, as much forward along the yaw as up, in N s.</summary>
+        public static float UppercutFree { get; private set; } = DefaultUppercutFree;
+        /// <summary>[EarthModifiers] UppercutGrounded: Uppercut's push on a grounded stone, as much forward as up, in N s.</summary>
+        public static float UppercutGrounded { get; private set; } = DefaultUppercutGrounded;
+        /// <summary>[EarthModifiers] UppercutSpin: Uppercut's spin on a grounded stone, in rad/s (its top goes forward).</summary>
+        public static float UppercutSpin { get; private set; } = DefaultUppercutSpin;
+
+        /// <summary>Kick's, Stomp's and Uppercut's numbers from the settings (Server.cs).</summary>
+        public static void SetImpulses(float kickUp, float stompDown, float uppercutFree, float uppercutGrounded, float uppercutSpin) {
+            KickUp = kickUp;
+            StompDown = stompDown;
+            UppercutFree = uppercutFree;
+            UppercutGrounded = uppercutGrounded;
+            UppercutSpin = uppercutSpin;
+        }
+
+        /// <summary>Ruling C5 (spec 3.5): a modifier's push on a stone that is <paramref name="grounded"/> (<see cref="IsGrounded"/>)
+        /// or not. <c>forward</c> is along the claimed flat yaw and <c>up</c> straight up (negative: down), both in N s;
+        /// <c>spin</c> is in rad/s about the yaw's flat right axis, positive when the stone's top goes forward. Kick:
+        /// <see cref="KickUp"/> up either way. Uppercut: <see cref="UppercutFree"/> forward and as much up on a loose stone;
+        /// <see cref="UppercutGrounded"/> each way and <see cref="UppercutSpin"/> on a grounded one. Stomp:
+        /// <see cref="StompDown"/> down on a loose stone; none on a grounded one (it stays grounded). Every other modifier none
+        /// here (Straight's numbers are Server.StraightGrounded and StraightFree).</summary>
+        public static (float forward, float up, float spin) Impulse(Modifier m, bool grounded) {
+            switch (m) {
+                case Modifier.Kick: return (0f, KickUp, 0f);
+                case Modifier.Stomp: return grounded ? (0f, 0f, 0f) : (0f, -StompDown, 0f);
+                case Modifier.Uppercut: return grounded ? (UppercutGrounded, UppercutGrounded, UppercutSpin) : (UppercutFree, UppercutFree, 0f);
+                default: return (0f, 0f, 0f);
+            }
+        }
+
+        /// <summary><see cref="Impulse"/> in world terms: the impulse (N s) and the angular velocity to add (rad/s), along
+        /// <paramref name="flatForward"/> (the claimed yaw's direction; made flat and length 1 here, none when it has no
+        /// direction or is not a number) and about its <see cref="Right"/>.</summary>
+        public static (V3 impulse, V3 spin) Push(Modifier m, bool grounded, V3 flatForward) {
+            (float forward, float up, float spin) i = Impulse(m, grounded);
+            V3 f = new V3(flatForward.X, 0f, flatForward.Z).Normalized;
+            return (f * i.forward + new V3(0f, i.up, 0f), Right(f) * i.spin);
+        }
+
+        /// <summary>The flat right of a flat forward of length 1 (up x forward in Unity's axes: yaw 0's right is +X, yaw 90's
+        /// is -Z). An angular velocity along it turns the stone's top forward.</summary>
+        public static V3 Right(V3 flatForward) => new V3(flatForward.Z, 0f, -flatForward.X);
+
+        /// <summary>Ruling C10: a stone's velocity after a modifier's push, for every modifier (Straight too):
+        /// <paramref name="velocity"/> + <paramref name="impulse"/> / <paramref name="mass"/>, its length held to
+        /// <paramref name="cap"/> m/s (the way kept). Safe with anything: a velocity that is not a number counts as none, an
+        /// impulse that is not a number or a mass that is not above 0 (or not finite) pushes nothing, a cap that is not above
+        /// 0 (or not finite) is <see cref="DefaultMaxStoneSpeed"/>. Worked in doubles, so it never overflows.</summary>
+        public static V3 Pushed(V3 velocity, V3 impulse, float mass, float cap) {
+            double c = cap > 0f && !float.IsInfinity(cap) ? cap : DefaultMaxStoneSpeed;
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (Finite(velocity)) { x = velocity.X; y = velocity.Y; z = velocity.Z; }
+            if (Finite(impulse) && mass > 0f && !float.IsInfinity(mass)) {
+                x += impulse.X / (double)mass;
+                y += impulse.Y / (double)mass;
+                z += impulse.Z / (double)mass;
+            }
+            double len = Math.Sqrt(x * x + y * y + z * z);
+            if (len > c) {
+                double s = c / len;
+                x *= s;
+                y *= s;
+                z *= s;
+            }
+            return new V3((float)x, (float)y, (float)z);
+        }
+
+        /// <summary>Spec 2.3 (ruling C7): a Stomped stone that touches ground stands Still; every other state is not a landing.</summary>
+        public static StoneState Landed(StoneState s) => s == StoneState.Stomped ? StoneState.Still : s;
+
+        /// <summary>Whether a stone in this state needs continuous collision detection (Unity's ContinuousDynamic): only
+        /// Stomped, which is driven down at up to MaxStoneSpeed (20 m/s is 0.44 m in a 22 ms step, against a 0.14 m Disc) and
+        /// would otherwise end a step wholly under thin ground and never land. Every other state keeps Unity's Discrete; a
+        /// kinematic state never needs it (a kinematic body cannot be ContinuousDynamic).</summary>
+        public static bool Continuous(StoneState s) => s == StoneState.Stomped;
+
+        /// <summary>Ruling C1 (and Task 9's CARRY): the state a stone is in once its rise ends, by its kind alone: the Ball is
+        /// loose (Free; launched when its launch has a push, SpawnPlan.Launch), and so is the Disc (it never rises: it appears
+        /// loose); the Pillar, Cube and Wall stand Still.</summary>
+        public static StoneState Risen(StoneKind k) => k == StoneKind.Ball || k == StoneKind.Disc ? StoneState.Free : StoneState.Still;
+
+        // ---------------------------------------------------------------- Task 12: Parry, Explode, the double Straight
+
+        /// <summary>[EarthModifiers] ParrySeconds' and ParryBreakSpeed's defaults (spec 2.3: a parried stone floats 3 s, or
+        /// until it moves faster than 0.1 m/s).</summary>
+        public const float DefaultParrySeconds = 3f, DefaultParryBreakSpeed = 0.1f;
+        /// <summary>[EarthModifiers] ExplodeRadius' (m) and ExplodeForce's (N s) defaults (spec 3.5).</summary>
+        public const float DefaultExplodeRadius = 3f, DefaultExplodeForce = 1000f;
+        /// <summary>Ruling C26 (spec 3.5): [EarthModifiers] DoubleStraightSeconds' default. One player can never land two
+        /// Straights on one stone in any window (the game's own 0.5 s Straight cooldown, and the slide carries the stone out of
+        /// reach), so a double Straight is a two-player move: a Straight answered by another player's within this time.</summary>
+        public const float DefaultDoubleStraightSeconds = 0.4f;
+        /// <summary>Ruling C12 (spec 3.7): an explosion staggers each living creature in it with this much cripple and no damage.</summary>
+        public const float ExplodeCripple = 1f;
+
+        /// <summary>Spec 2.3: whether a Floating (parried) stone falls again: once it has floated longer than
+        /// <paramref name="seconds"/> ([EarthModifiers] ParrySeconds) or moves faster than <paramref name="breakSpeed"/> m/s
+        /// (ParryBreakSpeed; a Straight on it, a blast, a bump). At either number it still floats. An age or a speed that is
+        /// not a number ends it.</summary>
+        public static bool ParryEnds(float age, float speed, float seconds, float breakSpeed) => !(age <= seconds) || !(speed <= breakSpeed);
+
+        /// <summary>Ruling C12: how much of an explosion reaches something <paramref name="dist"/> metres from its centre (to
+        /// its nearest point): all of it within half the <paramref name="radius"/>, falling in a straight line to a quarter at
+        /// the radius, none beyond. A distance below 0 is at the centre; 0 for a distance that is not a number (or infinite)
+        /// and for a radius not above 0 or not finite.</summary>
+        public static float ExplodeShare(float dist, float radius) {
+            if (!(radius > 0f) || float.IsInfinity(radius) || float.IsNaN(dist) || float.IsInfinity(dist)) return 0f;
+            float half = radius * 0.5f;
+            if (dist <= half) return 1f;
+            if (dist > radius) return 0f;
+            return 1f - 0.75f * (dist - half) / (radius - half);
+        }
+
+        /// <summary>Rulings C8, C26: a Straight claim at <paramref name="now"/> on a stone whose last accepted Straight claim (by
+        /// anyone) was at <paramref name="last"/> (minus infinity: never) is a double Straight when it came at most
+        /// <paramref name="window"/> seconds later ([EarthModifiers] DoubleStraightSeconds). Never for a last or a now that is
+        /// not a finite number.</summary>
+        public static bool DoubleStraight(double last, double now, float window) =>
+            !double.IsNaN(last) && !double.IsInfinity(last) && !double.IsNaN(now) && !double.IsInfinity(now) && now - last <= window;
+
+        /// <summary>Ruling C12 (spec 2.6): the way an explosion knocks a player, from <paramref name="away"/> (the blast's
+        /// centre to the player's nearest point): <see cref="KnockDir(V3, V3)"/>, flat or 45 degrees up. A player (nearly)
+        /// straight above or below the centre, or at it, takes the flat heading of <paramref name="fallback"/> (the exploding
+        /// stone's velocity), 45 degrees up when above. With no heading from either: straight up when above (or at) the centre,
+        /// none when below it or when <paramref name="away"/> is not a number. Length 1 or zero.</summary>
+        public static V3 BlastDir(V3 away, V3 fallback) {
+            if (!Finite(away)) return V3.Zero;
+            V3 d = KnockDir(away, fallback);
+            if (d.Length > 0.5f) return d;
+            return away.Y >= 0f ? new V3(0f, 1f, 0f) : V3.Zero;
+        }
+
+        // ---------------------------------------------------------------- Task 13: Hold
+
+        /// <summary>Spec 2.4: a held stone is let go (it keeps its velocity: that is the throw) once it moves faster than
+        /// <paramref name="letGoSpeed"/> m/s ([EarthModifiers] HoldLetGoSpeed; at it, it holds on), or when it changed between
+        /// grounded and free (<paramref name="groundedChanged"/>: a held sliding stone left the ground, a Held one became
+        /// grounded). Rulings C27, C28: the speed test counts only when <paramref name="armed"/> (<see cref="HoldArmed"/>: the
+        /// stone has settled near its target since the hold began), so a stone caught flying, or pulled in from afar, is not
+        /// thrown by its own rush to the hand, and a swing then throws it; grounded changed lets go armed or not. A speed that
+        /// is not a finite number lets go, armed or not.</summary>
+        public static bool HoldLetGo(float speed, bool groundedChanged, float letGoSpeed, bool armed = true) =>
+            groundedChanged || float.IsNaN(speed) || float.IsInfinity(speed) || (armed && !(speed <= letGoSpeed));
+
+        /// <summary>Ruling C28 (refines C27): whether a hold's speed test counts from this step: it already did
+        /// (<paramref name="wasArmed"/>; false when the hold begins), or in this one step the stone is both within
+        /// <paramref name="armMetres"/> ([EarthModifiers] HoldArmMetres) of its target (<paramref name="trail"/>, Pd.Trail)
+        /// and at <paramref name="letGoSpeed"/> m/s or slower. A distance or speed that is not a number does not arm it.</summary>
+        public static bool HoldArmed(bool wasArmed, float trail, float speed, float armMetres, float letGoSpeed) =>
+            wasArmed || (trail <= armMetres && speed <= letGoSpeed);
+
+        /// <summary>A Hold by a hand on the stone that hand already holds lets it go. <paramref name="heldBy"/> is the hand
+        /// (0 right, 1 left) that holds the stone for the SAME player, -1 when that player does not hold it (not held, or held
+        /// by another player); <paramref name="hand"/> is the new Hold's hand.</summary>
+        public static bool HoldAgain(int heldBy, int hand) => heldBy >= 0 && heldBy == hand;
+
+        // ---------------------------------------------------------------- Task 15: hitstop
+
+        /// <summary>[EarthDamage] HitstopSeconds' and HitstopPerPower's defaults (spec 3.7: two stones that clash freeze for
+        /// 0.06 + 0.02 x (powerA + powerB) seconds first).</summary>
+        public const float DefaultHitstopSeconds = 0.06f, DefaultHitstopPerPower = 0.02f;
+
+        /// <summary>[EarthDamage] HitstopSeconds: every clash's freeze before the powers add to it, in seconds (0 or more).</summary>
+        public static float HitstopBase { get; private set; } = DefaultHitstopSeconds;
+        /// <summary>[EarthDamage] HitstopPerPower: the freeze's seconds per point of the two stones' power together (0 or more).</summary>
+        public static float HitstopPerPower { get; private set; } = DefaultHitstopPerPower;
+
+        /// <summary>The hitstop's numbers from the settings (Hits.cs); one below 0 or not a finite number is 0.</summary>
+        public static void SetHitstop(float seconds, float perPower) {
+            HitstopBase = NotNegative(seconds);
+            HitstopPerPower = NotNegative(perPower);
+        }
+
+        /// <summary>Spec 2.2, 3.7: how long two clashing stones of powers <paramref name="a"/> and <paramref name="b"/>
+        /// freeze, <see cref="HitstopBase"/> + <see cref="HitstopPerPower"/> x (a + b) seconds.</summary>
+        public static float HitstopSeconds(int a, int b) => HitstopSeconds(a, b, HitstopBase, HitstopPerPower);
+
+        /// <summary>As the other, with the numbers given: <paramref name="baseSeconds"/> + <paramref name="perPower"/> x (a +
+        /// b). Never negative and never a number that is not one: a power below 0 counts as 0, a base or a per-power below 0
+        /// (or not a finite number) is 0; worked in doubles and held to the range of a float. 0 means no freeze.</summary>
+        public static float HitstopSeconds(int a, int b, float baseSeconds, float perPower) {
+            double powers = (double)Math.Max(a, 0) + Math.Max(b, 0);
+            double s = NotNegative(baseSeconds) + NotNegative(perPower) * powers;
+            return s < float.MaxValue ? (float)s : float.MaxValue;
+        }
+
+        /// <summary>Ruling C19: whether a contact (a creature's, a player's capsule, another stone's clash) can break a stone:
+        /// never while it is <paramref name="frozen"/> in a hitstop (spec 2.2: frozen, unbreakable). Its life, its owner
+        /// leaving, the server's quit, `earth clear` and a double Straight still break a frozen stone.</summary>
+        public static bool Breakable(bool frozen) => !frozen;
+
+        static float NotNegative(float v) => v >= 0f && !float.IsInfinity(v) ? v : 0f;
+    }
+
+    /// <summary>Task 13 (spec 2.4, rulings C13, C14, C34): the PD controller that pulls a held stone toward its target ahead of
+    /// the holding hand, along the holder's look. Unity-free: StoneHold.cs reads the server's copy of the hand and adds the
+    /// force each physics step. Task 14 (rulings C13, C15): Flick's PID toward the point ahead of the two hands, and its turn;
+    /// StoneFlick.cs runs them. Ruling C36: both pulls are held to MaxStoneSpeed each step (<see cref="CappedPull"/>).</summary>
+    internal static class Pd {
+        /// <summary>[EarthModifiers] HoldDistance (m), HoldFreeScale, HoldGroundScale, HoldLetGoSpeed (m/s), HoldArmMetres (m)
+        /// and PdStepSeconds (s) defaults (spec 2.4; ruling C13 for the step; ruling C28: let go at 5 m/s, not RUMBLE's 8,
+        /// which goes with RUMBLE's own gains: with these an arm swing of about 2 m throws a Ball at 5, and none reaches 8;
+        /// armed within 0.5 m).</summary>
+        public const float DefaultHoldDistance = 1f, DefaultHoldFreeScale = 2500f, DefaultHoldGroundScale = 1500f, DefaultHoldLetGoSpeed = 5f,
+            DefaultHoldArmMetres = 0.5f, DefaultPdStepSeconds = 0.02f;
+
+        /// <summary>How far a held stone trails its target, from <paramref name="error"/> (target minus its centre): the whole
+        /// distance on a free hold, the flat distance on a grounded one (it slides at its own height under a target at hand
+        /// height, and <see cref="Hold"/> pulls it along x and z only). Infinitely far for an error that is not a number.</summary>
+        public static float Trail(V3 error, bool grounded) {
+            if (!Finite(error)) return float.PositiveInfinity;
+            return grounded ? new V3(error.X, 0f, error.Z).Length : error.Length;
+        }
+
+        /// <summary>Spec 2.4's gains by the stone's mass in kg: p 1, no i; d 8 up to 150, 9 up to 300, 11 (13 up) up to 400,
+        /// 15 (18 up) past it. <c>dxz</c> damps x and z, <c>dy</c> y. A mass that is not a number is the heaviest band.</summary>
+        public static (float p, float dxz, float dy) HoldGains(float mass) {
+            if (mass <= 150f) return (1f, 8f, 8f);
+            if (mass <= 300f) return (1f, 9f, 9f);
+            if (mass <= 400f) return (1f, 11f, 13f);
+            return (1f, 15f, 18f);
+        }
+
+        /// <summary>Ruling C13: the hold's force in N, <paramref name="error"/> (target minus the stone's centre, m) and the
+        /// stone's <paramref name="velocity"/> (m/s): scale x (p x error - d x <paramref name="dStep"/> x velocity) per axis,
+        /// d from <see cref="HoldGains"/> (dxz on x and z, dy on y). The scale is <paramref name="groundScale"/> when
+        /// <paramref name="grounded"/>, which has no y force (it slides along the ground: ruling C14), else
+        /// <paramref name="freeScale"/>. <paramref name="dStep"/> ([EarthModifiers] PdStepSeconds) reads spec 2.4's d as the
+        /// error's change per physics step of that many seconds (RUMBLE's 50 Hz: 0.02); 1 is the per-second reading. The
+        /// caller cancels gravity on a free hold. Never a force that is not a number: an error that is not one pulls nothing,
+        /// a velocity that is not one counts as none, a scale not above 0 (or not finite) pulls nothing, a step that is not 0
+        /// or more (or not finite) does not damp; worked in doubles and held to the range of a float.</summary>
+        public static V3 Hold(V3 error, V3 velocity, float mass, bool grounded, float freeScale, float groundScale, float dStep) {
+            if (!Finite(error)) return V3.Zero;
+            if (!Finite(velocity)) velocity = V3.Zero;
+            float scale = grounded ? groundScale : freeScale;
+            if (!(scale > 0f) || float.IsInfinity(scale)) return V3.Zero;
+            double step = dStep >= 0f && !float.IsInfinity(dStep) ? dStep : 0.0;
+            (float p, float dxz, float dy) g = HoldGains(mass);
+            double x = scale * (g.p * (double)error.X - g.dxz * step * velocity.X);
+            double y = grounded ? 0.0 : scale * (g.p * (double)error.Y - g.dy * step * velocity.Y);
+            double z = scale * (g.p * (double)error.Z - g.dxz * step * velocity.Z);
+            return new V3(InRange(x), InRange(y), InRange(z));
+        }
+
+        /// <summary>Ruling C34: where a held stone is pulled to: <paramref name="hand"/> (the holding controller's place) plus
+        /// <paramref name="distance"/> m ([EarthModifiers] HoldDistance) along <paramref name="headForward"/> (the holder's
+        /// look) made flat and length 1, as Flick (<see cref="FlickTarget"/> with both hands at the holding hand). Never the
+        /// controller's own forward: its +z is not the fingers on every controller, and the finger axis is a per-game
+        /// [EarthPose] setting the server cannot see. The hand itself when the look has no flat way (straight up or down, or
+        /// not a number) or the distance is not above 0 (or not finite).</summary>
+        public static V3 HoldTarget(V3 hand, V3 headForward, float distance) {
+            if (!(distance > 0f) || float.IsInfinity(distance) || !Finite(headForward)) return hand;
+            return hand + new V3(headForward.X, 0f, headForward.Z).Normalized * distance;
+        }
+
+        /// <summary>Ruling C36: a hold's or a flick's <paramref name="force"/> (N) for one physics step of <paramref name="dt"/>
+        /// s on a stone of <paramref name="mass"/> kg moving at <paramref name="velocity"/> (m/s), held so the step leaves it
+        /// no faster than <paramref name="cap"/> m/s ([EarthModifiers] MaxStoneSpeed; a cap not above 0 or not finite is
+        /// StoneRules.DefaultMaxStoneSpeed, as StoneRules.Pushed). The force itself, untouched, when velocity + force x dt /
+        /// mass is within the cap; otherwise the force that ends the step at the cap along that way (a stone already past it
+        /// is slowed to it). The pull grows with the distance (a stone stuck behind something, a holder who teleports), and
+        /// Unity applies a force in the step after FixedUpdate, so the cap is on the velocity the step ends with. A force that
+        /// is not a number pulls nothing; a velocity that is not a number, or a mass or dt not above 0 (or not finite), leaves
+        /// the force. Worked in doubles, held to the range of a float.</summary>
+        public static V3 CappedPull(V3 force, V3 velocity, float mass, float dt, float cap) {
+            if (!Finite(force)) return V3.Zero;
+            if (!Finite(velocity) || !(mass > 0f) || float.IsInfinity(mass) || !(dt > 0f) || float.IsInfinity(dt)) return force;
+            double c = cap > 0f && !float.IsInfinity(cap) ? cap : StoneRules.DefaultMaxStoneSpeed;
+            double k = dt / (double)mass;
+            double x = velocity.X + force.X * k, y = velocity.Y + force.Y * k, z = velocity.Z + force.Z * k;
+            double len = Math.Sqrt(x * x + y * y + z * z);
+            if (!(len > c)) return force;
+            double s = c / len;
+            return new V3(InRange((x * s - velocity.X) / k), InRange((y * s - velocity.Y) / k), InRange((z * s - velocity.Z) / k));
+        }
+
+        // ---------------------------------------------------------------- Task 14: Flick
+
+        /// <summary>[EarthModifiers] FlickScale (N per metre off), FlickTurnGain (rad/s every second per radian off) and
+        /// FlickTurnDamp (rad/s every second per rad/s of spin) defaults (spec 2.4: the PID's output x 1000; the brief's turn
+        /// gain; ruling C30: damp 4, not the plan's 1: with gain 8 that is damping 0.71, a quick turn swinging past by a few
+        /// degrees, where 1 is 0.18 and swings past by about 50).</summary>
+        public const float DefaultFlickScale = 1000f, DefaultFlickTurnGain = 8f, DefaultFlickTurnDamp = 4f;
+
+        /// <summary><see cref="FlickTurn"/>'s fallback: the look made square to up shorter than this (up within about 6
+        /// degrees of the look, or of straight back along it) has too little way left to face along.</summary>
+        public const float TurnFallback = 0.1f;
+
+        /// <summary>Ruling C15 (spec 2.4): Flick's PID gains by the stone's mass in kg, in Hold's bands: p 1, i 0.1, d 6 up to
+        /// 150, 7 up to 300, 8.5 past it. A mass that is not a number is the heaviest band.</summary>
+        public static (float p, float i, float d) FlickGains(float mass) {
+            if (mass <= 150f) return (1f, 0.1f, 6f);
+            if (mass <= 300f) return (1f, 0.1f, 7f);
+            return (1f, 0.1f, 8.5f);
+        }
+
+        /// <summary>Ruling C13 (as <see cref="Hold"/>) and C15: the flick's force in N. First <paramref name="integral"/> (the
+        /// flick's own, zero as it begins) grows by <paramref name="error"/> (target minus the stone's centre, m) x
+        /// <paramref name="dt"/> (the physics step, s); then the force is scale x (p x error + i x integral - d x
+        /// <paramref name="dStep"/> x <paramref name="velocity"/>), the gains from <see cref="FlickGains"/>, the scale
+        /// <paramref name="scale"/> ([EarthModifiers] FlickScale), dStep [EarthModifiers] PdStepSeconds as in Hold. The caller
+        /// cancels gravity. Nothing that is not a number gets out, the force or the integral: an error that is not one pulls
+        /// nothing and leaves the integral; an integral that is not one starts again from zero; a velocity that is not one
+        /// counts as none; a dt not above 0 (or not finite) does not grow the integral; a scale not above 0 (or not finite)
+        /// pulls nothing and leaves the integral; a step not 0 or more (or not finite) does not damp. Worked in doubles, and
+        /// both held to the range of a float.</summary>
+        public static V3 Flick(V3 error, ref V3 integral, V3 velocity, float mass, float dt, float scale, float dStep) {
+            if (!Finite(integral)) integral = V3.Zero;
+            if (!Finite(error) || !(scale > 0f) || float.IsInfinity(scale)) return V3.Zero;
+            if (!Finite(velocity)) velocity = V3.Zero;
+            if (dt > 0f && !float.IsInfinity(dt))
+                integral = new V3(InRange(integral.X + (double)error.X * dt), InRange(integral.Y + (double)error.Y * dt), InRange(integral.Z + (double)error.Z * dt));
+            double step = dStep >= 0f && !float.IsInfinity(dStep) ? dStep : 0.0;
+            (float p, float i, float d) g = FlickGains(mass);
+            double damp = g.d * step;
+            return new V3(InRange(scale * (g.p * (double)error.X + g.i * (double)integral.X - damp * velocity.X)),
+                InRange(scale * (g.p * (double)error.Y + g.i * (double)integral.Y - damp * velocity.Y)),
+                InRange(scale * (g.p * (double)error.Z + g.i * (double)integral.Z - damp * velocity.Z)));
+        }
+
+        /// <summary>Where a flicked stone is pulled to: the midpoint of the two hands plus <paramref name="distance"/> m
+        /// ([EarthModifiers] HoldDistance) along <paramref name="headForward"/> (the flicker's look) made flat and length 1.
+        /// The midpoint itself when the look has no flat way (straight up or down, or not a number) or the distance is not
+        /// above 0 (or not finite).</summary>
+        public static V3 FlickTarget(V3 handA, V3 handB, V3 headForward, float distance) {
+            V3 mid = (handA + handB) * 0.5f;
+            if (!(distance > 0f) || float.IsInfinity(distance) || !Finite(headForward)) return mid;
+            return mid + new V3(headForward.X, 0f, headForward.Z).Normalized * distance;
+        }
+
+        /// <summary>Ruling C15: the turn a flicked stone is turned to, as its forward and up (both length 1, square to each
+        /// other; Unity's LookRotation(forward, up)). Up is from <paramref name="handB"/> to <paramref name="handA"/> (the
+        /// pose's A hand above its B: upright); straight up when the hands are at one place or not a number. Forward is
+        /// <paramref name="flatForward"/> (the flicker's look; made flat and length 1 here, +Z when it has no flat way) made
+        /// square to up, so the stone faces the look whatever the hands' tilt. When up is (nearly) along the look or straight
+        /// back along it (<see cref="TurnFallback"/>), that leaves no way to face along; then forward is straight down made
+        /// square to up when A is ahead of B, straight up when behind: the way the forward goes as the hands tilt there from
+        /// upright, so tilting through it turns the stone smoothly.</summary>
+        public static (V3 forward, V3 up) FlickTurn(V3 handA, V3 handB, V3 flatForward) {
+            V3 up = Finite(handA) && Finite(handB) ? (handA - handB).Normalized : V3.Zero;
+            if (up.Length < 0.5f) up = new V3(0f, 1f, 0f);
+            V3 look = Finite(flatForward) ? new V3(flatForward.X, 0f, flatForward.Z).Normalized : V3.Zero;
+            if (look.Length < 0.5f) look = new V3(0f, 0f, 1f);
+            float along = V3.Dot(look, up);
+            V3 forward = look - up * along;
+            if (forward.Length < TurnFallback) {
+                var vertical = new V3(0f, along > 0f ? -1f : 1f, 0f);
+                forward = vertical - up * V3.Dot(vertical, up);
+            }
+            return (forward.Normalized, up);
+        }
+
+        /// <summary>The turn of the quaternion (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>,
+        /// <paramref name="w"/>) (Unity's order; any length) as its axis x its angle in radians, the short way (at most pi):
+        /// the wanted turn times the inverse of the stone's is the turn still to go. None for no turn, or anything that is not
+        /// a number.</summary>
+        public static V3 TurnVector(float x, float y, float z, float w) {
+            if (float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) || float.IsNaN(z) || float.IsInfinity(z) || float.IsNaN(w) || float.IsInfinity(w))
+                return V3.Zero;
+            double qx = x, qy = y, qz = z, qw = w;
+            if (qw < 0.0) { qx = -qx; qy = -qy; qz = -qz; qw = -qw; }   // q and -q are the same turn; w >= 0 is the short way
+            double s = Math.Sqrt(qx * qx + qy * qy + qz * qz);
+            if (!(s > 1e-12)) return V3.Zero;
+            double k = 2.0 * Math.Atan2(s, qw) / s;
+            return new V3(InRange(qx * k), InRange(qy * k), InRange(qz * k));
+        }
+
+        /// <summary>The flick's turn (ruling C15): <paramref name="gain"/> ([EarthModifiers] FlickTurnGain) x
+        /// <paramref name="turn"/> (<see cref="TurnVector"/>: the turn still to go) - <paramref name="damp"/> (FlickTurnDamp) x
+        /// <paramref name="angularVelocity"/> (rad/s), an angular acceleration in rad/s every second (Unity's
+        /// ForceMode.Acceleration: the same on every stone, whatever its inertia). A turn that is not a number turns nothing, a
+        /// spin that is not one counts as none, a gain or damp below 0 (or not finite) is 0. Worked in doubles, held to the
+        /// range of a float.</summary>
+        public static V3 FlickTorque(V3 turn, V3 angularVelocity, float gain, float damp) {
+            if (!Finite(turn)) turn = V3.Zero;
+            if (!Finite(angularVelocity)) angularVelocity = V3.Zero;
+            double kg = gain >= 0f && !float.IsInfinity(gain) ? gain : 0.0, kd = damp >= 0f && !float.IsInfinity(damp) ? damp : 0.0;
+            return new V3(InRange(kg * turn.X - kd * angularVelocity.X), InRange(kg * turn.Y - kd * angularVelocity.Y), InRange(kg * turn.Z - kd * angularVelocity.Z));
+        }
+
+        static float InRange(double v) => v > float.MaxValue ? float.MaxValue : v < -float.MaxValue ? -float.MaxValue : (float)v;
+
+        static bool Finite(V3 v) => !float.IsNaN(v.X) && !float.IsInfinity(v.X) && !float.IsNaN(v.Y) && !float.IsInfinity(v.Y) && !float.IsNaN(v.Z) && !float.IsInfinity(v.Z);
     }
 
     /// <summary>What one physics step of a slide ends in (<see cref="StoneRules.Slide"/>): it slides on, it stands Still, or
@@ -354,14 +835,58 @@ namespace Earthbending {
     /// <summary>Where a summoned stone rises (spec 3.4): <c>Ahead</c> metres in front of the head along the yaw, its bottom on
     /// the ground there at the end; it starts lowered by its own height (its top at ground level, ruling 5) and rises straight
     /// up over <c>RiseSeconds</c>, turned to the yaw. The [EarthStones] settings (Server.cs) replace both numbers per kind
-    /// through <see cref="Set"/>.</summary>
+    /// through <see cref="Set"/>. Task 9 (rulings C1, C2): the Disc does not rise (<see cref="Rises"/>): it appears loose,
+    /// <see cref="DiscHeight"/> above the ground; the Disc and the Ball are launched (<see cref="Launch"/>). Those numbers,
+    /// and <see cref="SummonUnderLift"/>, are [EarthStones] settings too (<see cref="SetLaunch"/>).</summary>
     internal static class SpawnPlan {
-        static readonly float[] Aheads = { 1.2f, 1.2f, 1.3f, 1.5f, 1.8f };     // Disc, Ball, Pillar, Cube, Wall
-        static readonly float[] Rises = { 0f, 0f, 0.35f, 0.35f, 0.45f };       // the Disc and Ball start free (Task 9)
-        static readonly float[] ahead = (float[])Aheads.Clone(), rise = (float[])Rises.Clone();
+        static readonly float[] AheadDefaults = { 1.2f, 1.2f, 1.3f, 1.5f, 1.8f };     // Disc, Ball, Pillar, Cube, Wall
+        static readonly float[] RiseDefaults = { 0f, 0.12f, 0.35f, 0.35f, 0.45f };    // the Disc never rises; the Ball's 0.6 m at 5 m/s
+        static readonly float[] ahead = (float[])AheadDefaults.Clone(), rise = (float[])RiseDefaults.Clone();
 
-        public static float DefaultAhead(StoneKind k) => StoneTable.Valid(k) ? Aheads[(int)k] : 0f;
-        public static float DefaultRise(StoneKind k) => StoneTable.Valid(k) ? Rises[(int)k] : 0f;
+        public const float DefaultDiscLift = 300f, DefaultDiscPush = 1400f, DefaultDiscPushDelay = 0.12f, DefaultDiscHeight = 0.5f;
+        public const float DefaultBallLaunchSpeed = 5f, DefaultSummonUnderLift = 4f;
+
+        /// <summary>[EarthStones] DiscLift: the Disc's first push, straight up as it appears, in N s.</summary>
+        public static float DiscLift { get; private set; } = DefaultDiscLift;
+        /// <summary>[EarthStones] DiscPush: the Disc's second push, ahead along the yaw, in N s.</summary>
+        public static float DiscPush { get; private set; } = DefaultDiscPush;
+        /// <summary>[EarthStones] DiscPushDelaySeconds: the time from the Disc's first push to its second.</summary>
+        public static float DiscPushDelay { get; private set; } = DefaultDiscPushDelay;
+        /// <summary>[EarthStones] DiscHeightMetres: the Disc's centre above the ground where it appears.</summary>
+        public static float DiscHeight { get; private set; } = DefaultDiscHeight;
+        /// <summary>[EarthStones] BallLaunchSpeed: the Ball's speed straight up once it has risen, in m/s.</summary>
+        public static float BallLaunchSpeed { get; private set; } = DefaultBallLaunchSpeed;
+        /// <summary>[EarthStones] SummonUnderLift: the speed a standing stone is thrown up at when another is summoned where it
+        /// stands (<see cref="StoneRules.SummonUnder"/>), in m/s.</summary>
+        public static float SummonUnderLift { get; private set; } = DefaultSummonUnderLift;
+
+        public static float DefaultAhead(StoneKind k) => StoneTable.Valid(k) ? AheadDefaults[(int)k] : 0f;
+        public static float DefaultRise(StoneKind k) => StoneTable.Valid(k) ? RiseDefaults[(int)k] : 0f;
+
+        /// <summary>Ruling C1: every kind rises out of the ground (Rising, kinematic) but the Disc, which appears loose (Free) in
+        /// the air where its plan ends.</summary>
+        public static bool Rises(StoneKind k) => k != StoneKind.Disc;
+
+        /// <summary>The launch numbers and <see cref="SummonUnderLift"/> from the settings.</summary>
+        public static void SetLaunch(float discLift, float discPush, float discPushDelaySeconds, float discHeightMetres, float ballLaunchSpeed, float summonUnderLift) {
+            DiscLift = discLift;
+            DiscPush = discPush;
+            DiscPushDelay = discPushDelaySeconds;
+            DiscHeight = discHeightMetres;
+            BallLaunchSpeed = ballLaunchSpeed;
+            SummonUnderLift = summonUnderLift;
+        }
+
+        /// <summary>Ruling C2: the kind's launch, impulses in N s in the stone's yaw frame (x right, y up, z ahead; the caller
+        /// turns them by the yaw). The first lands as the Disc appears, or as the Ball's rise ends (it is loose then); the second
+        /// <c>delay</c> seconds after the first. The Disc: <see cref="DiscLift"/> up, then <see cref="DiscPush"/> ahead after
+        /// <see cref="DiscPushDelay"/>; the Ball: <see cref="BallLaunchSpeed"/> up on its mass now (StoneTable); every other kind
+        /// none (all zero).</summary>
+        public static (V3 first, float delay, V3 second) Launch(StoneKind k) {
+            if (k == StoneKind.Disc) return (new V3(0f, DiscLift, 0f), DiscPushDelay, new V3(0f, 0f, DiscPush));
+            if (k == StoneKind.Ball) return (new V3(0f, BallLaunchSpeed * StoneTable.Of(k).Mass, 0f), 0f, V3.Zero);
+            return (V3.Zero, 0f, V3.Zero);
+        }
 
         /// <summary>The kind's distance ahead (metres) and rise time (seconds) from the settings.</summary>
         public static void Set(StoneKind k, float aheadMetres, float riseSeconds) {
@@ -371,12 +896,18 @@ namespace Earthbending {
         }
 
         /// <summary>The stone's centre at the start and at the end, the rise time and the yaw it is turned to. Yaw is Unity's
-        /// (0 faces +Z, 90 faces +X); <paramref name="groundY"/> is the ground's height under the end.</summary>
+        /// (0 faces +Z, 90 faces +X); <paramref name="groundY"/> is the ground's height under the end. The Disc
+        /// (<see cref="Rises"/>) starts where it ends, <see cref="DiscHeight"/> above the ground, and takes no time.</summary>
         public static (V3 start, V3 end, float riseSeconds, float yawDeg) For(StoneKind k, V3 head, float yawDeg, float groundY) {
             int i = StoneTable.Valid(k) ? (int)k : (int)StoneKind.Pillar;
             float h = StoneTable.Of((StoneKind)i).Size.Y;
             V3 f = Forward(yawDeg);
-            var end = new V3(head.X + f.X * ahead[i], groundY + h * 0.5f, head.Z + f.Z * ahead[i]);
+            float x = head.X + f.X * ahead[i], z = head.Z + f.Z * ahead[i];
+            if (!Rises((StoneKind)i)) {
+                var at = new V3(x, groundY + DiscHeight, z);
+                return (at, at, 0f, yawDeg);
+            }
+            var end = new V3(x, groundY + h * 0.5f, z);
             var start = new V3(end.X, end.Y - h, end.Z);
             return (start, end, rise[i], yawDeg);
         }
@@ -421,6 +952,9 @@ namespace Earthbending {
     }
 
     internal static class StoneKinds {
+        /// <summary><c>[EarthStones] Enabled</c>'s default: every stone.</summary>
+        public const string DefaultEnabled = "Disc, Ball, Pillar, Cube, Wall";
+
         /// <summary>The kinds a list names (<c>[EarthStones] Enabled</c>: "Pillar", "pillar, Cube", "Disc;Ball"): split by commas,
         /// semicolons and spaces, any case. <paramref name="unknown"/> lists the words that name no kind ("" when none).</summary>
         public static bool[] Parse(string? text, out string unknown) {
@@ -655,6 +1189,17 @@ namespace Earthbending {
     }
 
     internal static class MoveRules {
+        /// <summary>[EarthMovement] DashSpeed's (m/s along the yaw) and DashLift's (m/s up) defaults (spec 3.6).</summary>
+        public const float DefaultDashSpeed = 8f, DefaultDashLift = 0.5f;
+
+        /// <summary>Ruling C20 (spec 2.5, 3.6): Dash's push on the player who struck it (on their own game): along
+        /// <paramref name="yawDeg"/> (Unity's: 0 faces +Z, 90 faces +X) at <paramref name="speed"/> m/s, and
+        /// <paramref name="lift"/> m/s up (it keeps the game from zeroing a push along the ground).</summary>
+        public static V3 Dash(float yawDeg, float speed, float lift) {
+            V3 f = SpawnPlan.Forward(yawDeg);
+            return new V3(f.X * speed, lift, f.Z * speed);
+        }
+
         /// <summary>Straight's push on the player who struck it (spec 3.5, on their own game): back along the yaw at
         /// <paramref name="grounded"/> m/s when the target stone is anchored (as that game sees it), <paramref name="free"/> when
         /// it is not, and <paramref name="lift"/> up; all of it halved while the player is in the air.</summary>

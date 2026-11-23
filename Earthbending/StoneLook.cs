@@ -14,42 +14,76 @@ namespace Earthbending {
     // The rise and the break (Task 6, [EarthLooks], per game): a stone that appears (StoneView.Start) plays RiseEffect and
     // RiseSound at its top, which a summoned stone has at ground level as it appears (SpawnPlan: it starts lowered by its own
     // height), so the dirt sprays where it comes out (a game that joins later sees the spray at an old stone's top: accepted);
-    // the server's Applied(Broke) plays BreakEffect and BreakSound where the stone broke. Each is the game's own pooled effect
-    // or sound set, by name (several names split by ; are tried in order, the first loaded one is used). One that is not
-    // loaded is one warning and nothing is played; it is looked for again every 10 s without a warning.
+    // the server's Applied(Broke) plays BreakEffect and BreakSound where the stone broke, and (Task 11) its Applied(Stomp), a
+    // stomped stone landing, plays StompEffect and StompSound where it landed. Each is the game's own pooled effect or sound
+    // set, by name (several names split by ; are tried in order, the first loaded one is used). One that is not loaded is one
+    // warning and nothing is played; it is looked for again every 10 s without a warning.
+    //
+    // Task 12 (rulings C11, C12): the server's Applied(Explode), a stone marked by Explode, plays ExplodeMarkEffect once at the
+    // stone (no sound; a lasting crack look is Task 10's), and its Applied(Exploded), a marked stone's blast, plays
+    // ExplodeEffect and ExplodeSound at the blast's centre (as well as the Broke look the same stone's break sends).
+    //
+    // Task 15 (spec 2.2, 3.7; ruling C18): the server's Applied(Hitstop), a stone frozen by a clash (it carries no time), shakes
+    // that stone's "Model" child for ShakeSeconds: each frame a random offset of at most ShakeMetres round where Dress put it
+    // (StoneView.Shake, unscaled time), and back exactly there when the shake ends or the stone goes. Nothing on the server.
     internal static class StoneLook {
         const string BoulderPrefab = "Stone Boulder 01";
         const float BlockBevel = 0.05f;
         const string DefaultRiseEffect = "Digging Dirt Spray Effect;Digging Dirt Smoke Puff Effect", DefaultRiseSound = "Digging DirtFall Sound Set";
         const string DefaultBreakEffect = "Destroyed Rock", DefaultBreakSound = "Rock Destroyed Sounds;Boulder Breaking Sounds";
+        const string DefaultStompEffect = "Turabada Ground Slam Effect", DefaultStompSound = "Heavy Turabada Step Sounds";
+        const string DefaultExplodeMarkEffect = "Mining Successful", DefaultExplodeEffect = "Shockwave Impact", DefaultExplodeSound = "Shockwave Sounds";
+        const float DefaultShakeMetres = 0.02f, DefaultShakeSeconds = 0.15f;
 
-        static bool searched, warnedModel, riseFailed, breakFailed;
+        static bool searched, warnedModel, riseFailed, breakFailed, stompFailed, markFailed, explodeFailed, shakeFailed;
         static Mesh? boulderMesh;
         static Material[] boulderMaterials = new Material[0];
         static UvRect boulderUv = new UvRect(0f, 0f, 1f, 1f);
         static readonly Dictionary<Vector3, Mesh> blocks = new Dictionary<Vector3, Mesh>();
 
-        static MelonPreferences_Entry<string>? riseEffectEntry, riseSoundEntry, breakEffectEntry, breakSoundEntry;
+        static MelonPreferences_Entry<string>? riseEffectEntry, riseSoundEntry, breakEffectEntry, breakSoundEntry, stompEffectEntry, stompSoundEntry;
+        static MelonPreferences_Entry<string>? explodeMarkEffectEntry, explodeEffectEntry, explodeSoundEntry;
+        static MelonPreferences_Entry<float>? shakeMetresEntry, shakeSecondsEntry;
+        static float shakeMetres = DefaultShakeMetres, shakeSeconds = DefaultShakeSeconds;
         static readonly LookAsset<PooledObjectDefinition> riseEffect = new LookAsset<PooledObjectDefinition>("RiseEffect", "effect", EffectNamed);
         static readonly LookAsset<PooledObjectDefinition> breakEffect = new LookAsset<PooledObjectDefinition>("BreakEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> stompEffect = new LookAsset<PooledObjectDefinition>("StompEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> explodeMarkEffect = new LookAsset<PooledObjectDefinition>("ExplodeMarkEffect", "effect", EffectNamed);
+        static readonly LookAsset<PooledObjectDefinition> explodeEffect = new LookAsset<PooledObjectDefinition>("ExplodeEffect", "effect", EffectNamed);
         static readonly LookAsset<SoundEffectSet> riseSound = new LookAsset<SoundEffectSet>("RiseSound", "sound set", SoundNamed);
         static readonly LookAsset<SoundEffectSet> breakSound = new LookAsset<SoundEffectSet>("BreakSound", "sound set", SoundNamed);
+        static readonly LookAsset<SoundEffectSet> stompSound = new LookAsset<SoundEffectSet>("StompSound", "sound set", SoundNamed);
+        static readonly LookAsset<SoundEffectSet> explodeSound = new LookAsset<SoundEffectSet>("ExplodeSound", "sound set", SoundNamed);
 
         // a pooled effect is named as its definition or as its prefab; a sound set as itself
         static bool EffectNamed(PooledObjectDefinition d, string n) => d.name == n || (d.Prefab != null && d.Prefab.name == n);
         static bool SoundNamed(SoundEffectSet s, string n) => s.name == n;
 
-        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise and break settings, and the server's Applied
-        /// events.</summary>
+        /// <summary>From Main.OnInitializeMelon on games: the [EarthLooks] rise, break, stomp, explode and shake settings, and
+        /// the server's Applied events.</summary>
         internal static void Init() {
             MelonPreferences_Category looks = Cfg.Category("EarthLooks");
             riseEffectEntry = looks.CreateEntry("RiseEffect", DefaultRiseEffect, description: "Per game. The game's pooled effect played where a stone comes out of the ground (its name; several names split by ; are tried in order, the first loaded one is used; empty: none).");
             riseSoundEntry = looks.CreateEntry("RiseSound", DefaultRiseSound, description: "Per game. The game's sound set played where a stone comes out of the ground (names as RiseEffect).");
             breakEffectEntry = looks.CreateEntry("BreakEffect", DefaultBreakEffect, description: "Per game. The game's pooled effect played where a stone breaks (names as RiseEffect).");
             breakSoundEntry = looks.CreateEntry("BreakSound", DefaultBreakSound, description: "Per game. The game's sound set played where a stone breaks (names as RiseEffect).");
-            // a Net whose static initialiser failed (Main says so) throws on every touch: no break looks, the rest still starts
+            stompEffectEntry = looks.CreateEntry("StompEffect", DefaultStompEffect, description: "Per game. The game's pooled effect played where a stomped stone lands (names as RiseEffect).");
+            stompSoundEntry = looks.CreateEntry("StompSound", DefaultStompSound, description: "Per game. The game's sound set played where a stomped stone lands (names as RiseEffect).");
+            explodeMarkEffectEntry = looks.CreateEntry("ExplodeMarkEffect", DefaultExplodeMarkEffect, description: "Per game. The game's pooled effect played once at a stone when Explode marks it (names as RiseEffect). No sound.");
+            explodeEffectEntry = looks.CreateEntry("ExplodeEffect", DefaultExplodeEffect, description: "Per game. The game's pooled effect played where a marked stone blasts as it breaks (names as RiseEffect).");
+            explodeSoundEntry = looks.CreateEntry("ExplodeSound", DefaultExplodeSound, description: "Per game. The game's sound set played where a marked stone blasts as it breaks (names as RiseEffect).");
+            shakeMetresEntry = looks.CreateEntry("ShakeMetres", DefaultShakeMetres, description: "Per game. Two stones that clash freeze for a blink first (the server's [EarthDamage] HitstopSeconds); meanwhile each shakes this many metres at most round its place, a new way every frame. 0 or more (0: no shake).");
+            shakeSecondsEntry = looks.CreateEntry("ShakeSeconds", DefaultShakeSeconds, description: "Per game. How long a clashing stone shakes (see ShakeMetres), in seconds. 0 or more (0: no shake).");
+            ApplyShake();
+            Cfg.Changed += ApplyShake;
+            // a Net whose static initialiser failed (Main says so) throws on every touch: no break, stomp or explode looks, the rest still starts
             try { Net.AppliedReceived += OnApplied; }
-            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break looks (message 19 is not set up: {e.GetType().Name})"); }
+            catch (Exception e) { MelonLogger.Warning($"[Earth] Looks: no break, stomp or explode looks (message 19 is not set up: {e.GetType().Name})"); }
+        }
+
+        static void ApplyShake() {
+            shakeMetres = Cfg.NotNegative(shakeMetresEntry, "EarthLooks", "ShakeMetres", DefaultShakeMetres);
+            shakeSeconds = Cfg.NotNegative(shakeSecondsEntry, "EarthLooks", "ShakeSeconds", DefaultShakeSeconds);
         }
 
         /// <summary>Games: a stone appeared; the dirt and the sound at its top.</summary>
@@ -66,19 +100,60 @@ namespace Earthbending {
         }
 
         static void OnApplied(uint entity, byte evt, Vector3 at) {
-            if (Main.IsServer || evt != Wire.Broke) return;
-            try {
-                Play(breakEffect, breakEffectEntry, breakSound, breakSoundEntry, at);
-                if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} broke; its break plays at {at}");
+            if (Main.IsServer) return;
+            if (evt == Wire.Broke) {
+                try {
+                    Play(breakEffect, breakEffectEntry, breakSound, breakSoundEntry, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} broke; its break plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!breakFailed) { breakFailed = true; MelonLogger.Warning($"[Earth] Looks: the break look failed (said once): {e}"); }
+                }
             }
-            catch (Exception e) {
-                if (!breakFailed) { breakFailed = true; MelonLogger.Warning($"[Earth] Looks: the break look failed (said once): {e}"); }
+            else if (evt == (byte)Modifier.Stomp) {   // a stomped stone landed there (ruling C7), not where the pose was struck
+                try {
+                    Play(stompEffect, stompEffectEntry, stompSound, stompSoundEntry, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} landed from a Stomp; its slam plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!stompFailed) { stompFailed = true; MelonLogger.Warning($"[Earth] Looks: the stomp look failed (said once): {e}"); }
+                }
+            }
+            else if (evt == (byte)Modifier.Explode) {   // the server sends a stone's mark once (ruling C11)
+                try {
+                    Play(explodeMarkEffect, explodeMarkEffectEntry, null, null, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} was marked by Explode; its mark plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!markFailed) { markFailed = true; MelonLogger.Warning($"[Earth] Looks: the explode mark look failed (said once): {e}"); }
+                }
+            }
+            else if (evt == Wire.Exploded) {
+                try {
+                    Play(explodeEffect, explodeEffectEntry, explodeSound, explodeSoundEntry, at);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} exploded; its blast plays at {at}");
+                }
+                catch (Exception e) {
+                    if (!explodeFailed) { explodeFailed = true; MelonLogger.Warning($"[Earth] Looks: the explode look failed (said once): {e}"); }
+                }
+            }
+            else if (evt == Wire.Hitstop) {   // ruling C18: no time on the wire; the shake is ShakeSeconds
+                try {
+                    StoneView? v = StoneView.Find(entity);
+                    bool shakes = v != null && v.Shake(shakeMetres, shakeSeconds);
+                    if (Logs.Debug) MelonLogger.Msg($"[Earth] Looks: stone #{entity} froze in a clash; {(shakes ? $"its model shakes {shakeMetres:0.###} m for {shakeSeconds:0.##} s" : v == null ? "it is not on this game" : "no shake ([EarthLooks] ShakeMetres or ShakeSeconds 0, or it has no Model)")}");
+                }
+                catch (Exception e) {
+                    if (!shakeFailed) { shakeFailed = true; MelonLogger.Warning($"[Earth] Looks: the hitstop shake failed (said once): {e}"); }
+                }
             }
         }
 
-        static void Play(LookAsset<PooledObjectDefinition> effect, MelonPreferences_Entry<string>? effectNames, LookAsset<SoundEffectSet> sound, MelonPreferences_Entry<string>? soundNames, Vector3 at) {
+        // The effect, then the sound (none: no sound), at a place.
+        static void Play(LookAsset<PooledObjectDefinition> effect, MelonPreferences_Entry<string>? effectNames, LookAsset<SoundEffectSet>? sound, MelonPreferences_Entry<string>? soundNames, Vector3 at) {
             PooledObjectDefinition? fx = effect.Get(effectNames?.Value);
             if (fx != null) fx.Get(at);   // no turn: the game plays its own dig effect at a place only (DiggingImpactorSettings.DigEffect)
+            if (sound == null) return;
             SoundEffectSet? s = sound.Get(soundNames?.Value);
             if (s != null) s.PlayAtPosition(at);
         }
@@ -196,7 +271,8 @@ namespace Earthbending {
     /// It says which stone this is (<c>Prefabs.KindOf</c>). On a game it dresses the copy once it appears; on the headless server
     /// it does nothing more (no renderers or effects there). Every copy that has started is in <see cref="Live"/> until it is
     /// destroyed (the templates, under their inactive holder, never start), so a game finds the stones near it without a scene
-    /// search (Bend.cs picks a modifier's target from it).</summary>
+    /// search (Bend.cs picks a modifier's target from it). Task 15: on a game it shakes its "Model" child while the stone is
+    /// frozen in a clash (<see cref="Shake"/>).</summary>
     internal sealed class StoneView : MonoBehaviour {
         /// <summary>Public, so Unity serializes it and every copy of a template keeps its kind.</summary>
         public StoneKind Kind;
@@ -210,7 +286,12 @@ namespace Earthbending {
         internal Collider? Shape { get; private set; }
         internal Rigidbody? Body { get; private set; }
 
-        static bool warned;
+        static bool warned, shakeWarned;
+
+        Transform? model;    // the dressed "Model" child (games only), and where Dress put it
+        Vector3 home;
+        float shakeUntil, shakeMetres;
+        bool shaking;
 
         void Start() {
             Entity = GetComponent<NetworkEntity>();
@@ -222,10 +303,61 @@ namespace Earthbending {
             catch (Exception e) {
                 if (!warned) { warned = true; MelonLogger.Warning($"[Earth] Looks: could not dress {name}: {e}"); }
             }
+            Transform found = transform.Find("Model");
+            if (found != null) {
+                model = found;
+                home = found.localPosition;
+            }
             StoneLook.Rise(gameObject, Kind);   // never throws
         }
 
-        void OnDestroy() => Live.Remove(this);
+        /// <summary>The live stone whose entity has this Identifier on this machine, or null.</summary>
+        internal static StoneView? Find(uint entity) {
+            if (entity == 0u) return null;
+            for (int i = 0; i < Live.Count; i++) {
+                StoneView v = Live[i];
+                if (v != null && v.Entity != null && v.Entity.Identifier == entity) return v;
+            }
+            return null;
+        }
+
+        /// <summary>Games (ruling C18): shakes the "Model" child for <paramref name="seconds"/> (unscaled), at most
+        /// <paramref name="metres"/> round where Dress put it, a new random offset each frame; a shake already running starts
+        /// over. False, and nothing happens, without a dressed Model, or for a time or a size not above 0.</summary>
+        internal bool Shake(float metres, float seconds) {
+            if (model == null || !(metres > 0f) || !(seconds > 0f) || float.IsInfinity(metres) || float.IsInfinity(seconds)) return false;
+            shakeMetres = metres;
+            shakeUntil = Time.unscaledTime + seconds;
+            shaking = true;
+            return true;
+        }
+
+        void Update() {
+            if (!shaking) return;
+            try {
+                if (model == null || Time.unscaledTime >= shakeUntil) { StopShake(); return; }
+                model.localPosition = home + UnityEngine.Random.insideUnitSphere * shakeMetres;
+            }
+            catch (Exception e) {
+                shaking = false;
+                if (!shakeWarned) { shakeWarned = true; MelonLogger.Warning($"[Earth] Looks: a stone's shake failed (said once): {e.Message}"); }
+            }
+        }
+
+        // back exactly where Dress put it
+        void StopShake() {
+            shaking = false;
+            if (model != null) model.localPosition = home;
+        }
+
+        void OnDisable() {
+            if (shaking) StopShake();
+        }
+
+        void OnDestroy() {
+            if (shaking) StopShake();
+            Live.Remove(this);
+        }
     }
 
     /// <summary>Games: one of the game's assets ([EarthLooks]) found by name among everything loaded: the names split by ;

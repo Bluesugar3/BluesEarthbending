@@ -160,8 +160,8 @@ Rules of the pose machine (all settings, `[EarthPose]`):
 
 | Kind | Power | Mass (kg) | Collider (m) | Spawn | Look |
 |---|---|---|---|---|---|
-| Disc | 0 | 100 | box 0.70 x 0.14 x 0.70 | 1.2 m ahead, at knee height, free; lift 300 up, then after 0.12 s 1400 forward along the yaw | the boulder mesh squashed flat |
-| Ball | 1 | 150 | sphere r 0.30 | 1.2 m ahead, from under the ground, free, 5 m/s up | the game's sandstone boulder mesh |
+| Disc | 0 | 100 | box 0.70 x 0.14 x 0.70 | 1.2 m ahead, at knee height (0.5 m), free at once; lift 300 up, then after 0.12 s 1400 forward along the yaw (the second push is dropped if a modifier comes first) | the boulder mesh squashed flat |
+| Ball | 1 | 150 | sphere r 0.30 | 1.2 m ahead, rises out of the ground over 0.12 s (kinematic, as the others: a loose body spawned inside the ground is thrown out unpredictably), then free at 5 m/s up | the game's sandstone boulder mesh |
 | Pillar | 1 | 275 | box 0.55 x 1.80 x 0.55 | 1.3 m ahead, rises over 0.35 s | chamfered stone block |
 | Cube | 2 | 300 | box 1.00 x 1.00 x 1.00 | 1.5 m ahead, rises over 0.35 s | chamfered stone block |
 | Wall | 3 | 400 | box 2.40 x 2.00 x 0.50 | 1.8 m ahead, turned to the yaw, rises over 0.45 s | chamfered stone block |
@@ -169,8 +169,9 @@ Rules of the pose machine (all settings, `[EarthPose]`):
 - Power for hits and clashes = base + 1 if grounded (still or sliding) + 1 if moving faster than `MovingSpeed` 3 m/s.
 - `MaxPerPlayer` 8 (spawning a ninth breaks that player's oldest), `MaxTotal` 64, `LifeSeconds` 60. A stone breaks below the world (y < -100 m) and when its owner leaves.
 - Every stone is `SaveMode.Ignore`, so nothing is ever saved. Server quit destroys them all.
+- Summoning onto a standing stone: the summon's ground test looks past our own stones (a player standing on a stone is still not on natural ground), and every Still, Sliding or Stomped stone in the new stone's box is set Free and lifted at `SummonUnderLift` 4 m/s (a Rising one is left alone).
 
-Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (synced). Sliding: non-kinematic, `FreezeRotation` only, gravity on, a frictionless physic material on its collider while it slides, slowed by `[EarthModifiers] SlideDeceleration`; it follows slopes, and it becomes Free if it has touched no ground for 0.2 s (it slid off a drop). (Ruling 22: a frozen height jammed uphill and floated off drops.) Rising: kinematic, moved up by the server each tick. Floating: `useGravity = false`, zero velocity.
+Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (synced). Sliding: non-kinematic, `FreezeRotation` only, gravity on, a frictionless physic material on its collider while it slides, slowed by `[EarthModifiers] SlideDeceleration`; it follows slopes, and it becomes Free if it has touched no ground for 0.2 s (it slid off a drop). (Ruling 22: a frozen height jammed uphill and floated off drops.) Rising: kinematic, moved up by the server each tick. Floating: `useGravity = false`, zero velocity. Stomped: only vertical movement (x, z and the turn frozen), continuous collision while it falls; it lands Still on any ground contact (at most 60 degrees from up), natural or not. Held (Hold on a loose stone) and Flicked: gravity off, driven by the server each step. A stone frozen by a hitstop is kinematic and takes no hit, clash or modifier until it thaws (a modifier waits, as one taken while it rises).
 
 ### 3.5 Modifiers: our numbers (all `[Modifiers]`, server; impulses in N·s on the masses above)
 
@@ -181,13 +182,15 @@ Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (sync
 | Stomp | 1500 down; landing: grounded, still | stays grounded |
 | Uppercut | 900 forward + 900 up | frees, 1300 + 1300, spin 5 rad/s about the right axis |
 | Parry | floating (3 s, or broken at 0.1 m/s) | frees, then floating |
-| Hold | PD to the hand (2.4 table), let go at 8 m/s | slides while held (x 1500) |
-| Flick | PID to both hands + turn | refused (grounded cannot be flicked) |
+| Hold | PD to `HoldDistance` 1 m ahead of the hand along the holder's flat look (the server cannot see each game's finger axes; 2.4 table, D x `PdStepSeconds`), let go at `HoldLetGoSpeed` 5 m/s once it has settled within `HoldArmMetres` 0.5 of its target (a throw; a caught fast stone is slowed first) | slides while held (x 1500), never anchored while held |
+| Flick | PID to both hands (D x `PdStepSeconds`) + turn (`FlickTurnGain` 8, `FlickTurnDamp` 4); Parry and Hold refused on it | refused (grounded cannot be flicked) |
 | Explode | marked: on breaking, radius `ExplodeRadius` 3 m, force 1000 | same |
 
 - Range: as RUMBLE (2.4), plus server slack `RangeSlackMetres` 0.5 for lag.
 - The player's own pushback from Straight (on their own game, `[Movement]`): `PushbackGrounded` 2.5 m/s back + 0.25 up, `PushbackFree` 1.7 back + 0.2 up, half in the air.
-- Two Straights on one stone within `DoubleStraightSeconds` 0.4 explode it at once.
+- A modifier's push is a velocity change (impulse / mass), and no modifier, nor a Hold's or a Flick's pull (the speed each step ends with), leaves a stone faster than `MaxStoneSpeed` 20 m/s. A modifier taken while a stone rises waits until it has risen.
+- Two Straights on one stone within `DoubleStraightSeconds` 0.4 explode it at once (judged when the claim arrives, also while it rises). One player's own Straight cooldown is 0.5 s and the slide carries the stone out of reach, so it takes two players: a Straight answered by another's.
+- `PdStepSeconds` 0.02: spec 2.4's D gains are read as the error's change per 50 Hz physics step (RUMBLE's PID), so D multiplies the velocity times 0.02. Read per second, they make a held Ball trail 8 m behind a hand moving 1 m/s and diverge on the server's 15-45 Hz step. With these gains a stone's peak speed is about 2.7 x the hand's travel, hence Hold's lower let-go speed.
 
 ### 3.6 Movement (on the player's own game, `[Movement]`)
 - Jump: `JumpSpeed` 6 m/s up (about 2.2 m with gravity -8).
@@ -199,8 +202,9 @@ Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (sync
 - Then the stone breaks (`BreakOnHit` true; one hit per stone). Each target is hit by one stone at most once per `HitCooldownSeconds` 0.5.
 - The victim's game gets a knockback: speed `KnockbackSpeed` 4 m/s along the stone's velocity (an explosion: away from its centre), snapped to flat or 45 degrees, and hitstun `power x 0.7 / 3` s (a disc: 0).
 - **The numbers 8 and 0.5 are guesses**: read a player's and a Turabada's max health in the first play-test and tune.
-- Stone on stone: compare power. Equal, both break; otherwise the lesser breaks. Both are frozen for hitstop `0.06 + 0.02 x (powerA + powerB)` s first (kinematic), then the winner gets its old velocity back. Clients shake the stone's model while frozen.
-- Explode breaking: players in the radius get knockback away from the centre (it stacks across explosions); creatures are staggered (cripple 1); loose rigidbodies get `AddExplosionForce`; our grounded stones are freed and pushed.
+- Stone on stone: compare power. Equal, both break; otherwise the lesser breaks. Both are frozen for hitstop `0.06 + 0.02 x (powerA + powerB)` s first (kinematic), then the winner gets its old velocity back. Clients shake the stone's model while frozen. Hitstop is only for clashes: a hit on a creature or a player breaks the stone at once. The Applied event carries no duration, so games shake the model for `ShakeSeconds` 0.15 by `ShakeMetres` 0.02.
+- Explode breaking (for any reason but the server's quit): players in the radius (only with `HurtPlayers`) get knockback away from its centre x the share (1 within half the radius, falling to 0.25 at the edge) and a hit's hitstun (it stacks across explosions); living creatures are staggered (cripple 1, no damage); loose rigidbodies and our stones get an impulse `ExplodeForce` x the share away from it, no faster than `MaxStoneSpeed` (our grounded ones are freed first, rising ones are left alone). An explosion never breaks a stone, so blasts do not chain.
+- A stone never hits the player holding or flicking it.
 
 ### 3.8 Network (message type 19, our only message)
 The first byte is the kind, the second the wire version (`Wire.Version`, 1). Messages from another version are ignored with one warning. Floats are the game's `SerializeFloat`.
@@ -220,7 +224,7 @@ The client picks the modifier's target (what the player sees); the server re-che
 - **Rise**: `Digging Dirt Spray Effect`, `Digging Dirt Smoke Puff Effect`, `Large Smoke Puff`; sound `Digging DirtFall Sound Set`, `Turabada Ground Tap Sounds`.
 - **Break**: `Destroyed Rock` (`Rock Destroyed Visual`); sounds `Rock Destroyed Sounds`, `Boulder Breaking Sounds`.
 - **Impacts**: `Mining Successful`, `Ground Hit Puff`, `Turabada Ground Slam Effect` (Stomp's landing); sounds `Turabada Rock Hit Sounds`, `Heavy Turabada Step Sounds`.
-- **Explode**: `Shockwave Impact`, `Small Explosion`; sounds `Shockwave Sounds`, `Small Explosion`.
+- **Explode**: the mark (once, when a stone is marked) `Mining Successful`; the blast `Shockwave Impact`, `Small Explosion`; sounds `Shockwave Sounds`, `Small Explosion`.
 - **Movement dust**: `GroundPuffSmall`, `Ground Hit Puff`, `Climb Grab Dust`; whoosh `Power Hit Strike Sounds`.
 - There is no rock-grinding loop sound and no terrain deformation. The rise is the stone moving up plus the dirt spray.
 - Never copy ripped game files into the mod. Meshes and materials are found by name at runtime and shared, never changed.

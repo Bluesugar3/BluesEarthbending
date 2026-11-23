@@ -234,6 +234,7 @@ namespace Earthbending {
             }
             try {
                 if (move == Move.Jump) { if (Moves.Push(new Vector3(0f, jumpSpeed, 0f))) Moves.Dust(pc.RealFeetPosition); }
+                else if (move == Move.Dash) { if (Moves.Dash(yawDeg)) Moves.Dust(pc.RealFeetPosition); }
                 else if (PoseMachine.IsStructure(move)) Summon(move, head, yawDeg);
                 else if (PoseMachine.IsModifier(move)) Modify(pc, move, rightIsA, head, yawDeg);
             }
