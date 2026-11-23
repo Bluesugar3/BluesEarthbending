@@ -178,13 +178,13 @@ Grounded is done in Unity with rigidbody constraints. Still: `isKinematic` (sync
 | Stomp | 1500 down; landing: grounded, still | stays grounded |
 | Uppercut | 900 forward + 900 up | frees, 1300 + 1300, spin 5 rad/s about the right axis |
 | Parry | floating (3 s, or broken at 0.1 m/s) | frees, then floating |
-| Hold | PD to the hand (2.4 table, D x `PdStepSeconds`), let go at `HoldLetGoSpeed` 5 m/s once it has settled within `HoldArmMetres` 0.5 of its target (a throw; a caught fast stone is slowed first) | slides while held (x 1500), never anchored while held |
+| Hold | PD to `HoldDistance` 1 m ahead of the hand along the holder's flat look (the server cannot see each game's finger axes; 2.4 table, D x `PdStepSeconds`), let go at `HoldLetGoSpeed` 5 m/s once it has settled within `HoldArmMetres` 0.5 of its target (a throw; a caught fast stone is slowed first) | slides while held (x 1500), never anchored while held |
 | Flick | PID to both hands (D x `PdStepSeconds`) + turn (`FlickTurnGain` 8, `FlickTurnDamp` 4); Parry and Hold refused on it | refused (grounded cannot be flicked) |
 | Explode | marked: on breaking, radius `ExplodeRadius` 3 m, force 1000 | same |
 
 - Range: as RUMBLE (2.4), plus server slack `RangeSlackMetres` 0.5 for lag.
 - The player's own pushback from Straight (on their own game, `[Movement]`): `PushbackGrounded` 2.5 m/s back + 0.25 up, `PushbackFree` 1.7 back + 0.2 up, half in the air.
-- A modifier's push is a velocity change (impulse / mass), and no modifier leaves a stone faster than `MaxStoneSpeed` 20 m/s. A modifier taken while a stone rises waits until it has risen.
+- A modifier's push is a velocity change (impulse / mass), and no modifier, nor a Hold's or a Flick's pull (the speed each step ends with), leaves a stone faster than `MaxStoneSpeed` 20 m/s. A modifier taken while a stone rises waits until it has risen.
 - Two Straights on one stone within `DoubleStraightSeconds` 0.4 explode it at once (judged when the claim arrives, also while it rises). One player's own Straight cooldown is 0.5 s and the slide carries the stone out of reach, so it takes two players: a Straight answered by another's.
 - `PdStepSeconds` 0.02: spec 2.4's D gains are read as the error's change per 50 Hz physics step (RUMBLE's PID), so D multiplies the velocity times 0.02. Read per second, they make a held Ball trail 8 m behind a hand moving 1 m/s and diverge on the server's 15-45 Hz step. With these gains a stone's peak speed is about 2.7 x the hand's travel, hence Hold's lower let-go speed.
 
