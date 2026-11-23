@@ -387,6 +387,12 @@ namespace Earthbending {
         /// <summary>Spec 2.3 (ruling C7): a Stomped stone that touches ground stands Still; every other state is not a landing.</summary>
         public static StoneState Landed(StoneState s) => s == StoneState.Stomped ? StoneState.Still : s;
 
+        /// <summary>Whether a stone in this state needs continuous collision detection (Unity's ContinuousDynamic): only
+        /// Stomped, which is driven down at up to MaxStoneSpeed (20 m/s is 0.44 m in a 22 ms step, against a 0.14 m Disc) and
+        /// would otherwise end a step wholly under thin ground and never land. Every other state keeps Unity's Discrete; a
+        /// kinematic state never needs it (a kinematic body cannot be ContinuousDynamic).</summary>
+        public static bool Continuous(StoneState s) => s == StoneState.Stomped;
+
         /// <summary>Ruling C1 (and Task 9's CARRY): the state a stone is in once its rise ends, by its kind alone: the Ball is
         /// loose (Free; launched when its launch has a push, SpawnPlan.Launch), and so is the Disc (it never rises: it appears
         /// loose); the Pillar, Cube and Wall stand Still.</summary>

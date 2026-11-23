@@ -15,7 +15,9 @@ namespace Earthbending {
     /// it had just arrived; a later one replaces it. Every modifier's push sets the rigidbody's velocity to
     /// StoneRules.Pushed (its velocity + impulse / mass, held to [EarthModifiers] MaxStoneSpeed: ruling C10); Uppercut on a
     /// grounded stone adds its spin. Kick and Uppercut set a grounded stone loose first. A Stomped stone (spec 2.3, ruling C7)
-    /// moves only up and down (its x, z and turn frozen) until any contact whose normal points at most 60 degrees from up:
+    /// moves only up and down (its x, z and turn frozen), with continuous collision detection so its fast fall cannot pass
+    /// through thin ground (every way out of Stomped puts Discrete back before the body is kinematic), until any contact whose
+    /// normal points at most 60 degrees from up:
     /// there it stands Still and the games within 80 m get Applied(Stomp) under its middle (the slam). A Sliding stone (spec
     /// 2.3, 3.4, ruling 22) is not kinematic, has gravity, only its turn frozen
     /// (FreezeRotation), and while it slides its collider wears a frictionless material, so it follows slopes and the ground
@@ -208,9 +210,20 @@ namespace Earthbending {
             return true;
         }
 
-        /// <summary>Normal physics (Free's): not kinematic, gravity, nothing frozen, its own material back.</summary>
+        /// <summary>The collision detection a state needs (StoneRules.Continuous): ContinuousDynamic while Stomped, else
+        /// Discrete (the stones' default; NetworkRigidbody does the same before it makes a body kinematic). Call it BEFORE any
+        /// <c>isKinematic = true</c>: Unity does not allow ContinuousDynamic on a kinematic body. Set only when it differs, so
+        /// the other states keep what they have.</summary>
+        void Detection(StoneState s) {
+            if (body == null) return;
+            CollisionDetectionMode want = StoneRules.Continuous(s) ? CollisionDetectionMode.ContinuousDynamic : CollisionDetectionMode.Discrete;
+            if (body.collisionDetectionMode != want) body.collisionDetectionMode = want;
+        }
+
+        /// <summary>Normal physics (Free's): not kinematic, gravity, nothing frozen, its own material back, Discrete collision.</summary>
         void Loosen() {
             if (body == null) return;
+            Detection(StoneState.Free);   // out of Stomped (a Kick, an Uppercut, a lift-off)
             body.isKinematic = false;
             body.useGravity = true;
             body.constraints = RigidbodyConstraints.None;
@@ -283,12 +296,13 @@ namespace Earthbending {
             }
         }
 
-        /// <summary>Still's physics where it is: no velocity or spin, kinematic, nothing frozen, the slide's material off. The
-        /// caller sets the state.</summary>
+        /// <summary>Still's physics where it is: no velocity or spin, Discrete collision, kinematic, nothing frozen, the slide's
+        /// material off. The caller sets the state.</summary>
         void Stand() {
             if (body == null) return;
             body.velocity = Vector3.zero;
             body.angularVelocity = Vector3.zero;
+            Detection(StoneState.Still);   // before it is kinematic (a stomped stone's landing)
             body.isKinematic = true;
             body.constraints = RigidbodyConstraints.None;
             EndSlideMaterial();
@@ -392,6 +406,7 @@ namespace Earthbending {
             else if (next == StoneState.Free && was != StoneState.Free) Loosen();   // Kick, Uppercut: set loose first
             else if (next == StoneState.Stomped) {   // ruling C7: only up and down from now on
                 body.isKinematic = false;
+                Detection(next);   // ContinuousDynamic, once it is not kinematic: driven down fast, it must not pass through thin ground
                 body.useGravity = true;
                 body.constraints = RigidbodyConstraints.FreezePositionX | RigidbodyConstraints.FreezePositionZ | RigidbodyConstraints.FreezeRotation;
                 EndSlideMaterial();
@@ -422,7 +437,10 @@ namespace Earthbending {
             // the entity goes at the end of the frame, and a slow server runs several physics steps in one frame: a broken
             // stone must not stop a clash's winner again in the next one (CarryOn), nor go on shoving what it hit
             if (shape != null) shape.enabled = false;
-            if (body != null) body.isKinematic = true;
+            if (body != null) {
+                Detection(StoneState.Still);   // a stomped stone breaking in its fall: Discrete before kinematic
+                body.isKinematic = true;
+            }
             Vector3 at = transform.position;
             try { Net.SendApplied(Id, Wire.Broke, at); }
             catch (Exception e) {

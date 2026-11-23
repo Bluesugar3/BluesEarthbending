@@ -41,6 +41,16 @@ internal static class StoneTests {
         Check("a stomped stone lands still", StoneRules.Landed(StoneState.Stomped) == StoneState.Still);
         Check("only a stomped stone lands", StoneRules.Landed(StoneState.Free) == StoneState.Free && StoneRules.Landed(StoneState.Sliding) == StoneState.Sliding
             && StoneRules.Landed(StoneState.Still) == StoneState.Still && StoneRules.Landed(StoneState.Rising) == StoneState.Rising);
+        // fix round 1: a stomped stone is driven down at up to 20 m/s, so only it uses continuous collision detection, and no
+        // kinematic state ever does (Unity refuses ContinuousDynamic on a kinematic body)
+        bool onlyStomped = true, neverKinematic = true;
+        foreach (StoneState s in AllStates) {
+            onlyStomped &= StoneRules.Continuous(s) == (s == StoneState.Stomped);
+            neverKinematic &= !(StoneRules.Continuous(s) && StoneRules.Kinematic(s));
+        }
+        Check("continuous: only a stomped stone", onlyStomped && StoneRules.Continuous(StoneState.Stomped));
+        Check("continuous: never a kinematic state", neverKinematic);
+        Check("continuous: a landed stone is not", !StoneRules.Continuous(StoneRules.Landed(StoneState.Stomped)));
 
         // Kick and Uppercut free every grounded stone; Stomp leaves a grounded one as it is
         Check("kick on sliding -> free", StoneRules.After(StoneState.Sliding, Modifier.Kick) == StoneState.Free);
