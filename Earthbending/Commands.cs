@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using Alta.Console;
 using Alta.Networking;
@@ -10,17 +11,19 @@ using Object = UnityEngine.Object;
 
 namespace Earthbending {
     // The `earth` console module on the dedicated server (the TavernLauncher Server window's Console, or the game's remote
-    // console): `earth spawn <kind> <player>`, `earth list`, `earth clear`. Registered from Main.OnInitializeMelon on the
-    // dedicated server only. Every command answers with a string and never throws: a failure is warned with its stack.
-    [PlayOnly, ServerOnly, Module("earth", "Blue's Earthbending: spawn, list and clear stones")]
+    // console): `earth spawn <kind> <player>`, `earth push <player> <up m/s>`, `earth list`, `earth clear`. Registered from
+    // Main.OnInitializeMelon on the dedicated server only. Every command answers with a string and never throws: a failure is
+    // warned with its stack.
+    [PlayOnly, ServerOnly, Module("earth", "Blue's Earthbending: spawn, push, list and clear stones")]
     internal static class Commands {
         const float AheadMetres = 1.5f, GroundBelowMetres = 6f, Lift = 0.02f;
         const string Usage = "Usage: earth spawn <disc|ball|pillar|cube|wall> <player>";
+        const string PushUsage = "Usage: earth push <player> <up m/s>";
 
         internal static void Register() {
             try {
                 CommandService.CommandCollection.ProcessModule(typeof(Commands), typeof(Commands).Assembly);
-                MelonLogger.Msg("[Earth] Console commands added (earth spawn, earth list, earth clear)");
+                MelonLogger.Msg("[Earth] Console commands added (earth spawn, earth push, earth list, earth clear)");
             }
             catch (Exception e) { MelonLogger.Warning($"[Earth] The earth console commands could not be added: {e.Message}"); }
         }
@@ -52,6 +55,23 @@ namespace Earthbending {
                 if (e == null) return $"The {stone} could not be spawned (see the log)";
                 MelonLogger.Msg($"[Earth] Console: spawned {stone} #{e.Identifier} in front of {name} at {at} (ground {hit.collider.name}, layer {hit.collider.gameObject.layer}, natural {(natural ? "yes" : "no")})");
                 return $"Spawned {stone} #{e.Identifier} in front of {name} at {at}";
+            }
+            catch (Exception e) { return Failed(e); }
+        }
+
+        [Command("push", "Throws a player straight up on their own game (a knockback with no hitstun): earth push <player> <up m/s>")]
+        static string Push(string player = "", string up = "") {
+            try {
+                string who = (player ?? "").Trim(), speedText = (up ?? "").Trim();
+                if (who.Length == 0 || speedText.Length == 0) return PushUsage;
+                if (!float.TryParse(speedText, NumberStyles.Float, CultureInfo.InvariantCulture, out float speed) || float.IsNaN(speed) || float.IsInfinity(speed))
+                    return $"'{speedText}' is not a speed in m/s. {PushUsage}";
+                Player? p = Find(who, out string refusal);
+                if (p == null) return refusal;
+                string name = p.UserInfo.Username;
+                if (!Net.SendKnockback(p, new Vector3(0f, speed, 0f), 0f)) return $"The push could not be sent to {name} (no connection)";
+                MelonLogger.Msg($"[Earth] Console: pushed {name} up at {speed.ToString("0.##", CultureInfo.InvariantCulture)} m/s");
+                return $"Sent {name} a push of {speed.ToString("0.##", CultureInfo.InvariantCulture)} m/s up";
             }
             catch (Exception e) { return Failed(e); }
         }

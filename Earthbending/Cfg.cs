@@ -81,7 +81,7 @@ namespace Earthbending {
         internal static bool Debug => debug != null && debug.Value;
 
         internal static void Init() {
-            debug = Cfg.Category("EarthLog").CreateEntry("Debug", false, description: "Per game. On: the detail lines for play-tests (every 2 s the ground under the local player's feet; each stone dressed and spawned). Off: start-up lines, warnings and errors only.");
+            debug = Cfg.Category("EarthLog").CreateEntry("Debug", false, description: "Per game. On: the detail lines for play-tests (every 2 s the ground under the local player's feet; each stone dressed and spawned; each message 19 sent and received; each push and hitstun). Off: start-up lines, warnings and errors only.");
         }
     }
 }

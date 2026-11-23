@@ -1,11 +1,47 @@
 using System;
 using System.Globalization;
 
-// Unity-free, compiled by Earthbending.Tests, so only System.* in here: the stones' kinds and numbers (spec 3.4), and V3,
-// the vector every Unity-free file uses. Prefabs.cs turns the table into the five network prefabs.
+// Unity-free, compiled by Earthbending.Tests, so only System.* in here: the stones' kinds and numbers (spec 3.4), V3, the
+// vector every Unity-free file uses, and what message 19 carries (spec 3.8: the wire's version and kind bytes, the modifiers
+// and the two claims a game sends). Prefabs.cs turns the table into the five network prefabs; Net.cs writes and reads the
+// claims.
 namespace Earthbending {
     /// <summary>The five stones. A byte on the wire; the order is fixed.</summary>
     internal enum StoneKind : byte { Disc, Ball, Pillar, Cube, Wall }
+
+    /// <summary>The eight modifiers (spec 2.4, 3.5). A byte on the wire (a Modify claim, and an Applied event); the order is fixed.</summary>
+    internal enum Modifier : byte { Straight, Kick, Stomp, Uppercut, Parry, Hold, Flick, Explode }
+
+    /// <summary>Message 19's header (spec 3.8): the first byte is the kind, the second the version. A message of another
+    /// version is dropped, so change <see cref="Version"/> whenever a kind's fields change.</summary>
+    internal static class Wire {
+        public const byte Version = 1;
+
+        /// <summary>The kinds; the numbers are the bytes on the wire.</summary>
+        internal enum Kind : byte { Summon = 1, Modify = 2, Knockback = 10, Applied = 11 }
+    }
+
+    /// <summary>A game asks the server for a stone (kind 1). <see cref="Head"/> is the asker's head (camera) in world space,
+    /// <see cref="Yaw"/> its heading in degrees; the server checks both against its own copy of the head.</summary>
+    internal struct SummonClaim {
+        public StoneKind Kind;
+        public V3 Head;
+        public float Yaw;
+
+        public SummonClaim(StoneKind kind, V3 head, float yaw) { Kind = kind; Head = head; Yaw = yaw; }
+    }
+
+    /// <summary>A game asks the server to apply a modifier to a stone (kind 2). <see cref="Hand"/> is the holding hand (0
+    /// right, 1 left), <see cref="Target"/> the stone entity's Identifier the game picked; head and yaw as in a summon.</summary>
+    internal struct ModifyClaim {
+        public Modifier Mod;
+        public byte Hand;
+        public uint Target;
+        public V3 Head;
+        public float Yaw;
+
+        public ModifyClaim(Modifier mod, byte hand, uint target, V3 head, float yaw) { Mod = mod; Hand = hand; Target = target; Head = head; Yaw = yaw; }
+    }
 
     /// <summary>A vector for the Unity-free files (metres, or a direction). Unity code converts at its edges.</summary>
     internal readonly struct V3 {
