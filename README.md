@@ -365,3 +365,7 @@ The mod's only network message. The first byte is the kind, the second the wire 
 ### The gauntlet seam
 
 Who may bend is one method: `Bender.CanBend(PlayerController)` in `Bend.cs`. Today it is `Hands.Empty(pc)`: neither hand holds a pickup, a climbing hold or a bow string. The pose machine reads it every frame (through a two-frame gate), and false starts every pose over. Bending only while wearing a gauntlet, or with something held, is a change to that method alone.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
