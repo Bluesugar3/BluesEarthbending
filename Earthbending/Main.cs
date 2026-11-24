@@ -66,7 +66,7 @@ namespace Earthbending {
     //                 sent to every game every 2 s
     //   LogFix.cs     the freeze fix: every log line goes to MelonLoader\Latest.managed.log, never into MelonLoader's native log writer (it deadlocks)
     public class Main : MelonMod {
-        public const string Version = "1.1.4";
+        public const string Version = "1.1.5";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
@@ -74,7 +74,7 @@ namespace Earthbending {
         float nextGroundLine;
 
         public override void OnInitializeMelon() {
-            LogFix.Init(HarmonyInstance);   // first: log lines go to a managed file, never MelonLoader's native writer (LogFix.cs)
+            LogFix.Init();   // first: log lines go to a managed file, never MelonLoader's native writer (LogFix.cs)
             Cfg.Init("Earthbending.cfg");
             Logs.Init();
             ReachSettings.Init();   // [EarthModifiers] Reach and MaxHeight: games pick with them, the server checks with them
