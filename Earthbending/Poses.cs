@@ -175,7 +175,11 @@ namespace Earthbending {
         // lowered his hands after Uppercut, a 70-degree finger cone let a hand moving from Base toward Ball fire Ball and then
         // Straight (their A fingers are 90 degrees apart), and a deeper fire score (MoveDeepScore 0.65-0.75,
         // StructureDeepScore 0.6) fired more wrong moves in the practice steps
-        public const float DefaultTolX = 0.30f, DefaultTolY = 0.24f, DefaultTolZ = 0.33f, DefaultPalmDeg = 65f, DefaultFingerDeg = 65f;
+        // Ruling 46 (1.1.6, the owner after the 1.1.5 play-test: "some hand locations are too far down ... make them bigger"):
+        // zones 0.33 / 0.28 / 0.36 m (were 0.30 / 0.24 / 0.33), no hand lower than 0.52 m under the eyes (Base, Pillar's low hand
+        // and Stomp 0.48; Kick's low hand, Jump's and Dash's 0.52; they were 0.55 to 0.72), and each place moved toward where the
+        // owner's hands settled in that run's trace (Wall higher, Flick's upper hand higher and wider, reach up to 0.50 m)
+        public const float DefaultTolX = 0.33f, DefaultTolY = 0.28f, DefaultTolZ = 0.36f, DefaultPalmDeg = 65f, DefaultFingerDeg = 65f;
 
         static readonly V3 PX = new V3(1f, 0f, 0f), NX = new V3(-1f, 0f, 0f), PY = new V3(0f, 1f, 0f), NY = new V3(0f, -1f, 0f),
             PZ = new V3(0f, 0f, 1f), NZ = new V3(0f, 0f, -1f);
@@ -190,22 +194,22 @@ namespace Earthbending {
         // (0.20, -0.55, 0.30): the owner's base sat 0.1-0.2 m closer and missed the arming score for seconds) and Explode
         // higher and nearer (was (0.06, -0.50, 0.28): its best score in the run was 0.88, all of it the place)
         static readonly PoseSpec[] Table = {
-            P(Move.Base,     new V3(0.24f, -0.57f, 0.22f), PY, PZ, new V3(-0.24f, -0.57f, 0.22f), PY, PZ),
-            P(Move.Disc,     new V3(0.05f, -0.30f, 0.45f), NX, PZ, new V3(-0.05f, -0.30f, 0.28f), NZ, PX),
-            P(Move.Ball,     new V3(0.15f, -0.30f, 0.22f), NX, PZ, new V3(-0.10f, -0.30f, 0.45f), PX, PZ),
-            P(Move.Pillar,   new V3(0.20f, -0.55f, 0.30f), NX, PZ, new V3(-0.20f, -0.05f, 0.25f), PX, PY),
-            P(Move.Cube,     new V3(0.20f, -0.05f, 0.25f), NX, PY, new V3(-0.20f, -0.05f, 0.25f), PX, PY),
-            P(Move.Wall,     new V3(0.20f, 0.00f, 0.30f), PY, PZ, new V3(-0.20f, 0.00f, 0.30f), PY, PZ),
-            P(Move.Straight, new V3(0.20f, -0.25f, 0.25f), NX, PY, new V3(-0.15f, -0.25f, 0.45f), NY, PZ),
-            P(Move.Kick,     new V3(0.20f, -0.25f, 0.25f), NX, PY, new V3(-0.05f, -0.65f, 0.22f), NZ, NY),
-            P(Move.Stomp,    new V3(0.20f, -0.55f, 0.35f), StompPalm, new V3(0f, -0.71f, 0.71f), new V3(-0.20f, -0.55f, 0.35f), StompPalm, new V3(0f, -0.71f, 0.71f)),
-            P(Move.Uppercut, new V3(0.20f, -0.30f, 0.25f), NX, new V3(0f, 0.97f, 0.26f), new V3(-0.05f, -0.10f, 0.32f), NZ, PY),
-            P(Move.Parry,    new V3(0.20f, -0.25f, 0.42f), PZ, PY, new V3(-0.20f, -0.25f, 0.42f), PZ, PY),
-            P(Move.Hold,     new V3(0.05f, -0.25f, 0.42f), PZ, PY, new V3(0.05f, -0.40f, 0.38f), PY, PZ),
-            P(Move.Flick,    new V3(0.10f, -0.25f, 0.42f), PX, PZ, new V3(0.10f, -0.48f, 0.38f), PX, PZ),
-            P(Move.Explode,  new V3(0.08f, -0.38f, 0.18f), NZ, NX, new V3(-0.08f, -0.38f, 0.18f), NZ, PX),
-            P(Move.Jump,     new V3(0.20f, -0.72f, 0.20f), PY, PZ, new V3(-0.20f, 0.05f, 0.10f), PX, PY),
-            P(Move.Dash,     new V3(0.20f, -0.72f, 0.20f), PY, PZ, new V3(-0.10f, -0.30f, 0.45f), PX, PZ),
+            P(Move.Base,     new V3(0.24f, -0.48f, 0.22f), PY, PZ, new V3(-0.24f, -0.48f, 0.22f), PY, PZ),
+            P(Move.Disc,     new V3(0.10f, -0.30f, 0.48f), NX, PZ, new V3(-0.05f, -0.30f, 0.28f), NZ, PX),
+            P(Move.Ball,     new V3(0.15f, -0.30f, 0.22f), NX, PZ, new V3(-0.13f, -0.27f, 0.50f), PX, PZ),
+            P(Move.Pillar,   new V3(0.20f, -0.48f, 0.28f), NX, PZ, new V3(-0.20f, -0.03f, 0.22f), PX, PY),
+            P(Move.Cube,     new V3(0.20f, 0.00f, 0.20f), NX, PY, new V3(-0.20f, 0.00f, 0.20f), PX, PY),
+            P(Move.Wall,     new V3(0.20f, 0.12f, 0.27f), PY, PZ, new V3(-0.20f, 0.12f, 0.27f), PY, PZ),
+            P(Move.Straight, new V3(0.20f, -0.23f, 0.20f), NX, PY, new V3(-0.17f, -0.25f, 0.50f), NY, PZ),
+            P(Move.Kick,     new V3(0.20f, -0.25f, 0.24f), NX, PY, new V3(-0.07f, -0.52f, 0.22f), NZ, NY),
+            P(Move.Stomp,    new V3(0.20f, -0.48f, 0.35f), StompPalm, new V3(0f, -0.71f, 0.71f), new V3(-0.20f, -0.48f, 0.35f), StompPalm, new V3(0f, -0.71f, 0.71f)),
+            P(Move.Uppercut, new V3(0.20f, -0.28f, 0.22f), NX, new V3(0f, 0.97f, 0.26f), new V3(-0.08f, -0.11f, 0.33f), NZ, PY),
+            P(Move.Parry,    new V3(0.20f, -0.25f, 0.45f), PZ, PY, new V3(-0.20f, -0.25f, 0.45f), PZ, PY),
+            P(Move.Hold,     new V3(0.03f, -0.20f, 0.42f), PZ, PY, new V3(0.00f, -0.39f, 0.41f), PY, PZ),
+            P(Move.Flick,    new V3(0.15f, -0.18f, 0.45f), PX, PZ, new V3(0.10f, -0.40f, 0.40f), PX, PZ),
+            P(Move.Explode,  new V3(0.10f, -0.38f, 0.18f), NZ, NX, new V3(-0.10f, -0.38f, 0.18f), NZ, PX),
+            P(Move.Jump,     new V3(0.22f, -0.52f, 0.18f), PY, PZ, new V3(-0.20f, 0.02f, 0.06f), PX, PY),
+            P(Move.Dash,     new V3(0.22f, -0.52f, 0.18f), PY, PZ, new V3(-0.12f, -0.30f, 0.46f), PX, PZ),
         };
 
         static PoseSpec P(Move m, V3 ap, V3 an, V3 af, V3 bp, V3 bn, V3 bf) => new PoseSpec(m,

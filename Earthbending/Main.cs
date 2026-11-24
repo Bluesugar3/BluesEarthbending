@@ -66,7 +66,7 @@ namespace Earthbending {
     //                 sent to every game every 2 s
     //   LogFix.cs     the freeze fix: every log line goes to MelonLoader\Latest.managed.log, never into MelonLoader's native log writer (it deadlocks)
     public class Main : MelonMod {
-        public const string Version = "1.1.5";
+        public const string Version = "1.1.6";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
