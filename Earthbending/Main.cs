@@ -60,9 +60,12 @@ namespace Earthbending {
     //   Bend.cs       games: the pose machine every frame (Bend.Tick), the fired moves (Jump, a structure's Summon claim, a
     //                 modifier's target and Modify claim), Bender.CanBend, poses.txt
     //   tools/fit_poses.py  the owner's pose capture -> poses.txt and the axis settings as directions (run it with python -I)
-    //   Commands.cs   the server's `earth` console module (`earth ring`: fight health's test ring)
+    //   Commands.cs   the server's `earth` console module (`earth ring`: fight health's test ring; `earth on|off`,
+    //                 `earth practice <player> on|off`)
+    //   Switches.cs   the console's switches: bending for everyone ([EarthSwitch] Bending) and each player's practice card,
+    //                 sent to every game every 2 s
     public class Main : MelonMod {
-        public const string Version = "1.1.1";
+        public const string Version = "1.1.2";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
@@ -90,6 +93,7 @@ namespace Earthbending {
             if (IsServer) {
                 Server.Init();    // [EarthStones] summons, caps and life; [EarthModifiers]; Summon and Modify claims; the quit
                 FightServer.Init(); // [EarthFight]: the ring and fight health
+                Switches.InitServer(); // [EarthSwitch] Bending: `earth on|off`
                 Commands.Register();
             }
             LoggerInstance.Msg($"[Earth] Blue's Earthbending v{Version} started ({(IsServer ? "server" : "client")})");
@@ -100,6 +104,7 @@ namespace Earthbending {
             if (IsServer) {
                 Server.Tick();      // every stone that lived its time, fell out of the world or lost its owner breaks
                 FightServer.Tick(); // who is on the ring; fight health in and out; the ring and the points to every game
+                Switches.Tick();    // bending on/off and each player's practice card to their game, every 2 s
                 return;             // the headless server: nothing below draws or reads the local player
             }
             Hands.Tick();           // the pose recorder; one bool test while [EarthPose] Capture is off

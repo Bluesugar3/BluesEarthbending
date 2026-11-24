@@ -74,7 +74,7 @@ namespace Earthbending {
         /// CaptureGuide.Tick). With Practice off, one bool test. Never throws: a failure is said once and the guide stays
         /// away until Practice is switched on again.</summary>
         internal static void Tick() {
-            if (!on || Hands.Capturing) {
+            if (!Switches.PracticeOn(on) || Hands.Capturing) {   // on a server, its `earth practice` decides
                 if (active || failed) {
                     GuideDisplay.Hide(GuideDisplay.Practice);
                     active = false;

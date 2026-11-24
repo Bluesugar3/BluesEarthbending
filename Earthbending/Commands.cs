@@ -26,7 +26,7 @@ namespace Earthbending {
         internal static void Register() {
             try {
                 CommandService.CommandCollection.ProcessModule(typeof(Commands), typeof(Commands).Assembly);
-                MelonLogger.Msg("[Earth] Console commands added (earth spawn, earth push, earth list, earth clear, earth ring)");
+                MelonLogger.Msg("[Earth] Console commands added (earth spawn, earth push, earth list, earth clear, earth ring, earth on, earth off, earth practice)");
             }
             catch (Exception e) { MelonLogger.Warning($"[Earth] The earth console commands could not be added: {e.Message}"); }
         }
@@ -140,6 +140,39 @@ namespace Earthbending {
                 FightServer.SetConsole(ring);
                 MelonLogger.Msg($"[Earth] Console: a test ring round {name}: {ring}");
                 return $"A test ring round {name}: {ring}. " + RingStatus();
+            }
+            catch (Exception e) { return Failed(e); }
+        }
+
+        [Command("on", "Turns earthbending on for everyone (saved)")]
+        static string On() => Bending(true);
+
+        [Command("off", "Turns earthbending off for everyone: no pose fires and the server takes no summon or modifier (saved)")]
+        static string Off() => Bending(false);
+
+        static string Bending(bool on) {
+            try {
+                Switches.SetBending(on);
+                MelonLogger.Msg($"[Earth] Console: earthbending {(on ? "on" : "off")} for everyone");
+                return $"Earthbending is {(on ? "on" : "off")} for everyone (every game hears it within 2 s)";
+            }
+            catch (Exception e) { return Failed(e); }
+        }
+
+        [Command("practice", "The practice card on one player's game: earth practice <player> [on|off] (no word: switches it). Not saved")]
+        static string Practice(string player = "", string state = "") {
+            try {
+                string who = (player ?? "").Trim(), w = (state ?? "").Trim().ToLowerInvariant();
+                if (who.Length == 0) return "Usage: earth practice <player> [on|off]";
+                if (w.Length > 0 && w != "on" && w != "off") return $"'{state}' is not on or off. Usage: earth practice <player> [on|off]";
+                Player? p = Find(who, out string refusal);
+                if (p == null) return refusal;
+                ulong account = Server.AccountOf(p);
+                bool on = w.Length == 0 ? !Switches.Practising(account) : w == "on";
+                Switches.SetPractice(account, on);
+                string name = p.UserInfo.Username;
+                MelonLogger.Msg($"[Earth] Console: the practice card {(on ? "on" : "off")} for {name}");
+                return $"The practice card is {(on ? "on" : "off")} for {name}{(on ? " (it starts from the first move)" : "")}";
             }
             catch (Exception e) { return Failed(e); }
         }

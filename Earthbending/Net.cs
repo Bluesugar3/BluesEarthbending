@@ -46,6 +46,7 @@ namespace Earthbending {
         static readonly int AppliedBits = Count(s => { uint e = 0; byte b = 0; Vector3 at = default; Applied(s, ref e, ref b, ref at); });
         static readonly int FightBits = Count(s => { int a = 0; byte p = 0; Fight(s, ref a, ref p); });
         static readonly int RingBits = Count(s => { bool h = false, d = false; Vector3 c = default; float r = 0f, ar = 0f; Ring(s, ref h, ref c, ref r, ref ar, ref d); });
+        static readonly int SwitchBits = Count(s => { byte f = 0; s.SerializeByte(ref f); });
 
         static Connection? server;                                       // game: the connection to the server
         static readonly HashSet<Connection> warned = new HashSet<Connection>();
@@ -218,6 +219,13 @@ namespace Earthbending {
             return n;
         }
 
+        /// <summary>Server: one game's switches (Switches.cs: bit 1 bending, bit 2 the practice card).</summary>
+        internal static bool SendSwitch(Player p, byte flags) {
+            Connection c = p.ConnectionToRemotePlayer;
+            if (c == null || c.IsDisposed) return false;
+            return c.Send(null, Message, (cc, s) => { Write(s, Wire.Kind.Switch); s.SerializeByte(ref flags); });
+        }
+
         // Every player's game with a live connection.
         static int ToEveryGame(SerializeConnectionMethod body) {
             int n = 0;
@@ -259,6 +267,7 @@ namespace Earthbending {
                     if (connection == null) return;
                     connection.SetHandler(Message, ClientRead);
                     server = connection;
+                    Switches.Forget();
                     lock (warned) warned.Clear();
                 }
                 catch (Exception e) { MelonLogger.Error($"[Earth] Net: could not listen to the server: {e.Message}"); }
@@ -285,6 +294,7 @@ namespace Earthbending {
                         Fields(s, ref claim);
                         Player? p = PlayerOf(connection, "Summon");
                         if (p == null) return;
+                        if (!Switches.Bending) { if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Summon from {NameOf(p)} dropped: bending is off"); return; }
                         if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Summon {claim.Kind} from {NameOf(p)} (head {claim.Head}, yaw {claim.Yaw:0.#})");
                         Raise(SummonReceived, p, claim);
                         return;
@@ -295,6 +305,7 @@ namespace Earthbending {
                         Fields(s, ref claim);
                         Player? p = PlayerOf(connection, "Modify");
                         if (p == null) return;
+                        if (!Switches.Bending) { if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Modify from {NameOf(p)} dropped: bending is off"); return; }
                         if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Modify {claim.Mod} on #{claim.Target} from {NameOf(p)} (hand {claim.Hand}, head {claim.Head}, yaw {claim.Yaw:0.#})");
                         Raise(ModifyReceived, p, claim);
                         return;
@@ -339,6 +350,13 @@ namespace Earthbending {
                         if (!has) { centre = Vector3.zero; radius = 0f; arena = 0f; drawn = false; }
                         if (Logs.Debug) MelonLogger.Msg($"[Earth] Net: Ring {(has ? $"at {centre}, {radius:0.##} m, arena {arena:0.##} m{(drawn ? ", drawn" : "")}" : "none")}");
                         Raise(RingReceived, has, centre, radius, arena, drawn);
+                        return;
+                    }
+                    case Wire.Kind.Switch when !onServer: {
+                        if (!Enough(connection, "Switch", left, SwitchBits)) return;
+                        byte flags = 0;
+                        s.SerializeByte(ref flags);
+                        Switches.Heard(flags);
                         return;
                     }
                     default:

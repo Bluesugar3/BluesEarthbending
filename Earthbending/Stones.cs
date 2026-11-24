@@ -34,7 +34,7 @@ namespace Earthbending {
         public const byte Version = 1;
 
         /// <summary>The kinds; the numbers are the bytes on the wire.</summary>
-        internal enum Kind : byte { Summon = 1, Modify = 2, Knockback = 10, Applied = 11, Fight = 12, Ring = 13 }
+        internal enum Kind : byte { Summon = 1, Modify = 2, Knockback = 10, Applied = 11, Fight = 12, Ring = 13, Switch = 14 }
 
         /// <summary>An Applied event's byte when it is not a <see cref="Modifier"/>: the stone broke, froze for a hitstop, or
         /// exploded; or a player's fight health reached 0 (<see cref="KnockedOut"/>: entity 0, at that player's head).</summary>

@@ -206,7 +206,7 @@ namespace Earthbending {
                 }
                 PoseMachine m = machine;
                 PlayerController pc = PlayerController.Current;
-                if (pc == null || Hands.Capturing || !Hands.Raw(out Vector3 head, out float yawDeg, out Transform rightHand, out Transform leftHand)) {
+                if (pc == null || Hands.Capturing || !Switches.BendingOn || !Hands.Raw(out Vector3 head, out float yawDeg, out Transform rightHand, out Transform leftHand)) {
                     StartOver();
                     return;
                 }
