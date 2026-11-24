@@ -147,6 +147,17 @@ namespace Earthbending {
 
         static void Apply() {
             bodyScale = Cfg.Positive(bodyScaleEntry, "EarthPose", "BodyScale", DefaultBodyScale);
+            // a settings file from before 1.1.7 holds the first default axes, with which no pose fires: today's replace them
+            if (PalmAxisRight != null && FingerAxisRight != null && HandAxes.IsOldDefault(PalmAxisRight.Value, FingerAxisRight.Value, HandAxes.OldPalmRight)) {
+                PalmAxisRight.Value = HandAxes.Describe(HandAxes.PalmRight);
+                FingerAxisRight.Value = HandAxes.Describe(HandAxes.FingersRight);
+                MelonLogger.Msg("[Earth] Settings: [EarthPose] the right hand's axes were the first defaults (-x, +z), with which no pose fires: now " + PalmAxisRight.Value + " and " + FingerAxisRight.Value);
+            }
+            if (PalmAxisLeft != null && FingerAxisLeft != null && HandAxes.IsOldDefault(PalmAxisLeft.Value, FingerAxisLeft.Value, HandAxes.OldPalmLeft)) {
+                PalmAxisLeft.Value = HandAxes.Describe(HandAxes.PalmLeft);
+                FingerAxisLeft.Value = HandAxes.Describe(HandAxes.FingersLeft);
+                MelonLogger.Msg("[Earth] Settings: [EarthPose] the left hand's axes were the first defaults (+x, +z), with which no pose fires: now " + PalmAxisLeft.Value + " and " + FingerAxisLeft.Value);
+            }
             var warnings = new List<string>();
             HandAxes.Check("PalmAxisRight", PalmAxisRight?.Value, "FingerAxisRight", FingerAxisRight?.Value, HandAxes.PalmRight, HandAxes.FingersRight, out V3 pr, out V3 fr, warnings);
             HandAxes.Check("PalmAxisLeft", PalmAxisLeft?.Value, "FingerAxisLeft", FingerAxisLeft?.Value, HandAxes.PalmLeft, HandAxes.FingersLeft, out V3 pl, out V3 fl, warnings);

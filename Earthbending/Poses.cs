@@ -1274,8 +1274,19 @@ namespace Earthbending {
 
         // Ruling 3, until the owner's capture says otherwise: the OpenXR grip pose as Unity sees it (the palm faces the other
         // hand, the fingers point ahead of the grip). The owner's fitted directions go in their cfg, not here
-        public static readonly V3 PalmRight = new V3(-1f, 0f, 0f), FingersRight = new V3(0f, 0f, 1f),
-            PalmLeft = new V3(1f, 0f, 0f), FingersLeft = new V3(0f, 0f, 1f);
+        // Ruling 47 (1.1.7): the defaults are the owner's fitted directions, made the same on both hands (the mean of the right
+        // hand's and the left's mirror image): the fingers about 21 degrees off -y toward +z. The first defaults (Old*: palm
+        // toward the other hand, fingers along +z) were 69 degrees off in the fingers, outside every pose's 65-degree cone, so
+        // on a game with a fresh settings file (every player but the owner) no pose ever fired
+        public static readonly V3 PalmRight = new V3(-1f, 0.10f, 0.06f).Normalized, FingersRight = new V3(0f, -0.935f, 0.355f).Normalized,
+            PalmLeft = new V3(1f, 0.10f, 0.06f).Normalized, FingersLeft = new V3(0f, -0.935f, 0.355f).Normalized;
+        public static readonly V3 OldPalmRight = new V3(-1f, 0f, 0f), OldPalmLeft = new V3(1f, 0f, 0f), OldFingers = new V3(0f, 0f, 1f);
+
+        /// <summary>A hand's two settings still say the first defaults (written into every settings file before 1.1.7): the
+        /// game then uses, and writes back, today's.</summary>
+        public static bool IsOldDefault(string? palmText, string? fingerText, V3 oldPalm) =>
+            TryParse(palmText, out V3 p, out _) && TryParse(fingerText, out V3 f, out _)
+            && p.X == oldPalm.X && p.Y == oldPalm.Y && p.Z == oldPalm.Z && f.X == OldFingers.X && f.Y == OldFingers.Y && f.Z == OldFingers.Z;
 
         /// <summary>A setting's text as a direction of length 1: a signed axis, or three numbers. False, with
         /// <paramref name="why"/>, for anything else: neither form (a comma decimal makes more than three numbers), a number

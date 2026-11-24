@@ -1349,9 +1349,13 @@ internal static class PoseTests {
         Check("axis direction: Describe names a signed axis, else three numbers that read back",
             HandAxes.Describe(-x) == "-x" && HandAxes.Describe(z) == "+z" && Dir(HandAxes.Describe(t1), out V3 back) && Math.Abs(back.X - t1.X) < 1e-3f && Math.Abs(back.Y - t1.Y) < 1e-3f && Math.Abs(back.Z - t1.Z) < 1e-3f);
 
-        Check("axis: the defaults are the OpenXR grip (right palm -x, left palm +x, fingers +z)",
-            NearV(HandAxes.PalmRight, -x) && NearV(HandAxes.FingersRight, z) && NearV(HandAxes.PalmLeft, x) && NearV(HandAxes.FingersLeft, z)
-            && HandAxes.Describe(HandAxes.PalmRight) == "-x" && HandAxes.Describe(HandAxes.FingersRight) == "+z" && HandAxes.Describe(HandAxes.PalmLeft) == "+x" && HandAxes.Describe(HandAxes.FingersLeft) == "+z");
+        Check("axis: the defaults are the owner's fitted hand (Ruling 47): palms toward each other, fingers 21 degrees off -y toward +z, a mirror pair; the first defaults are told apart",
+            PoseMatch.Angle(HandAxes.PalmRight, -x) < 8f && PoseMatch.Angle(HandAxes.PalmLeft, x) < 8f && Math.Abs(PoseMatch.Angle(HandAxes.FingersRight, -y) - 20.8f) < 1f
+            && NearV(HandAxes.PalmLeft, HandAxes.PalmRight.MirrorX()) && NearV(HandAxes.FingersLeft, HandAxes.FingersRight.MirrorX())
+            && PoseMatch.Angle(HandAxes.FingersRight, HandAxes.OldFingers) > 65f
+            && HandAxes.IsOldDefault("-x", "+z", HandAxes.OldPalmRight) && HandAxes.IsOldDefault("+x", " +z ", HandAxes.OldPalmLeft) && !HandAxes.IsOldDefault("+x", "+z", HandAxes.OldPalmRight)
+            && !HandAxes.IsOldDefault("-1.00,0.07,0.05", "-0.05,-0.93,0.36", HandAxes.OldPalmRight) && !HandAxes.IsOldDefault(null, "+z", HandAxes.OldPalmRight)
+            && !HandAxes.IsOldDefault(HandAxes.Describe(HandAxes.PalmRight), HandAxes.Describe(HandAxes.FingersRight), HandAxes.OldPalmRight));
         var warnings = new List<string>();
         void Hand(string? palm, string? fingers, out V3 p, out V3 f, bool left = false) {
             warnings.Clear();
@@ -1359,9 +1363,11 @@ internal static class PoseTests {
             else HandAxes.Check("PalmAxisRight", palm, "FingerAxisRight", fingers, HandAxes.PalmRight, HandAxes.FingersRight, out p, out f, warnings);
         }
         bool Defaults(V3 p, V3 f, bool left = false) => NearV(p, left ? HandAxes.PalmLeft : HandAxes.PalmRight) && NearV(f, left ? HandAxes.FingersLeft : HandAxes.FingersRight);
-        Hand("-x", "+z", out V3 p0, out V3 f0);
-        Hand("+x", "+z", out V3 p0l, out V3 f0l, left: true);
-        Check("axis check: the defaults pass", Defaults(p0, f0) && Defaults(p0l, f0l, left: true) && warnings.Count == 0);
+        Hand(HandAxes.Describe(HandAxes.PalmRight), HandAxes.Describe(HandAxes.FingersRight), out V3 p0, out V3 f0);
+        Hand(HandAxes.Describe(HandAxes.PalmLeft), HandAxes.Describe(HandAxes.FingersLeft), out V3 p0l, out V3 f0l, left: true);
+        // the defaults as the settings file holds them (three decimals) read back within a tenth of a degree
+        Check("axis check: the defaults pass", PoseMatch.Angle(p0, HandAxes.PalmRight) < 0.1f && PoseMatch.Angle(f0, HandAxes.FingersRight) < 0.1f
+            && PoseMatch.Angle(p0l, HandAxes.PalmLeft) < 0.1f && PoseMatch.Angle(f0l, HandAxes.FingersLeft) < 0.1f && warnings.Count == 0);
         Hand("+y", "-z", out V3 p1, out V3 f1);
         Check("axis check: a good pair of signed axes is kept, no warning", NearV(p1, y) && NearV(f1, -z) && warnings.Count == 0);
         Hand("-1.00,0.07,0.05", "-0.05,-0.93,0.36", out V3 p2, out V3 f2);
