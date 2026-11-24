@@ -64,8 +64,10 @@ namespace Earthbending {
     //                 `earth practice <player> on|off`)
     //   Switches.cs   the console's switches: bending for everyone ([EarthSwitch] Bending) and each player's practice card,
     //                 sent to every game every 2 s
+    //   LogFix.cs     the freeze fix: log lines from background threads are written by the main thread (MelonLoader's
+    //                 native log writer deadlocked when a background thread entered it)
     public class Main : MelonMod {
-        public const string Version = "1.1.2";
+        public const string Version = "1.1.3";
 
         /// <summary>The dedicated (headless) server.</summary>
         internal static bool IsServer => ApplicationManager.IsHeadless;
@@ -73,6 +75,7 @@ namespace Earthbending {
         float nextGroundLine;
 
         public override void OnInitializeMelon() {
+            LogFix.Init(HarmonyInstance);   // first: background threads' log lines go through the main thread (LogFix.cs)
             Cfg.Init("Earthbending.cfg");
             Logs.Init();
             ReachSettings.Init();   // [EarthModifiers] Reach and MaxHeight: games pick with them, the server checks with them
@@ -100,6 +103,7 @@ namespace Earthbending {
         }
 
         public override void OnUpdate() {
+            LogFix.Drain();
             Cfg.Poll();
             if (IsServer) {
                 Server.Tick();      // every stone that lived its time, fell out of the world or lost its owner breaks
@@ -128,6 +132,7 @@ namespace Earthbending {
         }
 
         public override void OnApplicationQuit() {
+            LogFix.Drain();
             if (IsServer) Server.Shutdown();   // also on MelonLoader's definite quit (Server.Init), which closing the window raises alone
         }
     }
